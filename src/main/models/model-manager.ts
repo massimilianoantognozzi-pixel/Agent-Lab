@@ -56,6 +56,8 @@ import logger from '@/logger';
 import { Store } from '@/store';
 import { EventManager } from '@/events';
 import { Task } from '@/task/task';
+import { isLabMode } from '@/lab-mode';
+import { createLocalLabModel, isLocalLabEnabled, localModelMetadata, LOCAL_PROVIDER_ID } from '@/lab-local-model';
 import { AiderModelMapping, CacheControl, LoadModelsResponse, LlmProviderRegistry, LlmProviderStrategy } from '@/models/types';
 
 const MODEL_LOAD_TIMEOUT_MS = 30_000;
@@ -143,6 +145,12 @@ export class ModelManager {
   }
 
   private async init(): Promise<void> {
+    if (isLabMode()) {
+      if (isLocalLabEnabled()) {
+        this.providerModels = { [LOCAL_PROVIDER_ID]: [localModelMetadata()] };
+      }
+      return;
+    }
     try {
       logger.info('Initializing ModelInfoManager...');
 
@@ -179,6 +187,9 @@ export class ModelManager {
   }
 
   private async loadModelsInfo(): Promise<void> {
+    if (isLabMode()) {
+      return;
+    }
     const cacheFile = path.join(AIDER_DESK_CACHE_DIR, 'models-meta.json');
     let cacheLoaded = false;
 
@@ -392,6 +403,13 @@ export class ModelManager {
   }
 
   private async loadProviderModels(providers: ProviderProfile[]): Promise<void> {
+    if (isLabMode()) {
+      if (isLocalLabEnabled()) {
+        this.providerModels = { [LOCAL_PROVIDER_ID]: [localModelMetadata()] };
+        this.eventManager.sendProviderModelsUpdated({ models: [localModelMetadata()], loading: false });
+      }
+      return;
+    }
     this.eventManager.sendProviderModelsUpdated({ loading: true });
 
     const toLoadPromises: Promise<void>[] = [];
@@ -747,6 +765,9 @@ export class ModelManager {
     providerMetadata?: unknown,
     sessionId?: string,
   ): LanguageModel | Promise<LanguageModel> {
+    if (isLabMode()) {
+      return createLocalLabModel(provider, model, projectDir);
+    }
     const strategy = this.providerRegistry[provider.provider.name];
     if (!strategy) {
       throw new Error(`Unsupported LLM provider: ${provider.provider.name}`);
@@ -921,6 +942,9 @@ export class ModelManager {
    * Returns provider-specific tools for the given provider and model
    */
   async getProviderTools(provider: ProviderProfile, modelId: string): Promise<ToolSet> {
+    if (isLabMode()) {
+      return {};
+    }
     const llmProvider = provider.provider;
     const strategy = this.providerRegistry[llmProvider.name];
     if (!strategy?.getProviderTools) {
@@ -941,6 +965,9 @@ export class ModelManager {
    * Creates a voice session if supported by the provider
    */
   async createVoiceSession(provider: ProviderProfile): Promise<VoiceSession> {
+    if (isLabMode()) {
+      throw new Error('Agent Lab: sessioni vocali disabilitate nel checkpoint iniziale.');
+    }
     const strategy = this.providerRegistry[provider.provider.name];
     if (!strategy?.createVoiceSession) {
       throw new Error(`Voice not supported for provider: ${provider.provider.name}`);

@@ -1,5 +1,6 @@
 import { createServer } from 'http';
 
+import type { BrowserWindow } from 'electron';
 import type { WindowManager } from '@/window-manager';
 
 import { AgentProfileManager, McpConfigManager, McpManager } from '@/agent';
@@ -22,6 +23,7 @@ import { NetworkManager } from '@/network-manager';
 import { EventsHandler } from '@/events-handler';
 import { PromptsManager } from '@/prompts';
 import { PythonDependenciesInstaller } from '@/python-dependencies-installer';
+import { getLabServerHost, isLabMode } from '@/lab-mode';
 
 export interface ManagersResult {
   eventsHandler: EventsHandler;
@@ -32,6 +34,7 @@ export interface ManagersResult {
   extensionManager: ExtensionManager;
   pythonInstaller: PythonDependenciesInstaller;
   projectManager: ProjectManager;
+  showPhonePairing?: (parent: BrowserWindow) => Promise<void>;
 }
 
 export const initManagers = async (store: Store, windowManager?: WindowManager): Promise<ManagersResult> => {
@@ -166,7 +169,13 @@ export const initManagers = async (store: Store, windowManager?: WindowManager):
   const connectorManager = new ConnectorManager(httpServer, projectManager, eventManager, store, eventsHandler);
 
   // Start listening
-  httpServer.listen(SERVER_PORT);
+  httpServer.listen(SERVER_PORT, process.env.AIDER_DESK_WORKFLOW_PILOT_DIR || process.env.AIDER_DESK_WORKFLOW_CONFIG ? '127.0.0.1' : getLabServerHost());
+  const workflowRemote = process.env.AIDER_DESK_WORKFLOW_REMOTE_PAIRING
+    ? await (await import('./server/workflow-remote')).startWorkflowRemote(eventsHandler).catch(() => {
+        logger.error('Il controllo remoto Agent-Lab non è disponibile.');
+        return undefined;
+      })
+    : undefined;
   logger.info(`AiderDesk headless server listening on http://localhost:${SERVER_PORT}`);
 
   let cleanedUp = false;
@@ -176,7 +185,17 @@ export const initManagers = async (store: Store, windowManager?: WindowManager):
     }
 
     try {
+      workflowRemote?.pairingDialog?.close();
+      workflowRemote?.server.close();
+      workflowRemote?.server.closeAllConnections();
+      // Task shutdown dispatches extension events; keep those services alive until it finishes.
+      await projectManager.close().catch((error) => {
+        logger.error('Project shutdown failed; continuing service cleanup.', { error });
+      });
       cloudflareTunnelManager.stop();
+      if (isLabMode()) {
+        await (await import('./lab-projects/runtime')).stopProjectServices();
+      }
       terminalManager.close();
       versionsManager.destroy();
       dataManager.close();
@@ -184,7 +203,6 @@ export const initManagers = async (store: Store, windowManager?: WindowManager):
       await Promise.all([
         connectorManager.close(),
         serverController.close(),
-        projectManager.close(),
         mcpManager.close(),
         mcpConfigManager.dispose(),
         telemetryManager.destroy(),
@@ -224,5 +242,6 @@ export const initManagers = async (store: Store, windowManager?: WindowManager):
     extensionManager,
     pythonInstaller,
     projectManager,
+    showPhonePairing: workflowRemote?.pairingDialog?.show,
   };
 };

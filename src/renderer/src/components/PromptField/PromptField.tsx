@@ -788,6 +788,12 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
       scrollToBottom?.();
       void stopRecording();
       if (text) {
+        if (text.startsWith('/workflow ')) {
+          runPrompt(text);
+          prepareForNextPrompt();
+          setPlaceholderIndex(Math.floor(Math.random() * PLACEHOLDER_COUNT));
+          return;
+        }
         if (text.startsWith('/') && !isPathLike(text)) {
           // Check if it's a custom or extension command
           const [cmd, ...args] = parseCommandArgs(text.slice(1));
@@ -1308,7 +1314,7 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
                   <button
                     onClick={() => answerQuestion('y')}
                     className={`px-2 py-0.5 text-xs rounded hover:bg-bg-tertiary border border-border-default ${selectedAnswer === 'y' ? 'bg-bg-tertiary border-accent-secondary' : 'bg-bg-secondary'}`}
-                    title="Yes (Y)"
+                    title={t('promptField.answers.yes')}
                   >
                     {t('promptField.answers.yes')}
                   </button>

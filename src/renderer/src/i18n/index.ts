@@ -6,6 +6,7 @@ import en from '@common/locales/en.json';
 import zh from '@common/locales/zh.json';
 import ru from '@common/locales/ru.json';
 import ko from '@common/locales/ko.json';
+import it from '@common/locales/it.json';
 
 export const SUPPORTED_LANGUAGES = {
   en: {
@@ -24,6 +25,10 @@ export const SUPPORTED_LANGUAGES = {
     label: '한국어',
     countryCode: 'KR',
   },
+  it: {
+    label: 'Italiano',
+    countryCode: 'IT',
+  },
 };
 
 // eslint-disable-next-line import/no-named-as-default-member
@@ -36,6 +41,7 @@ void i18n
       zh: { translation: zh },
       ru: { translation: ru },
       ko: { translation: ko },
+      it: { translation: it },
     },
     fallbackLng: 'en',
     interpolation: {

@@ -39,7 +39,7 @@ export const setupIpcHandlers = (eventsHandler: EventsHandler, serverController:
   });
 
   ipcMain.on('run-prompt', async (_, baseDir: string, taskId: string, prompt: string, mode?: Mode, images?: string[]) => {
-    void eventsHandler.runPrompt(baseDir, taskId, prompt, mode, images);
+    void eventsHandler.runDesktopPrompt(baseDir, taskId, prompt, mode, images);
   });
 
   ipcMain.handle('save-prompt', async (_, baseDir: string, taskId: string, prompt: string) => {

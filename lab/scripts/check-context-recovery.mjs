@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { repoRoot, labRoot, workspaceRoot } from './prepare.mjs';
+const require = createRequire(path.join(repoRoot,'package.json'));
+const output = path.join(labRoot,'work','context-recovery.cjs');
+await require('esbuild').build({entryPoints:[path.join(repoRoot,'src/main/lab-projects/context.ts')],outfile:output,bundle:true,packages:'external',platform:'node',format:'cjs',tsconfig:path.join(repoRoot,'tsconfig.node.json')});
+const {compactLabMessages} = require(output);
+const context = JSON.parse(fs.readFileSync(path.join(workspaceRoot,'studio-lume-demo','.agent-lab','tasks','7abed691','context.json'),'utf8')).contextMessages;
+const before = JSON.stringify(context); const reduced = compactLabMessages(context);
+const users = messages => messages.filter(message=>message.role==='user');
+const calls = new Set(reduced.filter(message=>message.role==='assistant'&&Array.isArray(message.content)).flatMap(message=>message.content.filter(part=>part.type==='tool-call').map(part=>part.toolCallId)));
+const dangling = reduced.filter(message=>message.role==='tool').flatMap(message=>message.content.filter(part=>part.type==='tool-result'&&!calls.has(part.toolCallId)));
+const report = {beforeCharacters:before.length,afterCharacters:JSON.stringify(reduced).length,allUserMessagesPreserved:JSON.stringify(users(context))===JSON.stringify(users(reduced)),sourceUnchanged:JSON.stringify(context)===before,noDanglingToolResults:dangling.length===0};
+report.pass = report.afterCharacters < report.beforeCharacters *0.6 && report.allUserMessagesPreserved&&report.sourceUnchanged&&report.noDanglingToolResults;
+fs.writeFileSync(path.join(labRoot,'work','context-recovery-proof.json'),JSON.stringify(report,null,2)); console.log(report);
+if(!report.pass)process.exitCode=1;

@@ -8,6 +8,7 @@ import {
   CloudflareTunnelStatus,
   CommandsData,
   CreateTaskParams,
+  DEFAULT_AUTONOMY_MODE,
   EditFormat,
   EnvironmentVariable,
   FileEdit,
@@ -50,7 +51,9 @@ import { isBinary } from 'istextorbinary';
 import type { ModeDefinition, ExtensionConfigComponent, ExtensionOperationResult, ExtensionUIComponent } from '@common/types';
 import type { WindowManager } from '@/window-manager';
 import type { GitAskpassManager } from '@/git/git-askpass-manager';
+import type { RemoteTaskSettings } from '@/task/workflow-remote-history';
 
+import { isGovernedWorkflow, workflowProjectFor } from '@/task/workflow-policy';
 import { McpManager, McpConfigManager, AgentProfileManager } from '@/agent';
 import { MemoryManager } from '@/memory/memory-manager';
 import { ModelManager } from '@/models';
@@ -80,6 +83,7 @@ import { AIDER_DESK_TMP_DIR, LOGS_DIR } from '@/constants';
 import { EventManager } from '@/events';
 import { isElectron } from '@/app';
 import { NetworkManager } from '@/network-manager';
+import { assertLabFilePath, assertLabSetupOperation, assertLabWorkspace } from '@/lab-mode';
 
 export class EventsHandler {
   constructor(
@@ -198,6 +202,7 @@ export class EventsHandler {
   checkProject = checkProject;
 
   async addOpenProject(baseDir: string): Promise<ProjectData[]> {
+    assertLabWorkspace(baseDir);
     const projects = this.store.getOpenProjects();
     const existingProject = projects.find((p) => compareBaseDirs(p.baseDir, baseDir));
 
@@ -459,6 +464,75 @@ export class EventsHandler {
     return this.projectManager.getProject(baseDir).getTask(taskId)?.runPrompt(prompt, mode, true, undefined, true, images) || [];
   }
 
+  async runDesktopPrompt(baseDir: string, taskId: string, prompt: string, mode?: Mode, images?: string[]): Promise<ResponseCompletedData[]> {
+    if (!isGovernedWorkflow(baseDir)) {
+      if (!prompt.startsWith('/workflow ')) {
+        return this.runPrompt(baseDir, taskId, prompt, mode, images);
+      }
+      const task = this.getTaskOrThrow(baseDir, taskId);
+      task.addLogMessage('warning', 'Comando riservato al progetto pilota.', true);
+      this.eventManager.sendTaskUpdated(task.task);
+      return [];
+    }
+    await Promise.all([this.modelManager.waitForInit(), this.extensionManager.waitForInit()]);
+    return this.getTaskOrThrow(baseDir, taskId).runManagedDesktopPrompt(prompt);
+  }
+
+  async createRemoteWorkflowTask(baseDir: string, settings: RemoteTaskSettings): Promise<string> {
+    const policy = workflowProjectFor(baseDir);
+    if (!policy || (settings.autonomy && this.getProjectSettings(baseDir).autonomyModeLocked)) {
+      throw new Error('Il progetto o la modalità non sono disponibili dal telefono.');
+    }
+    const { taskId } = await this.ensureProjectAndCreateTask(baseDir, {
+      name: 'Nuova chat',
+      autonomyMode: DEFAULT_AUTONOMY_MODE,
+      provider: policy.provider,
+      model: policy.model,
+      mode: 'agent',
+      workingMode: 'local',
+      addInitialContextFiles: false,
+    });
+    if (settings.autonomy || settings.reasoning) {
+      await this.getTaskOrThrow(baseDir, taskId).updateGovernedRemoteSettings(settings);
+    }
+    return taskId;
+  }
+
+  async updateRemoteWorkflowTask(baseDir: string, taskId: string, settings: RemoteTaskSettings): Promise<void> {
+    if (!workflowProjectFor(baseDir)) {
+      throw new Error('Progetto fuori dal perimetro remoto.');
+    }
+    await this.getTaskOrThrow(baseDir, taskId).updateGovernedRemoteSettings(settings);
+  }
+
+  async readRemoteWorkflowPatch(baseDir: string, taskId: string, revision: string): Promise<string> {
+    if (!workflowProjectFor(baseDir)) {
+      throw new Error('Progetto fuori dal perimetro remoto.');
+    }
+    return this.getTaskOrThrow(baseDir, taskId).readGovernedRemotePatch(revision);
+  }
+
+  async readRemoteWorkflowTask(baseDir: string, taskId: string) {
+    if (!workflowProjectFor(baseDir)) {
+      throw new Error('Progetto fuori dal perimetro remoto.');
+    }
+    return this.getTaskOrThrow(baseDir, taskId).readGovernedTaskStatus();
+  }
+
+  async runRemoteWorkflowTask(baseDir: string, taskId: string, prompt: string): Promise<void> {
+    if (!workflowProjectFor(baseDir)) {
+      throw new Error('Progetto fuori dal perimetro remoto.');
+    }
+    await this.runDesktopPrompt(baseDir, taskId, prompt, 'agent');
+  }
+
+  async interruptRemoteWorkflowTask(baseDir: string, taskId: string): Promise<void> {
+    if (!workflowProjectFor(baseDir)) {
+      throw new Error('Progetto fuori dal perimetro remoto.');
+    }
+    await this.getTaskOrThrow(baseDir, taskId).interruptResponse();
+  }
+
   async waitForTaskIdle(baseDir: string, taskId: string): Promise<void> {
     const task = this.getTaskOrThrow(baseDir, taskId);
     await task.waitForIdle();
@@ -648,20 +722,24 @@ export class EventsHandler {
   }
 
   async addMcpServer(name: string, config: McpServerConfig, projectDir?: string): Promise<void> {
+    assertLabSetupOperation();
     await this.mcpConfigManager.addServer(projectDir, name, config);
     await this.mcpManager.reloadSingleServer(name, this.mcpConfigManager.getMergedServers(projectDir)[name]);
   }
 
   async updateMcpServer(oldName: string, name: string, config: McpServerConfig, projectDir?: string): Promise<void> {
+    assertLabSetupOperation();
     await this.mcpConfigManager.updateServer(projectDir, oldName, name, config);
     await this.mcpManager.reloadSingleServer(name, this.mcpConfigManager.getMergedServers(projectDir)[name]);
   }
 
   async removeMcpServer(name: string, projectDir?: string): Promise<void> {
+    assertLabSetupOperation();
     await this.mcpConfigManager.removeServer(projectDir, name);
   }
 
   async replaceMcpServers(servers: Record<string, McpServerConfig>, projectDir?: string): Promise<void> {
+    assertLabSetupOperation();
     await this.mcpConfigManager.replaceServers(projectDir, servers);
     const mergedServers = this.mcpConfigManager.getMergedServers(projectDir);
     await this.mcpManager.reloadAllServers(mergedServers, true);
@@ -776,6 +854,7 @@ export class EventsHandler {
       : task
         ? ((await task.resolveContextFilePath(expandedPath)) ?? path.join(baseDir, expandedPath))
         : path.join(baseDir, expandedPath);
+    assertLabFilePath(task?.getTaskDir() ?? baseDir, absolutePath);
     const fileContentBuffer = await fs.readFile(absolutePath);
 
     if (isBinary(filePath, fileContentBuffer)) {
@@ -793,6 +872,7 @@ export class EventsHandler {
       : task
         ? ((await task.resolveContextFilePath(expandedPath)) ?? path.join(baseDir, expandedPath))
         : path.join(baseDir, expandedPath);
+    assertLabFilePath(task?.getTaskDir() ?? baseDir, absolutePath);
     await fs.writeFile(absolutePath, content, 'utf-8');
     if (task) {
       await task.sendUpdatedFilesUpdated();
@@ -905,6 +985,7 @@ export class EventsHandler {
   }
 
   async scrapeWeb(baseDir: string, taskId: string, url: string, filePath?: string): Promise<void> {
+    assertLabSetupOperation();
     const content = await scrapeWeb(url);
     const project = this.projectManager.getProject(baseDir);
     const task = project.getTask(taskId);
@@ -1222,6 +1303,7 @@ export class EventsHandler {
   }
 
   async cloneProject(repositoryUrl: string, targetDir?: string): Promise<string> {
+    assertLabSetupOperation();
     this.cloneAbortController = new AbortController();
     try {
       return await cloneProjectRepository(repositoryUrl, targetDir, this.cloneAbortController.signal);
@@ -1355,11 +1437,19 @@ export class EventsHandler {
   }
 
   async createAgentProfile(profile: AgentProfile, projectDir?: string) {
+    assertLabSetupOperation();
+    if (projectDir) {
+      assertLabWorkspace(projectDir);
+    }
     await this.agentProfileManager.createProfile(profile, projectDir);
     return this.agentProfileManager.getAllProfiles();
   }
 
   async updateAgentProfile(profile: AgentProfile) {
+    assertLabSetupOperation();
+    if (profile.projectDir) {
+      assertLabWorkspace(profile.projectDir);
+    }
     // First, check if this is an extension-provided agent
     const extensionProfile = await this.extensionManager.updateAgentProfile(profile);
 
@@ -1381,6 +1471,7 @@ export class EventsHandler {
   }
 
   async deleteAgentProfile(profileId: string) {
+    assertLabSetupOperation();
     await this.agentProfileManager.deleteProfile(profileId);
     return this.agentProfileManager.getAllProfiles();
   }

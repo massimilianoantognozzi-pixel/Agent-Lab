@@ -9,6 +9,7 @@ import { EnvironmentVariable, Model, ProjectSettings, ProviderProfile, SettingsD
 import logger from '@/logger';
 import { getLangfuseEnvironmentVariables, getPostHogAiderEnvironmentVariables } from '@/telemetry';
 import { Store } from '@/store';
+import { isLabMode } from '@/lab-mode';
 
 const readEnvFile = (filePath: string): Record<string, string> | null => {
   try {
@@ -94,6 +95,9 @@ const readApiKeyFromConfFile = (filePath: string, envVarName: string): string | 
 };
 
 export const getEffectiveEnvironmentVariable = (key: string, settings?: SettingsData, projectDir?: string): EnvironmentVariable | undefined => {
+  if (isLabMode()) {
+    return undefined;
+  }
   // 1. From settings.aider.environmentVariables
   if (settings) {
     const aiderEnvVars = parse(settings.aider.environmentVariables);
@@ -219,6 +223,9 @@ export const parseAiderEnv = (settings: SettingsData): Record<string, string> =>
 };
 
 export const readAiderConfProperty = (baseDir: string, property: string): string | undefined => {
+  if (isLabMode()) {
+    return undefined;
+  }
   const projectConfigPath = path.join(baseDir, '.aider.conf.yml');
   const projectProperty = readPropertyFromConfFile(projectConfigPath, property);
   if (projectProperty) {

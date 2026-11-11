@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { promisify } from 'util';
 
 import logger from '@/logger';
+import { isLabMode, assertLabCodingProject } from '@/lab-mode';
 import { getElectronApp } from '@/app';
 
 const execAsync = promisify(exec);
@@ -709,6 +710,9 @@ export const getShellCommandArgs = (command: string): { shell: string; args: str
  * Uses non-interactive mode (-lc) to avoid triggering prompts from interactive configs (e.g. .bashrc).
  */
 export const initPath = (): void => {
+  if (isLabMode()) {
+    return;
+  }
   logger.info('Initializing PATH...');
   try {
     const userShell = os.userInfo().shell || process.env.SHELL || '/bin/sh';
@@ -735,6 +739,10 @@ export const execWithShellPath = async (
   command: string | string[],
   options?: { cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number; signal?: AbortSignal; killSignal?: NodeJS.Signals | number },
 ): Promise<{ stdout: string; stderr: string }> => {
+  const executable = Array.isArray(command) ? path.basename(command[0]) : command.trim().split(/\s+/)[0];
+  if (options?.cwd && /^git(?:\.exe)?$/i.test(executable)) {
+    assertLabCodingProject(options.cwd);
+  }
   logger.debug(`Executing command with shell path: ${command}`);
   const shellPath = getShellPath();
   const execOptions = {

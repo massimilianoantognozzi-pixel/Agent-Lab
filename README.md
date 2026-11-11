@@ -1,3 +1,30 @@
+# Agent-Lab
+
+Ambiente di sviluppo basato su [AiderDesk 0.88.0](https://github.com/hotovo/aider-desk/tree/v0.88.0), con interfaccia italiana, workflow governato e web app per il controllo dal telefono. Il PC esegue l’agente. Dalla web app puoi avviare o riprendere le chat del progetto associato, approvare il piano e consultare le verifiche.
+
+## Avvio da sorgente su Windows
+
+Il percorso di avvio è verificato su Windows x64 con Git, Node.js 24 e npm. Dalla radice del clone esegui:
+
+```powershell
+npm ci --ignore-scripts
+node node_modules/electron/install.js
+npm rebuild @homebridge/node-pty-prebuilt-multiarch
+node node_modules/patch-package/index.js
+node scripts/download-probe.mjs --current-platform-only
+npm run build:extensions
+node node_modules/electron-vite/bin/electron-vite.js build --outDir lab/work/workflow-environment-desktop-pair-build
+.\Apri-Agent-Lab-Completo.cmd
+```
+
+Al primo avvio aggiungi il tuo provider nelle impostazioni dei modelli di AiderDesk e scegli un modello nel profilo agente. Per un modello locale, installalo nel tuo runtime e configura il relativo endpoint. Il clone parte senza credenziali, pesi o profili di inferenza attivi.
+
+Segui la [guida all’ambiente governato e alla web app](lab/docs/WORKFLOW-ENVIRONMENT.md) per configurare un repository, collegare il telefono con QR e attivare l’accesso privato tramite Tailscale. Il sorgente della web app e del relay è incluso qui. La web app viene servita dal tuo PC.
+
+Agent-Lab conserva la [licenza Apache 2.0](LICENSE) e lo storico di AiderDesk. Il resto di questa pagina contiene la documentazione originale del progetto di base.
+
+---
+
 <p align="center">
   <img src="build/icon.png" alt="AiderDesk" width="160" />
 </p>

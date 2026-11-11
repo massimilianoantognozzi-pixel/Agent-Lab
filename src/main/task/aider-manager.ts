@@ -32,6 +32,7 @@ export class AiderManager {
   private currentCommand: string | null = null;
   private commandOutputs: Map<string, string> = new Map();
   private repoMap: string = '';
+  private pendingModels: { mainModel: string; weakModel: string | null; editFormat: EditFormat; environmentVariables?: Record<string, string> } | null = null;
 
   constructor(
     private readonly task: Task,
@@ -388,6 +389,12 @@ export class AiderManager {
   public handleConnectorAdded(connector: Connector): void {
     // Set aiderStarting to false when a connector with source==='aider' is added
     if (connector.source === 'aider') {
+      // Model changes made while Python starts must precede the first queued prompt.
+      if (this.pendingModels && connector.listenTo.includes('set-models')) {
+        const pending = this.pendingModels;
+        connector.sendSetModelsMessage(pending.mainModel, pending.weakModel, pending.editFormat, pending.environmentVariables);
+        this.pendingModels = null;
+      }
       this.aiderStarting = false;
       this.aiderStartError = null;
       this.eventManager.sendAiderConnectorStatus({ state: 'ready' }, this.task.getProjectDir(), this.task.taskId);
@@ -476,10 +483,9 @@ export class AiderManager {
   }
 
   private sendSetModels(mainModel: string, weakModel: string | null, editFormat: EditFormat = 'diff', environmentVariables?: Record<string, string>): void {
-    const connectors = this.getConnectors();
-    connectors
-      .filter((connector) => connector.listenTo.includes('set-models'))
-      .forEach((connector) => connector.sendSetModelsMessage(mainModel, weakModel, editFormat, environmentVariables));
+    const connectors = this.getConnectors().filter((connector) => connector.listenTo.includes('set-models'));
+    this.pendingModels = connectors.length ? null : { mainModel, weakModel, editFormat, environmentVariables };
+    connectors.forEach((connector) => connector.sendSetModelsMessage(mainModel, weakModel, editFormat, environmentVariables));
   }
 
   public setArchitectModel(architectModel: string): void {

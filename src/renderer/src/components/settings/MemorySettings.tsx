@@ -17,25 +17,25 @@ import { CodeInline } from '@/components/common/CodeInline';
 import { Slider } from '@/components/common/Slider';
 import { InfoIcon } from '@/components/common/InfoIcon';
 
-const EMBEDDING_PROVIDERS = [{ value: 'sentence-transformers', label: 'Local' }];
+const EMBEDDING_PROVIDERS = [{ value: 'sentence-transformers', labelKey: 'settings.memory.localProvider' }];
 
 const ALL_SCOPES = '__all__';
 
 const LOCAL_MODELS = [
   {
     value: 'Xenova/all-MiniLM-L6-v2',
-    label: 'MiniLM-L6 (Fast, ~90MB)',
-    description: 'Fast and lightweight model',
+    labelKey: 'settings.memory.localModels.miniLabel',
+    descriptionKey: 'settings.memory.localModels.miniDescription',
   },
   {
     value: 'BAAI/bge-small-en-v1.5',
-    label: 'BGE-Small (Good, ~130MB)',
-    description: 'Good balance of speed and quality',
+    labelKey: 'settings.memory.localModels.smallLabel',
+    descriptionKey: 'settings.memory.localModels.smallDescription',
   },
   {
     value: 'BAAI/bge-base-en-v1.5',
-    label: 'BGE-Base (Better, ~400MB)',
-    description: 'Better quality for complex tasks',
+    labelKey: 'settings.memory.localModels.baseLabel',
+    descriptionKey: 'settings.memory.localModels.baseDescription',
   },
 ];
 
@@ -234,7 +234,7 @@ export const MemorySettings = ({ settings, setSettings }: Props) => {
                   onChange={handleProviderChange}
                   options={EMBEDDING_PROVIDERS.map((provider) => ({
                     value: provider.value,
-                    label: provider.label,
+                    label: t(provider.labelKey),
                   }))}
                   className="w-full"
                 />
@@ -248,11 +248,11 @@ export const MemorySettings = ({ settings, setSettings }: Props) => {
                   onChange={handleModelChange}
                   options={LOCAL_MODELS.map((model) => ({
                     value: model.value,
-                    label: model.label,
+                    label: t(model.labelKey),
                   }))}
                   className="w-full"
                 />
-                <p className="text-xs text-text-secondary mt-1">{LOCAL_MODELS.find((m) => m.value === settings.memory.model)?.description}</p>
+                <p className="text-xs text-text-secondary mt-1">{t(LOCAL_MODELS.find((m) => m.value === settings.memory.model)?.descriptionKey ?? '')}</p>
               </div>
 
               <div>

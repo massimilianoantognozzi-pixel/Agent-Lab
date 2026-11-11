@@ -33,6 +33,8 @@ import { isAbortError, isFileNotFoundError } from '@/utils/errors';
 import { getShellCommandArgs, getShellInitCommand, getShellPath } from '@/utils/shell';
 import { BoundedOutputAccumulator, expandTilde, readFileContent, truncateToolResult, coerceBoolean } from '@/agent/utils';
 import { RIPGREP_BINARY_PATH } from '@/constants';
+import { isGeneralMode } from '@/lab-mode';
+import { observeGeneralToolResult } from '@/general-knowledge';
 
 /**
  * File lock map to prevent race conditions when multiple edits target the same file.
@@ -62,7 +64,13 @@ const withFileLock = <T>(filePath: string, operation: () => Promise<T>): Promise
   return newLock;
 };
 
-export const createPowerToolset = (task: Task, profile: AgentProfile, promptContext?: PromptContext, abortSignal?: AbortSignal): ToolSet => {
+export const createPowerToolset = (
+  task: Task,
+  profile: AgentProfile,
+  promptContext?: PromptContext,
+  abortSignal?: AbortSignal,
+  knowledgeRunId?: string,
+): ToolSet => {
   const approvalManager = new ApprovalManager(task, profile);
 
   const fileEditTool = tool({
@@ -839,6 +847,18 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           try {
             const truncatedStdout = await finishOutput(stdoutAccumulator);
             const truncatedStderr = stderrOverride ?? (await finishOutput(stderrAccumulator));
+
+            if (isGeneralMode()) {
+              await observeGeneralToolResult(
+                task.getTaskDir(),
+                task.taskId,
+                'power---bash',
+                input,
+                { stdout: truncatedStdout, stderr: truncatedStderr, exitCode },
+                knowledgeRunId,
+                { cwd: absoluteCwd },
+              ).catch((error) => logger.warn('Native command knowledge metadata could not be recorded', { error }));
+            }
 
             resolve({ stdout: truncatedStdout, stderr: truncatedStderr, exitCode });
           } catch (error) {

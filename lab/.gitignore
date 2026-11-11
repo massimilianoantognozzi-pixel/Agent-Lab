@@ -1,0 +1,8 @@
+/profile/
+/work/
+/workspaces/
+/artifacts/
+/.cache/
+/docs/AUTO-HANDOFF.md
+/scripts/checkpoint-evidence.mjs
+/scripts/export-checkpoint.mjs

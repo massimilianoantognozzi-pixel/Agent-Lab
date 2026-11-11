@@ -9,6 +9,7 @@ import { MessageActions } from './MessageActions';
 
 import { IconButton } from '@/components/common/IconButton';
 import { removeMessageActionId } from '@/stores/taskStore';
+import { localizeRuntimeMessage } from '@/i18n/runtime-messages';
 
 type Props = {
   baseDir: string;
@@ -23,6 +24,7 @@ type Props = {
 export const LogMessageBlock = ({ baseDir, taskId, message, onRemove, compact = false, onInterrupt, removeActionId }: Props) => {
   const removeMessageAction = removeActionId ?? ((actionId: string) => removeMessageActionId(taskId, message.id, actionId));
   const { t } = useTranslation();
+  const displayedContent = localizeRuntimeMessage(message.content, t, true);
   const baseClasses = 'rounded-md p-3 max-w-full break-words whitespace-pre-wrap text-xs border';
 
   const levelConfig = {
@@ -49,7 +51,7 @@ export const LogMessageBlock = ({ baseDir, taskId, message, onRemove, compact = 
   const renderMessage = () => (
     <div className="flex items-start gap-3">
       <Icon className="inline-block h-3 w-3 flex-shrink-0 mt-[3px]" />
-      <div>{t(message.content)}</div>
+      <div>{displayedContent}</div>
     </div>
   );
 
@@ -68,7 +70,7 @@ export const LogMessageBlock = ({ baseDir, taskId, message, onRemove, compact = 
         )}
         <div className="flex items-center space-x-1">
           <CopyMessageButton
-            content={t(message.content)}
+            content={displayedContent}
             className={clsx(config.tooltipClass, 'transition-colors text-text-dark group-hover:text-text-muted-light')}
             alwaysShow={true}
           />

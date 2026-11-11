@@ -46,7 +46,8 @@ export const optimizeMessages = (messages: ModelMessage[]): ModelMessage[] => {
       const thirdToolCallPart = Array.isArray(thirdMsg.content) ? thirdMsg.content.find((p) => p.type === 'tool-call') : null;
 
       // Ensure both assistant messages contain tool calls
-      if (firstToolCallPart && thirdToolCallPart) {
+      // Lab checks/reads observe mutable files. Equal arguments do not imply an equal result.
+      if (firstToolCallPart && thirdToolCallPart && !thirdToolCallPart.toolName.startsWith('lab---')) {
         // Compare the tool calls
         if (firstToolCallPart.toolName === thirdToolCallPart.toolName && JSON.stringify(firstToolCallPart.input) === JSON.stringify(thirdToolCallPart.input)) {
           const duplicateResult = fourthMsg.content.find((part) => part.type === 'tool-result' && part.toolCallId === thirdToolCallPart.toolCallId);

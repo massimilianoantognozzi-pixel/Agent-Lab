@@ -87,6 +87,11 @@ import { v4 as uuidv4 } from 'uuid';
 import debounce from 'lodash/debounce';
 import { isEqual } from 'lodash';
 
+import { assertManagedPilotDone, managedWorkflowStatePath, runManagedPilot, verifyPilotInBrowser } from './managed-pilot';
+import { assertRepositoryWorkflowDone, readRemoteRepositoryPatch, readRepositoryWorkflow, runRepositoryWorkflow } from './repository-workflow';
+import { remoteReasoning, remoteTaskLabel, remoteWorkflowMessages, remoteWorkflowTitle, type RemoteTaskSettings } from './workflow-remote-history';
+import { isGovernedWorkflow, workflowProjectFor } from './workflow-policy';
+
 import type { z } from 'zod';
 import type { ToolContent, JSONValue } from '@common/types';
 import type { RegisteredCommand } from '@/extensions/extension-manager';
@@ -96,8 +101,11 @@ import type { SmartCompactionOptions } from '@common/extensions';
 
 import { ExtensionEventMap, ExtensionManager } from '@/extensions/extension-manager';
 import { getAllFiles, isValidProjectFile } from '@/utils/file-system';
+import { isFreelanceEnabled } from '@/lab-projects/policy';
+import { projectUpdatedFiles, projectFileContents, projectFileDiff } from '@/lab-projects/files';
 import { atomicWriteJsonFile } from '@/utils/atomic-write';
 import {
+  AIDER_DESK_DATA_DIR,
   AIDER_DESK_GLOBAL_RULES_DIR,
   AIDER_DESK_PROJECT_RULES_DIR,
   AIDER_DESK_TASKS_DIR,
@@ -192,6 +200,7 @@ export class Task {
   private pendingCommandImages?: string[];
   private fileWatchHandle: WatchHandle | null = null;
   private fileWatchGeneration = 0;
+  private managedPilotRun?: AbortController;
   private isCompacting = false;
   private lastSmartCompactionMessageCount = 0;
   private smartCompactionLevel = CompactionLevel.One;
@@ -320,6 +329,14 @@ export class Task {
 
     const content = await fs.readFile(this.taskDataPath, 'utf8');
     const data = JSON.parse(content) as Partial<TaskData>;
+    if (isGovernedWorkflow(this.getProjectDir()) && data.state === DefaultTaskState.Done) {
+      try {
+        await this.assertGovernedTaskDone();
+      } catch {
+        data.state = DefaultTaskState.ReadyForReview;
+        data.completedAt = undefined;
+      }
+    }
 
     logger.debug('Loaded task data', {
       baseDir: this.project.baseDir,
@@ -472,6 +489,10 @@ export class Task {
     }
 
     const previousTaskState = this.task.state;
+    const managedPilot = isGovernedWorkflow(this.getProjectDir());
+    if (managedPilot && updates?.state === DefaultTaskState.Done) {
+      await this.assertGovernedTaskDone();
+    }
 
     logger.debug('Saving task data', {
       baseDir: this.project.baseDir,
@@ -496,6 +517,18 @@ export class Task {
     if (extensionResult.task) {
       for (const key of Object.keys(extensionResult.task)) {
         this.task[key] = extensionResult.task[key];
+      }
+    }
+
+    if (managedPilot && this.task.state === DefaultTaskState.Done) {
+      try {
+        await this.assertGovernedTaskDone();
+      } catch (error) {
+        this.task.state = DefaultTaskState.ReadyForReview;
+        this.task.completedAt = undefined;
+        if (updates?.state === DefaultTaskState.Done) {
+          throw error;
+        }
       }
     }
 
@@ -927,7 +960,7 @@ export class Task {
   }
 
   public isPromptRunning() {
-    return !!this.currentPromptContext || this.agent.isRunning() || this.isCompacting;
+    return !!this.managedPilotRun || !!this.currentPromptContext || this.agent.isRunning() || this.isCompacting;
   }
 
   public hasQueuedPrompts(): boolean {
@@ -944,6 +977,146 @@ export class Task {
     }
   }
 
+  private managedPilotStatePath(): string {
+    return managedWorkflowStatePath(AIDER_DESK_DATA_DIR, this.getProjectDir(), this.taskId);
+  }
+
+  private async assertGovernedTaskDone(): Promise<void> {
+    const policy = workflowProjectFor(this.getProjectDir());
+    if (policy) {
+      await assertRepositoryWorkflowDone(policy, this.managedPilotStatePath());
+    } else {
+      await assertManagedPilotDone(this.getProjectDir(), this.managedPilotStatePath());
+    }
+  }
+
+  public async readGovernedTaskStatus() {
+    const policy = workflowProjectFor(this.getProjectDir());
+    if (!policy) {
+      throw new Error('Progetto fuori dal perimetro remoto.');
+    }
+    const workflow = await readRepositoryWorkflow(this.managedPilotStatePath(), policy);
+    const messages = remoteWorkflowMessages(await this.getContextMessages());
+    if (workflow.phase === 'done' && !messages.some((message) => message.text === 'Ho completato le verifiche e preparato la patch.')) {
+      messages.push({ id: 'receipt-' + workflow.revision, role: 'assistant', text: 'Ho completato le verifiche e preparato la patch.' });
+    }
+    return {
+      taskId: this.taskId,
+      name: remoteTaskLabel(this.task.name),
+      state: workflow.phase === 'stale' ? 'Verifica da ripetere' : this.task.state,
+      running: !!this.managedPilotRun,
+      workflow,
+      messages,
+      autonomy: this.task.autonomyMode ?? DEFAULT_AUTONOMY_MODE,
+      autonomyLocked: this.project.getProjectSettings().autonomyModeLocked ?? false,
+      reasoning: remoteReasoning(this.task.metadata?.reasoningEffort),
+      model: policy.model,
+      access: 'project' as const,
+    };
+  }
+
+  public async updateGovernedRemoteSettings(settings: RemoteTaskSettings): Promise<void> {
+    if (!workflowProjectFor(this.getProjectDir()) || this.isPromptRunning()) {
+      throw new Error('Impostazioni del task non modificabili in questo momento.');
+    }
+    if (settings.autonomy && this.project.getProjectSettings().autonomyModeLocked && settings.autonomy !== (this.task.autonomyMode ?? DEFAULT_AUTONOMY_MODE)) {
+      throw new Error('L’autonomia è bloccata sul PC.');
+    }
+    const updates: Partial<TaskData> = {};
+    if (settings.autonomy) {
+      updates.autonomyMode = settings.autonomy;
+    }
+    if (settings.reasoning) {
+      const metadata = { ...this.task.metadata };
+      if (settings.reasoning === 'default') {
+        delete metadata.reasoningEffort;
+      } else {
+        metadata.reasoningEffort = settings.reasoning;
+      }
+      updates.metadata = metadata;
+    }
+    await this.updateTask(updates);
+  }
+
+  public async readGovernedRemotePatch(revision: string): Promise<string> {
+    const policy = workflowProjectFor(this.getProjectDir());
+    if (!policy || this.isPromptRunning()) {
+      throw new Error('Patch non disponibile in questo momento.');
+    }
+    return readRemoteRepositoryPatch(policy, this.managedPilotStatePath(), revision);
+  }
+
+  public async runManagedDesktopPrompt(prompt: string): Promise<ResponseCompletedData[]> {
+    if (!isGovernedWorkflow(this.getProjectDir())) {
+      throw new Error('Il progetto non è il pilota governato.');
+    }
+    if (this.managedPilotRun) {
+      this.addLogMessage('warning', 'Il pilota ha già un’operazione in corso.', true);
+      return [];
+    }
+    const controller = new AbortController();
+    this.managedPilotRun = controller;
+    const promptContext: PromptContext = { id: uuidv4() };
+    const request: ContextMessage = { id: promptContext.id, role: 'user', content: prompt, promptContext };
+    this.addUserMessage(request.id, prompt, promptContext);
+    this.addLogMessage('loading', 'Esecuzione del flusso governato…', false, promptContext);
+    try {
+      const profile = await this.getTaskAgentProfile();
+      const providerModel = profile ? profile.provider + '/' + profile.model : '';
+      const selectedEffort = this.task.metadata?.reasoningEffort;
+      const reasoning =
+        selectedEffort === 'low' || selectedEffort === 'medium' || selectedEffort === 'high' || selectedEffort === 'xhigh' ? selectedEffort : undefined;
+      const title = this.task.name === 'Nuova chat' ? remoteWorkflowTitle(prompt) : undefined;
+      const name = title || this.task.name || 'Pilota sviluppo governato';
+      await this.saveTask({ name, state: DefaultTaskState.InProgress, completedAt: undefined });
+      await this.addContextMessage(request);
+      const statePath = this.managedPilotStatePath();
+      const generate = async (_phase: string, instructions: string, input: string) =>
+        this.agent.generateText(providerModel, instructions, input, this.getProjectDir(), [], false, controller.signal, uuidv4(), true, reasoning);
+      const policy = workflowProjectFor(this.getProjectDir());
+      if (policy && (!profile || profile.provider !== policy.provider || profile.model !== policy.model)) {
+        throw new Error('Il task deve usare il provider e il modello autorizzati nel profilo del progetto.');
+      }
+      const result = policy
+        ? await runRepositoryWorkflow({ policy, statePath, prompt, signal: controller.signal, generate })
+        : await runManagedPilot({
+            projectDir: this.getProjectDir(),
+            statePath,
+            prompt,
+            providerModel,
+            signal: controller.signal,
+            verifyBrowser: verifyPilotInBrowser,
+            generate,
+          });
+      const state =
+        result.phase === 'done' ? DefaultTaskState.Done : result.phase === 'plan' ? DefaultTaskState.ReadyForImplementation : DefaultTaskState.ReadyForReview;
+      await this.saveTask({
+        name: this.task.name || 'Pilota sviluppo governato',
+        state,
+        completedAt: state === DefaultTaskState.Done ? new Date().toISOString() : undefined,
+      });
+      const response: ContextMessage = {
+        id: uuidv4(),
+        role: 'assistant',
+        content: [{ type: 'text', text: result.message }],
+        promptContext,
+      };
+      await this.addContextMessage(response);
+      await this.contextManager.save().catch((error) => logger.warn('Cronologia del flusso governato non salvata.', { error }));
+      this.reloadGroupMessages([response]);
+      if (result.phase === 'done') {
+        await this.sendUpdatedFilesUpdated();
+      }
+    } catch (error) {
+      await this.saveTask({ state: DefaultTaskState.Interrupted, completedAt: undefined });
+      this.addLogMessage('error', error instanceof Error ? error.message : 'Flusso del pilota interrotto.', true, promptContext);
+    } finally {
+      this.managedPilotRun = undefined;
+      this.addLogMessage('loading', undefined, true, promptContext);
+    }
+    return [];
+  }
+
   public async runPrompt(
     prompt: string,
     mode: Mode = this.getCurrentMode(),
@@ -952,6 +1125,9 @@ export class Task {
     sendNotification = true,
     images?: string[],
   ): Promise<ResponseCompletedData[]> {
+    if (isGovernedWorkflow(this.getProjectDir())) {
+      throw new Error('Il pilota usa il flusso governato della finestra desktop.');
+    }
     if (this.currentQuestion) {
       if (await this.answerQuestion('n', prompt)) {
         logger.debug('Processed by the answerQuestion function.');
@@ -1106,6 +1282,9 @@ export class Task {
   }
 
   public async runPromptInAider(mode: Mode, prompt: string, promptContext: PromptContext, sendNotification = true): Promise<ResponseCompletedData[]> {
+    if (isGovernedWorkflow(this.getProjectDir())) {
+      throw new Error('Il pilota usa il flusso governato della finestra desktop.');
+    }
     await this.waitForCurrentPromptToFinish();
 
     await this.saveTask({
@@ -1215,6 +1394,9 @@ export class Task {
     images?: string[],
     skillsToActivate?: string[],
   ): Promise<ResponseCompletedData[]> {
+    if (isGovernedWorkflow(this.getProjectDir())) {
+      throw new Error('Il pilota usa il flusso governato della finestra desktop.');
+    }
     if (waitForCurrentAgentToFinish) {
       await this.waitForCurrentAgentToFinish();
     }
@@ -2554,6 +2736,9 @@ export class Task {
   }
 
   public async getUpdatedFiles(): Promise<UpdatedFile[]> {
+    if (isFreelanceEnabled()) {
+      return projectUpdatedFiles(this.getTaskDir());
+    }
     const mainBranch = this.task.worktree ? this.task.worktree.baseBranch || (await this.gitManager.getProjectMainBranch(this.project.baseDir)) : undefined;
     const projectSettings = this.project.getProjectSettings();
     const groupMode = (projectSettings.updatedFilesGroupMode as UpdatedFilesGroupMode) || UpdatedFilesGroupMode.Grouped;
@@ -2561,6 +2746,9 @@ export class Task {
   }
 
   public async getUpdatedFileDiff(filePath: string, commitHash?: string, previousPath?: string): Promise<string> {
+    if (isFreelanceEnabled()) {
+      return projectFileDiff(this.getTaskDir(), filePath);
+    }
     const worktreePath = this.getTaskDir();
     let mainBranch: string | undefined = undefined;
     if (this.task.workingMode === 'worktree') {
@@ -2570,6 +2758,9 @@ export class Task {
   }
 
   public async getUpdatedFileContents(filePath: string, commitHash?: string, previousPath?: string): Promise<{ oldContent: string; newContent: string }> {
+    if (isFreelanceEnabled()) {
+      return projectFileContents(this.getTaskDir(), filePath);
+    }
     const worktreePath = this.getTaskDir();
     let mainBranch: string | undefined = undefined;
     if (this.task.workingMode === 'worktree') {
@@ -2602,7 +2793,7 @@ export class Task {
           if (fileName.endsWith('.md')) {
             const absolutePath = path.join(AIDER_DESK_GLOBAL_RULES_DIR, fileName);
             // Convert to relative path with ~/ prefix
-            const relativePath = path.join('~', path.relative(homeDir, absolutePath));
+            const relativePath = `~/${path.relative(homeDir, absolutePath).split(path.sep).join('/')}`;
             ruleFiles.push({
               path: relativePath,
               readOnly: true,
@@ -2990,6 +3181,10 @@ export class Task {
   }
 
   public async interruptResponse(interruptId?: string) {
+    if (this.managedPilotRun) {
+      this.managedPilotRun.abort();
+      return;
+    }
     const extensionResult = await this.extensionManager.dispatchEvent('onInterrupted', { interruptId }, this.project, this);
     if (extensionResult.blocked) {
       logger.debug('Interrupt blocked by extension', { interruptId });
@@ -3422,6 +3617,9 @@ export class Task {
   }
 
   private async shouldStartAider(): Promise<boolean> {
+    if (isGovernedWorkflow(this.getProjectDir())) {
+      return false;
+    }
     const agentProfile = await this.getTaskAgentProfile();
     return AIDER_MODES.includes(this.getCurrentMode()) || (agentProfile?.useAiderTools ?? false) || (agentProfile?.includeRepoMap ?? false);
   }
@@ -4147,6 +4345,9 @@ export class Task {
   }
 
   public async runCustomCommand(commandName: string, args: string[], mode: Mode = 'agent', images?: string[]): Promise<void> {
+    if (isGovernedWorkflow(this.getProjectDir())) {
+      throw new Error('Usa il flusso governato per i comandi di questo progetto.');
+    }
     if (this.isPromptRunning()) {
       // Queue the custom command for later execution
       const queuedPrompt: QueuedPromptData = {
@@ -4286,6 +4487,9 @@ ${error.stderr}`,
   }
 
   public async updateTask(updates: Partial<TaskData>, updateTimestamps = true): Promise<TaskData> {
+    if (isGovernedWorkflow(this.getProjectDir()) && updates.state === DefaultTaskState.Done) {
+      await this.assertGovernedTaskDone();
+    }
     const previousTaskString = JSON.stringify(this.task);
 
     // Handle worktree configuration changes

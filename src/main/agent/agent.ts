@@ -15,6 +15,7 @@ import {
   ModelCallSettings,
   PromptContext,
   ProviderProfile,
+  Reasoning,
   ToolApprovalState,
   UsageReportData,
 } from '@common/types';
@@ -56,6 +57,7 @@ import { createAiderToolset } from './tools/aider';
 import { createHelpersToolset } from './tools/helpers';
 import { createMemoryToolset } from './tools/memory';
 import { createSkillsToolset } from './tools/skills';
+import { createGeneralKnowledgeTools } from './tools/general-knowledge';
 import { McpManager } from './mcp-manager';
 import { ApprovalManager } from './tools/approval-manager';
 import { convertImageToolResults } from './message-preparation/provider-compatibility';
@@ -69,6 +71,7 @@ import {
 } from './utils';
 import { extractReasoningMiddleware } from './middlewares/extract-reasoning-middleware';
 import { CompactionLevel, generateCompactedSummary, getReloadableMessages, getSubagentOldResultIds, smartCompactMessages } from './compaction';
+import { createLabProjectTools } from './tools/lab-project';
 
 import type { ToolsetToolEntry } from '@common/extensions';
 import type { TextPart } from '@ai-sdk/provider-utils';
@@ -79,6 +82,7 @@ import { MemoryManager } from '@/memory/memory-manager';
 import { PromptsManager } from '@/prompts';
 import { AIDER_DESK_PROJECT_RULES_DIR } from '@/constants';
 import { Task } from '@/task';
+import { isGovernedWorkflow } from '@/task/workflow-policy';
 import { Store } from '@/store';
 import logger from '@/logger';
 import { prepareMessagesForModel } from '@/agent/message-preparation';
@@ -89,6 +93,11 @@ import { createSubagentsToolset } from '@/agent/tools/subagents';
 import { AgentProfileManager } from '@/agent/agent-profile-manager';
 import { McpConfigManager } from '@/agent/mcp-config-manager';
 import { ExtensionManager } from '@/extensions/extension-manager';
+import { assertLabToolInput, isAllowedLabToolName, isLabMode, isGeneralMode } from '@/lab-mode';
+import { beginGeneralKnowledgeRun, observeGeneralToolResult, compileGeneralKnowledge, endGeneralKnowledgeRun } from '@/general-knowledge';
+import { isLocalLabEnabled } from '@/lab-local-model';
+import { isFreelanceEnabled } from '@/lab-projects/policy';
+import { compactLabMessages } from '@/lab-projects/context';
 
 const MAX_RETRIES = 3;
 
@@ -398,6 +407,7 @@ export class Agent {
     resultMessages?: ContextMessage[],
     abortSignal?: AbortSignal,
     promptContext?: PromptContext,
+    knowledgeRunId?: string,
   ): Promise<ToolSet> {
     logger.debug('getAvailableTools', {
       enabledServers: profile.enabledServers,
@@ -407,6 +417,19 @@ export class Agent {
     const approvalManager = new ApprovalManager(task, profile);
 
     const toolSet: ToolSet = {};
+
+    if (isFreelanceEnabled()) {
+      const generate = (system: string, prompt: string) =>
+        this.generateText(`${provider.id}/${model}`, system, prompt, task.getProjectDir(), [], true, abortSignal, task.taskId);
+      const skills = profile.useSkillsTools ? await createSkillsToolset(task, profile, promptContext) : {};
+      return this.wrapToolsWithHooks(
+        task,
+        profile,
+        { ...skills, ...createLabProjectTools(task, approvalManager, generate, abortSignal) },
+        abortSignal,
+        promptContext,
+      );
+    }
 
     // MCP tools
     const mcpTools = await this.mcpManager.createToolset(
@@ -425,7 +448,7 @@ export class Agent {
     }
 
     if (profile.usePowerTools) {
-      const powerTools = createPowerToolset(task, profile, promptContext, abortSignal);
+      const powerTools = createPowerToolset(task, profile, promptContext, abortSignal, knowledgeRunId);
       Object.assign(toolSet, powerTools);
     }
 
@@ -470,6 +493,14 @@ export class Agent {
     // Add helper tools
     const helperTools = createHelpersToolset();
     Object.assign(toolSet, helperTools);
+    if (isGeneralMode()) {
+      Object.assign(
+        toolSet,
+        createGeneralKnowledgeTools(task.getTaskDir(), model, (system, prompt) =>
+          this.generateText(`${provider.id}/${model}`, system, prompt, task.getProjectDir(), [], true, abortSignal, task.taskId),
+        ),
+      );
+    }
 
     // Add provider-specific tools
     const providerTools = await this.modelManager.getProviderTools(provider, model);
@@ -504,9 +535,13 @@ export class Agent {
     const wrappedToolSet: ToolSet = {};
 
     for (const [toolName, toolDef] of Object.entries(toolSet)) {
+      if (isLabMode() && !isAllowedLabToolName(toolName)) {
+        continue;
+      }
       wrappedToolSet[toolName] = {
         ...toolDef,
         execute: async (input: Record<string, unknown> | undefined, options: ToolExecutionOptions<unknown>) => {
+          assertLabToolInput(toolName, input, task.getTaskDir());
           let effectiveInput = input as Record<string, unknown> | undefined;
           const [serverName, messageToolName] = extractServerNameToolName(toolName);
 
@@ -524,6 +559,7 @@ export class Agent {
 
           // Use modified input from extension if provided
           effectiveInput = (toolCalledExtensionResult.input ?? effectiveInput) as Record<string, unknown> | undefined;
+          assertLabToolInput(toolName, effectiveInput, task.getTaskDir());
 
           if (!options.abortSignal && abortSignal) {
             options.abortSignal = abortSignal;
@@ -568,6 +604,9 @@ export class Agent {
     images?: string[],
     skillsToActivate?: string[],
   ): Promise<ContextMessage[]> {
+    if (isGovernedWorkflow(task.getProjectDir())) {
+      throw new Error('Il pilota non usa il ciclo agente con strumenti liberi.');
+    }
     let contextMessages = initialContextMessages ?? (await task.getContextMessages());
     let contextFiles = initialContextFiles ?? (await task.getContextFiles());
 
@@ -770,6 +809,7 @@ export class Agent {
       return resultMessages;
     }
 
+    const knowledgeRunId = isGeneralMode() ? uuidv4() : undefined;
     const toolSet = await this.getAvailableTools(
       task,
       mode,
@@ -780,6 +820,7 @@ export class Agent {
       resultMessages,
       effectiveAbortSignal,
       promptContext,
+      knowledgeRunId,
     );
 
     logger.info(`Running prompt with ${Object.keys(toolSet).length} tools.`);
@@ -796,6 +837,9 @@ export class Agent {
         providerName: provider.provider.name,
         modelName: modelName,
       });
+      if (knowledgeRunId) {
+        await beginGeneralKnowledgeRun(task.getTaskDir(), task.taskId, knowledgeRunId);
+      }
 
       const model = await this.modelManager.createLlm(
         provider,
@@ -984,7 +1028,16 @@ export class Agent {
           }
 
           try {
-            currentStepMessages = await this.processStep(currentResponseId, stepResult, task, provider, modelName, promptContext, effectiveAbortSignal);
+            currentStepMessages = await this.processStep(
+              currentResponseId,
+              stepResult,
+              task,
+              provider,
+              modelName,
+              promptContext,
+              effectiveAbortSignal,
+              knowledgeRunId,
+            );
             const extensionResult = await this.extensionManager.dispatchEvent(
               'onAgentStepFinished',
               {
@@ -1173,6 +1226,18 @@ export class Agent {
                 streamingMessageIds.add(chunk.toolCallId);
                 task.addToolMessage(chunk.toolCallId, serverName, toolName, chunk.input, safeStringifyToolOutput(chunk.output), undefined, toolPromptContext);
                 task.addLogMessage('loading', undefined, false, promptContext);
+              } else if (chunk.type === 'tool-error') {
+                const [serverName, toolName] = extractServerNameToolName(chunk.toolName);
+                const message = chunk.error instanceof Error ? chunk.error.message : String(chunk.error);
+                task.addToolMessage(
+                  chunk.toolCallId,
+                  serverName,
+                  toolName,
+                  chunk.input as Record<string, unknown>,
+                  safeStringifyToolOutput({ isError: true, content: [{ type: 'text', text: message }] }),
+                  undefined,
+                  promptContext,
+                );
               }
             }
           } catch (streamError) {
@@ -1259,6 +1324,7 @@ export class Agent {
             continue;
           }
           logger.warn('Finish reason is "stop" but the step produced no usable output. Max retries reached, stopping.');
+          throw new Error('Il modello ha terminato senza restituire testo o operazioni utilizzabili. Il lavoro non e completato; i file restano conservati.');
         }
 
         // Check for 'stop' with trailing tool message
@@ -1301,6 +1367,26 @@ export class Agent {
         }
       }
 
+      if (isGeneralMode()) {
+        try {
+          const entry = await compileGeneralKnowledge(
+            task.getTaskDir(),
+            `${provider.id}/${modelName}`,
+            (system, prompt) =>
+              this.generateText(`${provider.id}/${modelName}`, system, prompt, task.getProjectDir(), [], true, effectiveAbortSignal, task.taskId),
+            knowledgeRunId,
+          );
+          if (entry) {
+            task.addLogMessage('info', 'Knowledge Base aggiornata dal modello con le prove del lavoro.', false, promptContext);
+          }
+        } catch (error) {
+          if (!effectiveAbortSignal?.aborted) {
+            task.addLogMessage('warning', 'Knowledge Base non aggiornata: ' + (error instanceof Error ? error.message : String(error)), false, promptContext);
+          }
+        } finally {
+          endGeneralKnowledgeRun(task.getTaskDir(), task.taskId, knowledgeRunId);
+        }
+      }
       const extensionResult = await this.extensionManager.dispatchEvent(
         'onAgentFinished',
         {
@@ -1351,6 +1437,9 @@ export class Agent {
       });
     } finally {
       // Clean up abort controller only if we created it
+      if (knowledgeRunId) {
+        endGeneralKnowledgeRun(task.getTaskDir(), task.taskId, knowledgeRunId);
+      }
       if (controllerId) {
         this.abortControllers.delete(controllerId);
         logger.debug('Cleaned up abort controller', {
@@ -1601,6 +1690,9 @@ export class Agent {
   }
 
   private async prepareMessages(task: Task, profile: AgentProfile, contextMessages: ContextMessage[], contextFiles: ContextFile[]): Promise<ModelMessage[]> {
+    if (isFreelanceEnabled()) {
+      contextMessages = compactLabMessages(contextMessages);
+    }
     const messages: ModelMessage[] = [];
 
     // Add repo map if enabled
@@ -1643,6 +1735,8 @@ export class Agent {
     abortable = true,
     abortSignal?: AbortSignal,
     sessionId?: string,
+    streamResponse = false,
+    reasoning?: Reasoning,
   ): Promise<string | undefined> {
     const [providerId, modelName] = extractProviderModel(modelId);
     const providers = this.modelManager.getProviders();
@@ -1654,8 +1748,8 @@ export class Agent {
     const settings = this.store.getSettings();
     const model = await this.modelManager.createLlm(provider, modelName, settings, projectDir, undefined, systemPrompt, undefined, sessionId);
     const cacheControl = this.modelManager.getCacheControl(provider, modelName);
-    const providerOptions = this.modelManager.getProviderOptions(provider, modelName);
-    const providerParameters = this.modelManager.getProviderParameters(provider, modelName);
+    const providerOptions = this.modelManager.getProviderOptions(provider, modelName, reasoning);
+    const providerParameters = this.modelManager.getProviderParameters(provider, modelName, reasoning);
 
     const controllerId = uuidv4();
     const newController = abortable ? new AbortController() : null;
@@ -1668,6 +1762,7 @@ export class Agent {
       providerId: provider.id,
       providerName: provider.provider.name,
       modelName,
+      reasoning: reasoning ?? 'provider-default',
       systemPrompt: systemPrompt.substring(0, 100),
       prompt: prompt.substring(0, 100),
     });
@@ -1679,17 +1774,20 @@ export class Agent {
     });
 
     try {
-      const result = await generateText({
+      const options = {
         model,
         instructions: systemPrompt,
         messages: await prepareMessagesForModel(messages as ModelMessage[], cacheControl),
+        reasoning,
         abortSignal: effectiveAbortSignal,
         providerOptions,
         ...providerParameters,
         telemetry: this.getTelemetrySettings(),
-      });
-
-      return result.text;
+      };
+      if (streamResponse) {
+        return await streamText(options).text;
+      }
+      return (await generateText(options)).text;
     } catch (error) {
       if (effectiveAbortSignal?.aborted) {
         logger.info('Generating text aborted by user');
@@ -1863,6 +1961,7 @@ export class Agent {
     model: string,
     promptContext?: PromptContext,
     abortSignal?: AbortSignal,
+    knowledgeRunId?: string,
   ): Promise<ContextMessage[]> {
     logger.info(`Step finished. Reason: ${finishReason} (${rawFinishReason})`, {
       currentResponseId,
@@ -1893,9 +1992,14 @@ export class Agent {
     let localReasoningText: string | undefined;
     let localText: string | undefined;
 
-    const processToolResult = (toolResult: TypedToolResult<TOOLS>, isLast: boolean) => {
+    const processToolResult = async (toolResult: TypedToolResult<TOOLS>, isLast: boolean) => {
       const [serverName, toolName] = extractServerNameToolName(toolResult.toolName);
       const toolPromptContext = extractPromptContextFromToolResult(toolResult.output) ?? promptContext;
+      if (isGeneralMode()) {
+        await observeGeneralToolResult(task.getTaskDir(), task.taskId, toolResult.toolName, toolResult.input, toolResult.output, knowledgeRunId).catch(
+          (error) => logger.warn('Knowledge evidence could not be recorded', { error }),
+        );
+      }
 
       // Update the existing tool message with the result
       // Only attach usage report to the last tool message when there is no assistant message
@@ -1945,8 +2049,20 @@ export class Agent {
         const toolResult = toolResults.find((toolResult) => toolResult.toolCallId === part.toolCallId);
         if (toolResult) {
           toolResults = toolResults.filter((toolResult) => toolResult.toolCallId !== part.toolCallId);
-          processToolResult(toolResult, i === content.length - 1 && toolResults.length === 0);
+          await processToolResult(toolResult, i === content.length - 1 && toolResults.length === 0);
         }
+      } else if (part.type === 'tool-error') {
+        const [serverName, toolName] = extractServerNameToolName(part.toolName);
+        const message = part.error instanceof Error ? part.error.message : String(part.error);
+        task.addToolMessage(
+          part.toolCallId,
+          serverName,
+          toolName,
+          part.input as Record<string, unknown>,
+          safeStringifyToolOutput({ isError: true, content: [{ type: 'text', text: message }] }),
+          !hasAssistantMessage && i === content.length - 1 ? usageReport : undefined,
+          promptContext,
+        );
       }
     }
 
@@ -1967,7 +2083,7 @@ export class Agent {
     // Process successful tool results *after* sending text/reasoning and handling errors
     for (let i = 0; i < toolResults.length; i++) {
       const toolResult = toolResults[i];
-      processToolResult(toolResult, i === toolResults.length - 1);
+      await processToolResult(toolResult, i === toolResults.length - 1);
     }
 
     if (!abortSignal?.aborted) {
@@ -2041,7 +2157,8 @@ export class Agent {
       contextCompactionType,
     });
 
-    const lastUsageReportMessage = [...resultMessages].reverse().find((m) => (m.role === 'assistant' || m.role === 'tool') && m.usageReport);
+    const tokenHistory = isLocalLabEnabled() ? [...contextMessages, ...resultMessages] : resultMessages;
+    const lastUsageReportMessage = [...tokenHistory].reverse().find((m) => (m.role === 'assistant' || m.role === 'tool') && m.usageReport);
     const usageReport = lastUsageReportMessage?.usageReport;
     const maxTokens = this.modelManager.getModelSettings(provider.id, model)?.maxInputTokens;
 
@@ -2060,9 +2177,9 @@ export class Agent {
     // prompt — so a single large result (e.g. parallel file reads) can silently push
     // the request past the model's context limit. Add an estimate for the trailing
     // messages so the threshold reflects the real next-prompt size.
-    const lastReportIndex = resultMessages.indexOf(lastUsageReportMessage);
-    if (lastReportIndex >= 0 && lastReportIndex < resultMessages.length - 1) {
-      const trailingMessages = convertImageToolResults(resultMessages.slice(lastReportIndex + 1) as ModelMessage[]);
+    const lastReportIndex = tokenHistory.indexOf(lastUsageReportMessage);
+    if (lastReportIndex >= 0 && lastReportIndex < tokenHistory.length - 1) {
+      const trailingMessages = convertImageToolResults(tokenHistory.slice(lastReportIndex + 1) as ModelMessage[]);
       const trailingTokens = estimateMessageTokens(trailingMessages);
       totalTokens += trailingTokens;
       logger.debug('Added trailing (post-usage-report) tokens to context total', { trailingTokens, totalTokens });
@@ -2183,7 +2300,9 @@ export class Agent {
         });
         messages.push(...(resultMessages as ModelMessage[]));
       } else if (contextCompactionType === ContextCompactionType.Smart) {
-        const compactedMessages = await task.smartCompactConversation([...contextMessages, ...resultMessages], 'Previous conversation has been compacted.');
+        const compactedMessages = isFreelanceEnabled()
+          ? compactLabMessages([...contextMessages, ...resultMessages])
+          : await task.smartCompactConversation([...contextMessages, ...resultMessages], 'Previous conversation has been compacted.');
 
         contextMessages.length = 0;
         messages.length = 0;

@@ -9,6 +9,7 @@ import type { FeatureExtractionPipeline } from '@huggingface/transformers';
 import { AIDER_DESK_CACHE_DIR, AIDER_DESK_MEMORY_FILE } from '@/constants';
 import logger from '@/logger';
 import { Store } from '@/store';
+import { isLabMode } from '@/lab-mode';
 
 type LanceDbModule = typeof import('@lancedb/lancedb');
 type TransformersModule = typeof import('@huggingface/transformers');
@@ -159,6 +160,9 @@ export class MemoryManager {
    * This must be called before using other methods.
    */
   public async init(config: MemoryConfig = this.store.getSettings().memory): Promise<void> {
+    if (isLabMode()) {
+      return;
+    }
     if (this.isInitialized) {
       return;
     }
@@ -244,6 +248,9 @@ export class MemoryManager {
   }
 
   async settingsChanged(oldSettings: SettingsData, newSettings: SettingsData): Promise<void> {
+    if (isLabMode()) {
+      return;
+    }
     const oldProvider = oldSettings.memory.provider;
     const oldModel = oldSettings.memory.model;
     const newProvider = newSettings.memory.provider;

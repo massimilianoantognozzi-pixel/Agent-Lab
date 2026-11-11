@@ -9,6 +9,7 @@ import { Store } from '@/store';
 import logger from '@/logger';
 import { POSTHOG_PUBLIC_API_KEY, POSTHOG_HOST, APP_TYPE, PRODUCT_TELEMETRY_DISTINCT_ID } from '@/constants';
 import { getElectronApp } from '@/app';
+import { isLabMode } from '@/lab-mode';
 
 export class TelemetryManager {
   private readonly store: Store;
@@ -40,6 +41,9 @@ export class TelemetryManager {
   }
 
   async init(): Promise<void> {
+    if (isLabMode()) {
+      return;
+    }
     try {
       await import('./open-telemetry');
 

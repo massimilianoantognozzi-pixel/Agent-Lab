@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'fs';
 
 import { compareBaseDirs, delay } from '@common/utils';
 import { ContextMenuParams } from '@common/types';
+import { nativeMenu as italianMenu } from '@common/locales/it.json';
 import { electronApp, is, optimizer } from '@electron-toolkit/utils';
 import { app, BrowserWindow, dialog, Menu, session, shell } from 'electron';
 
@@ -28,7 +29,7 @@ process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled promise rejection:', reason);
 });
 
-const setupCustomMenu = (createWindowFn: () => void): void => {
+const setupCustomMenu = (createWindowFn: () => void, showPhonePairing?: (parent: BrowserWindow) => Promise<void>): void => {
   const menuTemplate: Electron.MenuItemConstructorOptions[] = [
     // File menu
     {
@@ -106,6 +107,29 @@ const setupCustomMenu = (createWindowFn: () => void): void => {
             BrowserWindow.getFocusedWindow()?.webContents.send('show-view', 'settings/server');
           },
         },
+        ...(showPhonePairing
+          ? [
+              {
+                id: 'agentlab-pair-phone',
+                label: 'Pair phone',
+                click: () => {
+                  const windows = windowManager.getAllWindows();
+                  const parent = windows.find((window) => window.isFocused()) ?? windowManager.getMainWindow() ?? windows[0];
+                  if (!parent) {
+                    return;
+                  }
+                  void showPhonePairing(parent).catch(() => {
+                    if (!parent.isDestroyed()) {
+                      void dialog.showMessageBox(parent, {
+                        type: 'error',
+                        message: 'Impossibile aprire il QR di associazione.',
+                      });
+                    }
+                  });
+                },
+              },
+            ]
+          : []),
         {
           label: 'About',
           click: () => {
@@ -116,7 +140,13 @@ const setupCustomMenu = (createWindowFn: () => void): void => {
     },
   ];
 
-  const menu = Menu.buildFromTemplate(menuTemplate);
+  const translate = (items: Electron.MenuItemConstructorOptions[]): Electron.MenuItemConstructorOptions[] =>
+    items.map((item) => ({
+      ...item,
+      ...(item.label && Object.hasOwn(italianMenu, item.label) ? { label: italianMenu[item.label as keyof typeof italianMenu] } : {}),
+      ...(Array.isArray(item.submenu) ? { submenu: translate(item.submenu) } : {}),
+    }));
+  const menu = Menu.buildFromTemplate(store.getSettings().language.startsWith('it') ? translate(menuTemplate) : menuTemplate);
   Menu.setApplicationMenu(menu);
 };
 
@@ -345,9 +375,6 @@ app.whenReady().then(async () => {
     if (!HEADLESS_MODE) {
       if (DISABLE_MENU) {
         Menu.setApplicationMenu(null);
-      } else {
-        // Setup custom menu only in GUI mode - pass createNewWindow function
-        setupCustomMenu(() => void createNewWindow());
       }
 
       app.on('browser-window-created', (_, window) => {
@@ -397,6 +424,9 @@ app.whenReady().then(async () => {
 
     // Initialize managers (shared across all windows) — creates pythonInstaller
     const managers = await initManagers(store, windowManager);
+    if (!HEADLESS_MODE && !DISABLE_MENU) {
+      setupCustomMenu(() => void createNewWindow(), managers.showPhonePairing);
+    }
 
     try {
       // performStartUp is now non-blocking — it kicks off background installation

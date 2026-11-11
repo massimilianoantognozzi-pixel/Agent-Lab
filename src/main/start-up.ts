@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import { PythonDependenciesInstaller } from '@/python-dependencies-installer';
 import { AIDER_DESK_DATA_DIR, SETUP_COMPLETE_FILENAME, PYTHON_VENV_DIR } from '@/constants';
 import logger from '@/logger';
+import { isLabMode } from '@/lab-mode';
 
 export type UpdateProgressData = {
   step: string;
@@ -24,6 +25,10 @@ export type UpdateProgressFunction = (data: UpdateProgressData) => void;
  * @returns true if the app should proceed (always true now — errors are handled async)
  */
 export const performStartUp = async (pythonInstaller: PythonDependenciesInstaller, updateProgress?: UpdateProgressFunction): Promise<boolean> => {
+  if (isLabMode() || process.env.AIDER_DESK_WORKFLOW_PILOT_DIR) {
+    logger.info('Agent Lab: automatic Python setup disabled.');
+    return true;
+  }
   logger.info('Starting AiderDesk setup process (fast path)');
 
   if (fs.existsSync(SETUP_COMPLETE_FILENAME) && fs.existsSync(PYTHON_VENV_DIR)) {

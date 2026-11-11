@@ -14,6 +14,7 @@ import { MemoryManager } from '@/memory/memory-manager';
 import { PromptsManager } from '@/prompts';
 import { ExtensionManager } from '@/extensions/extension-manager';
 import { PythonDependenciesInstaller } from '@/python-dependencies-installer';
+import { assertLabWorkspace, assertLabCodingProject } from '@/lab-mode';
 
 export class ProjectManager {
   public readonly gitManager: GitManager;
@@ -64,6 +65,8 @@ export class ProjectManager {
   }
 
   public getProject(baseDir: string) {
+    assertLabWorkspace(baseDir);
+    assertLabCodingProject(baseDir);
     let project = this.findProject(baseDir);
 
     if (!project) {

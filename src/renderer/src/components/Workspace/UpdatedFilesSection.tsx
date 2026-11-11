@@ -404,7 +404,7 @@ export const UpdatedFilesSectionComponent = ({
           onClick={() => toggleGroup(group.id)}
         >
           {isUncommitted ? (
-            <span className="text-2xs font-normal text-text-secondary truncate mr-2 flex-grow">UNCOMMITTED</span>
+            <span className="text-2xs font-normal text-text-secondary truncate mr-2 flex-grow">{t('contextFiles.uncommitted')}</span>
           ) : (
             <Tooltip content={group.commitMessage || ''}>
               <span className="text-2xs font-normal text-text-secondary truncate mr-2 flex-grow">{group.commitHash?.slice(0, 7)}</span>
@@ -424,7 +424,7 @@ export const UpdatedFilesSectionComponent = ({
         </div>
       );
     },
-    [toggleGroup],
+    [toggleGroup, t],
   );
 
   const hasAnyContent = (isGrouped ? commitGroups.length > 0 : updatedFiles.length > 0) && visitedSections.has('updated');

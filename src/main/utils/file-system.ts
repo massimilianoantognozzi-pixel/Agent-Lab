@@ -8,6 +8,8 @@ import { glob } from 'glob';
 
 import logger from '@/logger';
 import { AIDER_DESK_PROJECTS_DIR } from '@/constants';
+import { isFreelanceEnabled, sourceFiles } from '@/lab-projects/policy';
+import { isGeneralMode } from '@/lab-mode';
 // @ts-expect-error filenamify is not typed properly
 const filenamify = filenamifyImport.default;
 
@@ -267,6 +269,12 @@ const getIgnoreGlobPatterns = async (gitignorePath: string): Promise<string[]> =
 };
 
 export const getAllFiles = async (baseDir: string, useGit = true): Promise<string[]> => {
+  if (isGeneralMode() && !fs.existsSync(path.join(baseDir, '.git'))) {
+    return getAllFilesFromFS(baseDir, [...(await getIgnoreGlobPatterns(path.join(baseDir, '.gitignore'))), '.git/**', '.aider-desk/**', '.agent-lab/**']);
+  }
+  if (isFreelanceEnabled()) {
+    return sourceFiles(baseDir);
+  }
   try {
     if (useGit) {
       // Try to use git first

@@ -1,7 +1,9 @@
 import { LoadingMessage } from '@common/types';
+import { useTranslation } from 'react-i18next';
 
 import { useTypingAnimation } from '@/hooks/useTypingAnimation';
 import { MessageActions } from '@/components/message/MessageActions';
+import { localizeRuntimeMessage } from '@/i18n/runtime-messages';
 
 type Props = {
   message: LoadingMessage;
@@ -11,7 +13,8 @@ type Props = {
 };
 
 export const LoadingMessageBlock = ({ message, baseDir, taskId, onInterrupt }: Props) => {
-  const displayedText = useTypingAnimation(message.content, 60, 3000);
+  const { t } = useTranslation();
+  const displayedText = useTypingAnimation(localizeRuntimeMessage(message.content, t), 60, 3000);
 
   const baseClasses = 'rounded-md p-3 max-w-full break-words whitespace-pre-wrap text-xs bg-bg-secondary border border-border-dark-light text-text-primary';
 

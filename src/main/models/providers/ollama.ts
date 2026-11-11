@@ -7,6 +7,7 @@ import type { LanguageModel } from 'ai';
 
 import { AiderModelMapping, LlmProviderStrategy, LoadModelsResponse } from '@/models';
 import logger from '@/logger';
+import { createOllamaDiagnosticFetch } from '@/models/ollama-diagnostics';
 import { getEffectiveEnvironmentVariable } from '@/utils';
 import { getDefaultUsageReport } from '@/models/providers/default';
 
@@ -100,6 +101,7 @@ export const createOllamaLlm = (profile: ProviderProfile, model: Model, settings
   const ollamaInstance = createOllama({
     baseURL: normalized,
     headers: profile.headers,
+    ...(process.env.AIDER_DESK_SYNTHETIC_RESPONSE_TRACE ? { fetch: createOllamaDiagnosticFetch(process.env.AIDER_DESK_SYNTHETIC_RESPONSE_TRACE) } : {}),
   });
   return wrapLanguageModel({
     model: ollamaInstance(model.id),

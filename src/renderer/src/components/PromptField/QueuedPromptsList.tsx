@@ -72,7 +72,7 @@ const SortableQueuedPromptItem = ({ prompt, onRemove, onSendNow, onEdit }: Sorta
         {...attributes}
         {...listeners}
         className="cursor-grab active:cursor-grabbing text-text-muted hover:text-text-primary transition-colors touch-none"
-        aria-label="Drag to reorder"
+        aria-label={t('promptField.dragToReorder')}
       >
         <MdDragIndicator size={16} />
       </button>

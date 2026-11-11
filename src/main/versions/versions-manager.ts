@@ -9,6 +9,7 @@ import logger from '@/logger';
 import { Store } from '@/store';
 import { EventManager } from '@/events';
 import { getElectronApp, isDev } from '@/app';
+import { isLabMode } from '@/lab-mode';
 
 export class VersionsManager {
   private readonly checkInterval = 10 * 60 * 1000; // 10 minutes
@@ -26,6 +27,9 @@ export class VersionsManager {
   }
 
   async getVersions(forceRefresh = false): Promise<VersionsInfo> {
+    if (isLabMode()) {
+      return { ...this.versionsInfo };
+    }
     if (!forceRefresh && this.versionsInfo) {
       return this.versionsInfo;
     }
@@ -59,7 +63,12 @@ export class VersionsManager {
 
     let aiderDeskAvailableVersion: string | null = null;
     let releaseNotes: string | null = null;
-    if (!aiderDeskCurrentVersion.endsWith('-dev') && !this.versionsInfo?.aiderDeskNewVersionReady && !this.versionsInfo?.aiderDeskDownloadProgress) {
+    if (
+      app.isPackaged &&
+      !aiderDeskCurrentVersion.endsWith('-dev') &&
+      !this.versionsInfo?.aiderDeskNewVersionReady &&
+      !this.versionsInfo?.aiderDeskDownloadProgress
+    ) {
       try {
         const result = await autoUpdater.checkForUpdates();
         if (result && result.updateInfo.version !== aiderDeskCurrentVersion) {
@@ -106,9 +115,17 @@ export class VersionsManager {
   }
 
   private async init(): Promise<void> {
+    if (isLabMode()) {
+      return;
+    }
     const app = getElectronApp();
     if (!app) {
       logger.info('Skipping versions manager initialization in non-Electron environment');
+      return;
+    }
+    // A source checkout has no installer/update manifest. Preserve normal packaged updates.
+    if (!app.isPackaged) {
+      this.updateVersionsInfo({ aiderDeskCurrentVersion: app.getVersion() });
       return;
     }
 
@@ -183,6 +200,9 @@ export class VersionsManager {
   }
 
   public async downloadLatestAiderDesk(): Promise<void> {
+    if (isLabMode()) {
+      throw new Error('Agent Lab: aggiornamenti automatici disabilitati.');
+    }
     const app = getElectronApp();
     if (!app) {
       logger.info('Electron app not available, skipping AiderDesk update download.');

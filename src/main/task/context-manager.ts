@@ -1000,7 +1000,9 @@ export class ContextManager {
         const toolMessage = messagesData.find((message) => message.type === 'tool' && message.id === part.toolCallId) as ToolData | undefined;
 
         if (toolMessage) {
-          toolMessage.response = JSON.stringify(part.output.value);
+          toolMessage.response = JSON.stringify(
+            part.output.type === 'error-text' ? { isError: true, content: [{ type: 'text', text: part.output.value }] } : part.output.value,
+          );
           toolMessage.usageReport = message.usageReport || toolMessage.usageReport;
           toolMessage.promptContext = promptContext;
           toolMessage.finished = true;

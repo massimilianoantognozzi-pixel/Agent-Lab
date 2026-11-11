@@ -1,8 +1,12 @@
 import { AgentProfile, AutonomyMode, QuestionData, ToolApprovalState } from '@common/types';
 
 import { Task } from '@/task';
+import { isLabMode } from '@/lab-mode';
 
 const isAutoApprove = (task: Task): boolean => {
+  if (isLabMode()) {
+    return false;
+  }
   return task.task.autonomyMode !== AutonomyMode.Manual;
 };
 
@@ -21,11 +25,14 @@ export class ApprovalManager {
     text: string,
     subject?: string,
   ): Promise<[boolean, string | undefined]> {
+    if (isLabMode() && this.profile.toolApprovals[key] === ToolApprovalState.Never) {
+      return [false, undefined];
+    }
     const extensionResult = await this.task.dispatchExtensionEvent('onToolApproval', { toolName, input });
     if (extensionResult.blocked) {
       return [false, typeof extensionResult.blocked === 'string' ? extensionResult.blocked : undefined];
     }
-    if (extensionResult.allowed) {
+    if (extensionResult.allowed && !isLabMode()) {
       return [true, undefined];
     }
 
@@ -33,11 +40,14 @@ export class ApprovalManager {
   }
 
   async handleApproval(key: string, text: string, subject?: string): Promise<[boolean, string | undefined]> {
+    if (isLabMode() && this.profile.toolApprovals[key] === ToolApprovalState.Never) {
+      return [false, undefined];
+    }
     const extensionResult = await this.task.dispatchExtensionEvent('onHandleApproval', { key, text, subject });
     if (extensionResult.blocked) {
       return [false, undefined];
     }
-    if (extensionResult.allowed) {
+    if (extensionResult.allowed && !isLabMode()) {
       return [true, undefined];
     }
     key = extensionResult.key;
@@ -49,7 +59,8 @@ export class ApprovalManager {
     }
 
     const isApprovedFromSet =
-      this.alwaysApproveForRunKeys.has(key) || (this.profile.toolApprovals[key] || ToolApprovalState.Always) === ToolApprovalState.Always;
+      this.alwaysApproveForRunKeys.has(key) ||
+      (this.profile.toolApprovals[key] || (isLabMode() ? ToolApprovalState.Ask : ToolApprovalState.Always)) === ToolApprovalState.Always;
     if (isApprovedFromSet) {
       return [true, undefined]; // Pre-approved
     }

@@ -84,6 +84,7 @@ import type { ToolExecutionOptions, ToolSet } from 'ai';
 import { shouldUsePolling } from '@/utils/file-watch';
 import logger from '@/logger';
 import { AIDER_DESK_EXTENSIONS_DIR, AIDER_DESK_GLOBAL_EXTENSIONS_DIR } from '@/constants';
+import { isGovernedWorkflow } from '@/task/workflow-policy';
 import { ApprovalManager } from '@/agent/tools/approval-manager';
 import { contentArrayHasNonTextParts, stringifyWithBudget, truncateToolResult } from '@/agent/utils';
 import { Project } from '@/project';
@@ -462,6 +463,9 @@ export class ExtensionManager {
    * Combines the common pattern of load → register → initialize.
    */
   private async loadAndInitializeExtension(filePath: string, project?: Project): Promise<{ success: boolean; hasUIComponents: boolean }> {
+    if (process.env.AIDER_DESK_LAB_MODE === 'true' || (project && isGovernedWorkflow(project.baseDir))) {
+      return { success: false, hasUIComponents: false };
+    }
     try {
       const result = await this.loader.loadExtension(filePath);
       if (!result) {
@@ -511,6 +515,10 @@ export class ExtensionManager {
    * @returns Object with loadedCount, initializedCount, and errors
    */
   private async loadExtensionsForDir(dir: string, project?: Project): Promise<void> {
+    // Project files are untrusted data in the laboratory, including extension scripts.
+    if (process.env.AIDER_DESK_LAB_MODE === 'true') {
+      return;
+    }
     let initializedCount = 0;
     let reloadComponents = false;
 
@@ -893,6 +901,9 @@ export class ExtensionManager {
   }
 
   private async setupWatcherForDir(dir: string, onChange: () => Promise<void>): Promise<FSWatcher | null> {
+    if (process.env.AIDER_DESK_LAB_MODE === 'true') {
+      return null;
+    }
     try {
       const dirExists = await fs
         .access(dir)
@@ -982,6 +993,9 @@ export class ExtensionManager {
   }
 
   async reloadProjectExtensions(project: Project): Promise<void> {
+    if (process.env.AIDER_DESK_LAB_MODE === 'true' || isGovernedWorkflow(project.baseDir)) {
+      return;
+    }
     const projectDir = project.baseDir;
     const projectExtensionsDir = path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR);
 

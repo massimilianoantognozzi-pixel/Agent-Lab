@@ -14,7 +14,8 @@
     "en": "English",
     "zh": "中文",
     "ru": "俄语",
-    "ko": "한국어"
+    "ko": "한국어",
+    "it": "意大利语"
   },
   "commandPalette": {
     "title": "命令面板",

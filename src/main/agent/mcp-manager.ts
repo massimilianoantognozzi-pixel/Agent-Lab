@@ -26,6 +26,7 @@ import { ApprovalManager } from './tools/approval-manager';
 import { McpOAuthManager } from './mcp-oauth-manager';
 import { truncateToolResult } from './utils';
 
+import { isGovernedWorkflow } from '@/task/workflow-policy';
 import logger from '@/logger';
 import { AIDER_DESK_CACHE_DIR } from '@/constants';
 import { translate } from '@/utils/i18n';
@@ -397,6 +398,9 @@ export class McpManager {
     forceReload = false,
     enabledServers?: string[],
   ): Promise<McpConnector[]> {
+    if (projectDir && isGovernedWorkflow(projectDir)) {
+      return [];
+    }
     logger.info('Initializing MCP connectors', {
       projectDir,
       taskDir,

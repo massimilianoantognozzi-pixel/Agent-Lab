@@ -276,7 +276,7 @@ export const ModelSelector = forwardRef<ModelSelectorRef, Props>(
                     onKeyDown={onModelSelectorSearchInputKeyDown}
                   />
                   {showCustomModelHint && (
-                    <div className="flex items-center text-text-muted-light" title="Press Enter to use this custom model name">
+                    <div className="flex items-center text-text-muted-light" title={t('modelSelector.customModelHint')}>
                       <MdKeyboardReturn className="w-4 h-4" />
                     </div>
                   )}
@@ -334,7 +334,7 @@ export const ModelSelector = forwardRef<ModelSelectorRef, Props>(
                   onKeyDown={onModelSelectorSearchInputKeyDown}
                 />
                 {showCustomModelHint && (
-                  <div className="flex items-center text-text-muted-light" title="Press Enter to use this custom model name">
+                  <div className="flex items-center text-text-muted-light" title={t('modelSelector.customModelHint')}>
                     <MdKeyboardReturn className="w-4 h-4" />
                   </div>
                 )}

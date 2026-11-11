@@ -181,7 +181,7 @@
     "tmp": "0.2.7",
     "tree-kill": "1.2.2",
     "turndown": "7.2.2",
-    "undici": "8.11.2",
+    "undici": "8.12.3",
     "unidiff": "1.0.4",
     "unist-util-map": "4.0.0",
     "use-sync-external-store": "1.6.0",
@@ -192,7 +192,7 @@
     "ws": "8.21.0",
     "yaml": "2.8.3",
     "yaml-front-matter": "4.1.1",
-    "zod": "4.3.6",
+    "zod": "4.6.7",
     "zustand": "5.0.11"
   },
   "devDependencies": {
@@ -216,13 +216,13 @@
     "@types/tmp": "0.2.6",
     "@types/yaml-front-matter": "4.1.3",
     "@vitejs/plugin-react": "5.2.0",
-    "@vitest/coverage-v8": "4.1.11",
-    "@vitest/ui": "4.1.11",
+    "@vitest/coverage-v8": "4.1.12",
+    "@vitest/ui": "4.1.12",
     "adm-zip": "0.6.1",
     "autoprefixer": "10.4.24",
     "concurrently": "10.0.6",
     "dts-bundle-generator": "9.5.1",
-    "electron": "44.7.0",
+    "electron": "44.9.3",
     "electron-builder": "26.15.7",
     "electron-vite": "5.0.0",
     "encoding": "0.1.13",
@@ -250,9 +250,9 @@
     "tar": "7.5.22",
     "typescript": "5.9.3",
     "typescript-eslint": "8.57.2",
-    "vite": "7.3.6",
+    "vite": "7.3.7",
     "vite-tsconfig-paths": "5.1.4",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "overrides": {
     "@ai-sdk/provider": "4.0.21",
@@ -261,7 +261,11 @@
       "sharp": "npm:empty-npm-package@1.0.0"
     },
     "@tootallnate/once": "^3.0.1",
-    "jsondiffpatch": "^0.7.3"
+    "jsondiffpatch": "^0.7.3",
+    "dompurify": "3.4.17",
+    "undici@^6.0.0": "6.29.1",
+    "undici@^7.0.0": "7.30.1",
+    "undici@^8.0.0": "8.12.3"
   },
   "workspaces": [
     "packages/common",
@@ -271,5 +275,10 @@
   ],
   "lint-staged": {
     "*.{ts,tsx}": "npm run lint"
+  },
+  "agentLab": {
+    "upstreamTag": "v0.88.0",
+    "upstreamCommit": "4c69f65804ed20a1e3b11dea6a5254589f8b664a",
+    "notice": "Modified locally for isolated Agent Lab and compatible security updates; not an official upstream release"
   }
 }

@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import logger from '@/logger';
 import { TelemetryManager } from '@/telemetry';
 import { EventManager } from '@/events';
+import { assertLabWorkspace, isLabMode } from '@/lab-mode';
 
 const MAX_OUTPUT_BUFFER_LENGTH = 100_000;
 
@@ -45,7 +46,7 @@ export class TerminalManager {
     if (platform === 'win32') {
       const shell = this.getShellCommand();
       if (shell.includes('powershell')) {
-        return ['-NoLogo'];
+        return isLabMode() ? ['-NoLogo', '-NoProfile'] : ['-NoLogo'];
       }
       return [];
     }
@@ -54,6 +55,7 @@ export class TerminalManager {
   }
 
   public async createTerminal(baseDir: string, taskDir: string, taskId: string, cols: number = 80, rows: number = 24): Promise<string> {
+    assertLabWorkspace(taskDir);
     const terminalId = uuidv4();
 
     try {

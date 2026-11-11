@@ -5,6 +5,7 @@ import { promisify } from 'util';
 
 import logger from '@/logger';
 import { EventManager } from '@/events';
+import { isLabMode } from '@/lab-mode';
 import { getCurrentPythonLibVersion, getLatestPythonLibVersion, getPythonVenvBinPath, getResolvedUvPath } from '@/utils';
 import { AIDER_DESK_CONNECTOR_DIR, AIDER_DESK_DATA_DIR, PYTHON_VENV_DIR, RESOURCES_DIR, SETUP_COMPLETE_FILENAME } from '@/constants';
 
@@ -54,6 +55,9 @@ export class PythonDependenciesInstaller {
    * Safe to call multiple times — only one install runs at a time.
    */
   ensureInstalled(): void {
+    if (isLabMode()) {
+      return;
+    }
     if (this.currentStatus.state === 'ready') {
       return;
     }
@@ -83,6 +87,9 @@ export class PythonDependenciesInstaller {
    * Resolves immediately if already ready. Rejects if installation failed.
    */
   async waitForReady(): Promise<void> {
+    if (isLabMode()) {
+      throw new Error('Agent Lab: integrazione Python disabilitata nel checkpoint iniziale.');
+    }
     if (this.currentStatus.state === 'ready') {
       return;
     }

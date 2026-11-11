@@ -14,7 +14,8 @@
     "en": "English",
     "zh": "中文",
     "ru": "Русский",
-    "ko": "한국어"
+    "ko": "한국어",
+    "it": "Italian"
   },
   "commandPalette": {
     "title": "Command Palette",
@@ -1157,6 +1158,15 @@
         "deleteAgentMemoriesDialogText": "Delete all memories for agent",
         "projectId": "projectId",
         "id": "id"
+      },
+      "localProvider": "Local",
+      "localModels": {
+        "miniLabel": "MiniLM-L6 (Fast, ~90MB)",
+        "miniDescription": "Fast and lightweight model",
+        "smallLabel": "BGE-Small (Good, ~130MB)",
+        "smallDescription": "Good balance of speed and quality",
+        "baseLabel": "BGE-Base (Better, ~400MB)",
+        "baseDescription": "Better quality for complex tasks"
       }
     },
     "fileWatchMode": {
@@ -1215,7 +1225,18 @@
     "confirmDelete": "Confirm Delete",
     "remove": "Remove message",
     "deleteUpToHere": "Delete up to here",
-    "ephemeralGroupTooltip": "This thread/group is ephemeral — it won't be saved with the task and will disappear after reload"
+    "ephemeralGroupTooltip": "This thread/group is ephemeral — it won't be saved with the task and will disappear after reload",
+    "reflecting": "Reflecting message...",
+    "editingFiles": "Editing files...",
+    "processingRequest": "Processing request...",
+    "linting": "Linting...",
+    "generatingCommit": "Generating commit message...",
+    "committing": "Committing changes...",
+    "filesUpdated": "Files have been updated.",
+    "fileUpdated": "File has been updated.",
+    "noRepoMap": "No repo map available.",
+    "repoMapRefreshed": "The repo map has been refreshed.",
+    "agentIterationLimit": "The agent has reached the maximum number of allowed iterations ({{limit}}). To allow more iterations, open Settings → Agents → Parameters and increase Max Iterations."
   },
   "errors": {
     "frozenTitle": "AIDER FROZEN?",
@@ -1390,7 +1411,7 @@
     "selectedFilesToCommit": "{{count}} of {{total}} files selected to be committed",
     "groupByCommit": "Switch to group by commit view",
     "flatView": "Switch to flat view (diff from base)",
-    "uncommitted": "Uncommitted",
+    "uncommitted": "UNCOMMITTED",
     "group": "Group {{hash}}",
     "updatedFilesWindowTitle": "Updated Files - {{name}}",
     "largeDiffMessage": "This file has {{count}} changed lines - loading the full diff may be slow.",
@@ -1433,7 +1454,8 @@
     "selectModel": "Select model...",
     "weakModelLock": "Lock weak model",
     "weakModelUnlock": "Unlock weak model",
-    "noModelSelected": "No model selected"
+    "noModelSelected": "No model selected",
+    "customModelHint": "Press Enter to use this custom model name"
   },
   "modelInfo": {
     "noInfo": "No model information available.",
@@ -1793,7 +1815,8 @@
     "agentModeOnly": "Available in Agent mode only",
     "handoffError": "Handoff failed: {{error}}",
     "taskInfo": "Show task information",
-    "pastedImage": "Pasted image {{index}}"
+    "pastedImage": "Pasted image {{index}}",
+    "dragToReorder": "Drag to reorder"
   },
   "agentProfiles": {
     "title": "Agents",
@@ -2283,5 +2306,31 @@
     "actionNotAvailableInWorktree": "This action is not available in worktree mode",
     "updateFromRemote": "Update from '{{upstream}}'",
     "branchUpdated": "Branch '{{branch}}' updated from remote"
+  },
+  "nativeMenu": {
+    "File": "File",
+    "New Window": "New Window",
+    "Quit": "Quit",
+    "Edit": "Edit",
+    "Undo": "Undo",
+    "Redo": "Redo",
+    "Cut": "Cut",
+    "Copy": "Copy",
+    "Paste": "Paste",
+    "Select All": "Select All",
+    "View": "View",
+    "Reload": "Reload",
+    "Toggle Developer Tools": "Toggle Developer Tools",
+    "Reset Zoom": "Reset Zoom",
+    "Zoom In": "Zoom In",
+    "Zoom Out": "Zoom Out",
+    "Toggle Full Screen": "Toggle Full Screen",
+    "Show Logs": "Show Logs",
+    "Settings": "Settings",
+    "General": "General",
+    "Aider": "Aider",
+    "Agent": "Agent",
+    "Server": "Server",
+    "About": "About"
   }
 }

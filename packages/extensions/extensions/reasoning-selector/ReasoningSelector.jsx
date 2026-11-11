@@ -42,7 +42,7 @@
         onClick={handleToggle}
         className="flex flex-col items-start gap-0.5 text-2xs focus:outline-none transition-colors duration-200 hover:text-text-tertiary"
       >
-        <span className="text-text-muted leading-none">Reasoning</span>
+        <span className="text-text-muted leading-none">{data?.label || "Reasoning"}</span>
         <span className="flex items-center gap-1 font-medium leading-tight">
           {selectedOption?.label || "Use default"}
           <MdKeyboardArrowUp className="w-3 h-3 flex-shrink-0 rotate-180" />
