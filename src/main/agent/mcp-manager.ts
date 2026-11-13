@@ -27,8 +27,9 @@ import { McpOAuthManager } from './mcp-oauth-manager';
 import { truncateToolResult } from './utils';
 
 import { isGovernedWorkflow } from '@/task/workflow-policy';
+import shadcn from '@/task/workflow-shadcn.json';
 import logger from '@/logger';
-import { AIDER_DESK_CACHE_DIR } from '@/constants';
+import { AIDER_DESK_CACHE_DIR, AIDER_DESK_HOME_DIR } from '@/constants';
 import { translate } from '@/utils/i18n';
 import { Task } from '@/task';
 
@@ -144,6 +145,9 @@ export class McpManager {
       const mcpTools = mcpConnector.client.toolsFromDefinitions(toolDefinitions);
 
       for (const toolDefinition of toolDefinitions.tools) {
+        if (mcpConnector.serverName === shadcn.server && !shadcn.readTools.includes(toolDefinition.name)) {
+          continue;
+        }
         const toolId = `${mcpConnector.serverName}${TOOL_GROUP_NAME_SEPARATOR}${toolDefinition.name}`;
         const normalizedToolId = toolId.toLowerCase().replaceAll(/\s+/g, '_');
 
@@ -686,7 +690,7 @@ export class McpManager {
         command,
         args,
         env,
-        cwd: taskDir || projectDir || undefined,
+        cwd: serverName === shadcn.server ? path.join(AIDER_DESK_HOME_DIR, shadcn.directory) : taskDir || projectDir || undefined,
       });
 
       logger.debug(`Connecting to MCP server using STDIO: ${serverName}`);

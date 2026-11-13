@@ -1,3 +1,5 @@
+import { projectWorkflowCommandPattern } from '@/task/workflow-project-commands';
+
 const styles = String.raw`
 :root {
   color-scheme: dark; font: 16px/1.45 Roboto, system-ui, sans-serif; background: #000; color: #f5f5f5;
@@ -673,7 +675,7 @@ function settingsSheet(key, content) {
   if (key === 'autonomy') {
     if (locked) content.append(element('p', 'sheet-note', 'Autonomia bloccata sul PC.'));
     content.append(detail('Accesso al PC', 'Progetto associato', 'shield'));
-    content.append(element('p', 'sheet-note', 'Il flusso governato richiede l’approvazione del piano in ogni modalità.'));
+    content.append(element('p', 'sheet-note', 'Per un task singolo approvi il piano. «Avvia il lavoro» esegue la coda già concordata.'));
   }
 }
 
@@ -686,6 +688,14 @@ function planSheet(flow, content) {
   }
   content.append(element('p', 'sheet-copy', plan.outcome));
   if (plan.delta) content.append(element('p', 'sheet-copy', plan.delta));
+  if (plan.design) {
+    content.append(element('h3', '', 'Proposta UI/UX'));
+    for (const [label, description] of [['Logica condivisa', plan.design.sharedLogic], ['Interfaccia', plan.design.ui], ['Mobile', plan.design.mobile]]) {
+      if (description) content.append(element('h3', '', label), element('p', 'sheet-copy', description));
+    }
+  }
+  if (plan.skills?.length) content.append(element('p', 'sheet-note', 'Skill · ' + plan.skills.map(item => item.name).join(', ')));
+  if (plan.catalog) content.append(element('p', 'sheet-note', 'Catalogo shadcn MCP · ' + (plan.catalog === 'consulted' ? 'consultato' : 'indisponibile')));
   for (const file of plan.files || []) content.append(detail('File coinvolto', file, 'file'));
   const steps = [
     ['Riuso', plan.reuse], ['Passi', plan.steps], ['Criteri', (plan.criteria || []).map(item => item.scenario + ' · ' + flowLabel(item.check))],
@@ -837,7 +847,8 @@ ui('composer').addEventListener('submit', event => {
     const options = { reasoning: draft.reasoning };
     if (!projectSettings.autonomyLocked) options.autonomy = draft.autonomy;
     const id = isNew ? (await action('create', options)).id : selected;
-    await action('run', { id, prompt: '/workflow ' + workKind + ' ' + text });
+    const prompt = ${projectWorkflowCommandPattern}.test(text) ? text : '/workflow ' + workKind + ' ' + text;
+    await action('run', { id, prompt });
     if (generation !== origin) return;
     if (isNew) selectTask(id);
     ui('prompt').value = '';

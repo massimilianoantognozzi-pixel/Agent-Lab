@@ -14,7 +14,33 @@ Esegui la build descritta nel [README](../../README.md) e apri **Apri-Agent-Lab-
 
 Le procedure sono integrate in `workflow-skills.ts`. Superpowers guida chiarimento, piano, debugging e revisione. Spec Kit e OpenSpec guidano requisiti, scenari e differenze rispetto all’esistente. Compound Engineering alimenta la memoria dopo approvazione. Il motore verifica autonomamente scope, approvazione, controllo di riproduzione per i bug, esiti dei controlli, revisione separata, inventario della consegna e applicabilità della patch.
 
-Il risultato è una **cartella candidata e una patch Git**. Il messaggio di consegna indica entrambi i percorsi. Prima di integrare la patch nel repository, apri il diff e usa `git apply --check "<percorso patch>"` dalla radice. Applica la patch soltanto alla revisione prevista dal piano.
+L’orchestratore coinvolge il Designer UI/UX prima dell’approvazione quando cambiano interfaccia o interazioni. Se è richiesta una UI mobile, il piano descrive la logica comune e la composizione dedicata. Per uno stack compatibile, il Designer può ricevere riferimenti pubblici consultati tramite shadcn MCP. Se il catalogo è indisponibile, il piano lo segnala e usa le fonti del progetto.
+
+Dopo l’approvazione il motore passa automaticamente dal Programmatore ai controlli e al Revisore del codice. Per le modifiche UI segue la verifica del Designer sul codice. Il Correttore riceve la proposta e i rilievi se una fase fallisce. La nuova proposta riparte dai controlli e deve superare le review applicabili. La review del codice valuta correttezza delle funzioni, leggibilità, casi limite, semplificazioni e codice morto dimostrabile nel perimetro. I test manuali e il giudizio visivo possono essere pianificati a parte.
+
+Il piano può selezionare le skill globali pertinenti, incluse quelle importate da OpenCode. Il flusso usa il testo delle guide selezionate e richiede di rifare il piano se una guida cambia prima dell’esecuzione. Ogni ruolo opera con una chiamata separata al modello autorizzato per il progetto.
+
+Il risultato include una **cartella candidata e una patch Git**. Il messaggio di consegna indica entrambi i percorsi. Per i progetti con integrazione manuale, apri il diff e usa `git apply --check "<percorso patch>"` dalla radice prima di applicare la patch alla revisione prevista dal piano.
+
+Se il progetto configura i due rami esistenti con `"branches": { "main": "main", "development": "dev" }`, la pianificazione legge il ramo di sviluppo. Dopo test e revisione, AiderDesk prepara il risultato Git e ripete i controlli prima di avanzare quel ramo. La consegna riporta anche il commit integrato. Un nuovo task nel repository legge la versione più recente del ramo di sviluppo.
+
+Questa modalità aggiorna direttamente il riferimento Git al commit verificato. Il ramo di sviluppo deve essere libero da checkout durante l’integrazione, così indice e file di lavoro non restano indietro rispetto al ramo. Se è aperto, AiderDesk conserva il commit preparato e riprende l’integrazione alla successiva esecuzione quando il ramo è libero.
+
+## Avvio del piano e ripresa delle prove
+
+Per usare **«Avvia il lavoro»**, configura i due rami, almeno un riferimento con ruolo `blueprint` e il percorso `workPlan` di un file JSON presente nel ramo di sviluppo. Puoi aggiungere fonti con ruolo `state` e `handoff`. Il file contiene l’array `tasks` nell’ordine concordato. Ogni task dichiara `id`, `kind`, `request`, `files` e `checks`. I campi `dependsOn` e `afterValidation` indicano rispettivamente i task e le prove precedenti da cui dipende. AiderDesk approva ed esegue i piani dei task ammessi dalla coda, usando il ramo di sviluppo. Il ramo principale viene integrato quando lo decidi tu, dopo le validazioni richieste.
+
+**«Riprendi il lavoro»** riapre la stessa coda dal punto già registrato. Con entrambi i comandi, AiderDesk accende Docker Desktop se serve, attende il motore e avvia i due container privati di Agent-Lab. Legge quindi i documenti di ripresa del checkout aperto, avvia i servizi del progetto e aspetta che siano pronti prima di proseguire. I servizi restano attivi al termine della richiesta.
+
+La coda governata legge le fonti e il piano configurati sul ramo di sviluppo. Nella chat ordinaria, la preparazione cerca regole, blueprint, piano, stato corrente e handoff nel checkout. Il file facoltativo `docs/agentlab-services.json` può elencare i servizi esistenti da avviare con `{"containers":["nome-container"]}`. Nella coda governata aggiungilo alle fonti configurate. AiderDesk verifica l’associazione al checkout tramite le etichette Docker Compose o `com.agentlab.project.root`. Senza il file, usa i container esistenti associati al checkout.
+
+Per **Edilas** si usa lo script dello stack locale e dell’accesso privato. Per **QuantoMiSPESA** si riconosce il PostgreSQL già registrato. Per **ViaSalus** si legge anche l’handoff specifico. L’avvio è associato al container conservato `supabase_db_ViaSalus` e verifica checkout, volume persistente e porte locali.
+
+La scelta del provider e del modello si salva nel profilo locale. Se selezioni **GPT-6.1 Sol** tramite OpenAI Codex, il ragionamento predefinito è **Alto**. Il selettore consente di scegliere un livello per la singola chat.
+
+Il campo `validations` associa a un task prove con `id`, `title`, `environment`, `steps` ed `expected`. Con `files` puoi indicare i file rilevanti per la prova, altrimenti valgono i file del task. AiderDesk registra commit, avanzamento ed esito nel file delle validazioni del progetto nella cartella dei workflow del profilo. Le attività indipendenti proseguono mentre una prova è in attesa.
+
+Scrivi **«Riprendi le validazioni»** per vedere la prova e la versione da usare. AiderDesk mostra il comando per confermare il prossimo passaggio, per esempio `Conferma passaggio V-03 1`. Per chiudere la prova usa `Registra esito V-03 superata` oppure `Registra esito V-03 fallita` e aggiungi l’osservazione, se serve. Alla riapertura di AiderDesk o in una nuova chat, «Riprendi le validazioni» ritrova il punto registrato. Una modifica rilevante ai file o alle istruzioni della prova richiede di riaprire la versione corrente prima di confermare un passaggio o l’esito. [Blueprint del flusso](AIDERDESK-WORKFLOW-BLUEPRINT.md)
 
 ## Aggiungere un repository
 
@@ -36,7 +62,7 @@ La web app usa il primo progetto in `managed-workflow.json`. Per sceglierne un a
 
 Sul telefono la Home mostra il progetto associato e le conversazioni. La chat conserva i messaggi del flusso governato. Il pannello dal basso contiene piano, verifiche e patch della revisione mostrata. I dettagli di esecuzione interni restano nel contesto desktop.
 
-Il selettore **Manuale / Guidata / Autonoma** usa l’impostazione del task condivisa con AiderDesk. Le nuove chat iniziano in **Guidata** salvo scelta diversa. Se l’autonomia è bloccata dal PC, il telefono la mostra e il server rifiuta i cambi. Il pannello mostra **Accesso al PC · Progetto associato** separatamente. Ogni modalità mantiene l’approvazione del piano governato. Il ragionamento è configurabile dal compositore e salvato sullo stesso task.
+Il selettore **Manuale / Guidata / Autonoma** usa l’impostazione del task condivisa con AiderDesk. Le nuove chat iniziano in **Guidata** salvo scelta diversa. Se l’autonomia è bloccata dal PC, il telefono la mostra e il server rifiuta i cambi. Il pannello mostra **Accesso al PC · Progetto associato** separatamente. I task avviati singolarmente mantengono l’approvazione del piano. «Avvia il lavoro» autorizza la coda già concordata del progetto. Il ragionamento è configurabile dal compositore e salvato sullo stesso task.
 
 ## Ricostruzione e prova
 
@@ -74,6 +100,8 @@ docker exec agentlab-remote-tailnet tailscale up --hostname=agent-lab --accept-d
 ```
 
 Completa il login nella tua rete Tailscale, poi esegui `docker exec agentlab-remote-tailnet tailscale serve --bg --https=443 http://127.0.0.1:8080`. Riavvia Agent-Lab per rilevare l’indirizzo HTTPS privato. Il relay inoltra le rotte della web app al listener locale sulla porta 24363. Per usare il telefono lascia attivi PC, Docker Desktop e Agent-Lab e collega il telefono alla stessa rete Tailscale.
+
+In questa configurazione il relay del telefono gira in Docker. Per inviare il primo comando con Docker Desktop spento, usa la chat sul PC. Se Agent-Lab era stato aperto a Docker spento, riaprilo a motore attivo per rilevare l’indirizzo privato del telefono.
 
 ### Risultati sul bug del filtro dei turni
 

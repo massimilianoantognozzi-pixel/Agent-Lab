@@ -897,3 +897,6 @@ export const getSubagentId = (subagent: AgentProfile): string => {
 export const getProviderModelId = (model: Model): string => {
   return `${model.providerId}/${model.id}`;
 };
+
+export const isCodexAgentModel = (modelId: string | null | undefined): boolean =>
+  !!modelId && (modelId.startsWith('openai-codex/') || modelId === 'gpt-6.1-sol');

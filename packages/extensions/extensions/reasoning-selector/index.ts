@@ -25,6 +25,7 @@ const SOL_REASONING_OPTIONS = [
 
 const isCodexSol = (provider?: string, model?: string) => provider === 'openai-codex' && model === 'gpt-6.1-sol';
 const reasoningOptions = (provider?: string, model?: string) => isCodexSol(provider, model) ? SOL_REASONING_OPTIONS : REASONING_OPTIONS;
+const usesHighDefault = (provider?: string, model?: string) => process.env.AIDER_DESK_CODEX_SOL_HIGH === 'true' && isCodexSol(provider, model);
 
 const resolveTaskModel = (task: TaskCreatedEvent['task'], context: ExtensionContext): { provider?: string; model?: string } => {
   if (task.provider && task.model) return { provider: task.provider, model: task.model };
@@ -64,7 +65,7 @@ export default class ReasoningSelectorExtension implements Extension {
 
     const projectContext = context.getProjectContext();
     const { provider, model } = resolveTaskModel(event.task, context);
-    if (!provider || !model) {
+    if (!provider || !model || usesHighDefault(provider, model)) {
       return undefined;
     }
 
@@ -113,7 +114,7 @@ export default class ReasoningSelectorExtension implements Extension {
     const mode = taskContext.data.currentMode ?? context.getProjectContext().getProjectSettings().currentMode;
     const isAgentMode = !!mode && !AIDER_MODES.includes(mode);
     const options = reasoningOptions(provider, model);
-    const selected = taskContext.data.metadata?.[METADATA_KEY];
+    const selected = taskContext.data.metadata?.[METADATA_KEY] ?? (usesHighDefault(provider, model) ? 'high' : '');
     const reasoningEffort = options.find(option => option.value === selected)?.value ?? '';
 
     return { reasoningEffort, options, isAgentMode, label: isCodexSol(provider, model) ? 'Ragionamento' : 'Reasoning' };

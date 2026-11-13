@@ -1,8 +1,27 @@
 import { describe, it, expect } from 'vitest';
 
+import { McpConfigManager } from '../mcp-config-manager';
 import { McpManager } from '../mcp-manager';
 
 import type { McpServerConfig } from '@common/types';
+import type { EventManager } from '@/events';
+import type { Store } from '@/store';
+
+describe('Managed shadcn catalog scope', () => {
+  it('only resolves the reserved catalog name from the global profile', () => {
+    const manager = new McpConfigManager({} as EventManager, {} as Store);
+    const global = { command: 'npx', args: ['shadcn@4.23.0', 'mcp'] };
+    const project = { command: 'node', args: ['project-server.js'] };
+    const projectServers = new Map([['/project', { 'shadcn-catalog': project, 'project-tool': project }]]);
+    Object.assign(manager, { projectServers });
+    expect(manager.getMergedServers('/project')).toEqual({ 'project-tool': project });
+    expect(manager.resolveServer('shadcn-catalog', '/project', project)).toBeUndefined();
+    Object.assign(manager, { globalServers: { 'shadcn-catalog': global } });
+    expect(manager.getMergedServers('/project')).toEqual({ 'shadcn-catalog': global, 'project-tool': project });
+    expect(manager.resolveServer('shadcn-catalog', '/project', project)).toBe(global);
+    expect(manager.resolveServer('project-tool', '/project', project)).toBe(project);
+  });
+});
 
 describe('McpManager - scope calculation', () => {
   it('should calculate scope without interpolation', () => {

@@ -3,7 +3,7 @@ import path from 'path';
 
 import { parse } from '@dotenvx/dotenvx';
 import YAML from 'yaml';
-import { DEFAULT_AGENT_PROFILE, DEFAULT_AIDER_MAIN_MODEL, DEFAULT_PROVIDER_MODELS } from '@common/agent';
+import { DEFAULT_AGENT_PROFILE, DEFAULT_AIDER_MAIN_MODEL, DEFAULT_PROVIDER_MODELS, isCodexAgentModel } from '@common/agent';
 import { EnvironmentVariable, Model, ProjectSettings, ProviderProfile, SettingsData } from '@common/types';
 
 import logger from '@/logger';
@@ -258,21 +258,22 @@ export const determineMainModel = (settings: SettingsData, providers: ProviderPr
       modelEndIndex = settings.aider.options.length;
     }
     const modelName = settings.aider.options.substring(modelStartIndex, modelEndIndex).trim();
-    if (modelName) {
+    if (modelName && !isCodexAgentModel(modelName)) {
       return modelName;
     }
   }
 
   const projectModel = readAiderConfProperty(baseDir, 'model');
-  if (projectModel) {
+  if (projectModel && !isCodexAgentModel(projectModel)) {
     return projectModel;
   }
 
   for (const provider of providers) {
-    const models = providerModels.filter((model) => model.providerId === provider.id);
+    const models = providerModels.filter((model) => model.providerId === provider.id && !isCodexAgentModel(`${provider.id}/${model.id}`));
     const defaultModel = DEFAULT_PROVIDER_MODELS[provider.provider.name];
-    if (defaultModel || models.length > 0) {
-      return `${provider.id}/${defaultModel || models[0].id}`;
+    const model = defaultModel || models[0]?.id;
+    if (model && !isCodexAgentModel(`${provider.id}/${model}`)) {
+      return `${provider.id}/${model}`;
     }
   }
 

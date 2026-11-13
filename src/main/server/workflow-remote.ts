@@ -19,6 +19,7 @@ import type { RemoteTaskSettings } from '@/task/workflow-remote-history';
 import { RESOURCES_DIR } from '@/constants';
 import { atomicWriteJsonFile } from '@/utils/atomic-write';
 import { listWorkflowProjects } from '@/task/workflow-policy';
+import { projectWorkflowCommandPattern } from '@/task/workflow-project-commands';
 import { remoteReasoningOptions, remoteTaskLabel } from '@/task/workflow-remote-history';
 
 const ttl = 30 * 60_000;
@@ -44,7 +45,7 @@ const action = z.discriminatedUnion('action', [
       .string()
       .trim()
       .max(1500)
-      .regex(/^\/workflow (bug|change|feature)\s+\S/),
+      .refine((prompt) => /^\/workflow (bug|change|feature)\s+\S/.test(prompt) || projectWorkflowCommandPattern.test(prompt)),
   }),
   z.strictObject({ action: z.literal('resume'), id: taskId }),
   z.strictObject({ action: z.literal('approve'), id: taskId, revision }),

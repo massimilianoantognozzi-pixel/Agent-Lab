@@ -8,8 +8,10 @@ import { isManagedPilot } from './managed-pilot';
 
 const identifier = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/);
 const file = z.string().min(1).max(240);
+const branch = z.string().min(1);
 const check = z.discriminatedUnion('type', [
   z.strictObject({ id: identifier, type: z.literal('json'), file }),
+  z.strictObject({ id: identifier, type: z.literal('browser') }),
   z.strictObject({ id: identifier, type: z.literal('contains'), file, text: z.string().min(1).max(2000) }),
   z.strictObject({ id: identifier, type: z.literal('excludes'), file, text: z.string().min(1).max(2000) }),
   z.strictObject({ id: identifier, type: z.literal('typescript'), file }),
@@ -33,12 +35,17 @@ const project = z.strictObject({
   provider: z.string().regex(/^[a-zA-Z0-9_.-]{1,80}$/),
   model: z.string().regex(/^[a-zA-Z0-9_.:/-]{1,100}$/),
   references: z
-    .array(z.strictObject({ path: file, role: z.enum(['blueprint', 'rules', 'design', 'decision']) }))
+    .array(z.strictObject({ path: file, role: z.enum(['blueprint', 'rules', 'design', 'decision', 'state', 'handoff']) }))
     .min(1)
     .max(24),
   context: z.array(file).max(64),
   editable: z.array(file).min(1).max(64),
   checks: z.array(check).min(1).max(20),
+  workPlan: file.optional(),
+  branches: z
+    .strictObject({ main: branch, development: branch })
+    .refine(({ main, development }) => main.toLowerCase() !== development.toLowerCase(), 'Indica due rami distinti.')
+    .optional(),
 });
 const configuration = z.strictObject({ version: z.literal(1), projects: z.array(project).min(1).max(20) });
 
@@ -100,7 +107,8 @@ export const listWorkflowProjects = (): WorkflowProject[] => {
     }
     ids.add(item.id);
     roots.add(root);
-    const allFiles = [...item.references.map((ref) => ref.path), ...item.context, ...item.editable];
+    const sources = [...item.references.map((ref) => ref.path), ...(item.workPlan ? [item.workPlan] : [])];
+    const allFiles = [...sources, ...item.context, ...item.editable];
     for (const entry of allFiles) {
       validateWorkflowPath(entry);
     }
@@ -108,7 +116,7 @@ export const listWorkflowProjects = (): WorkflowProject[] => {
     if (new Set(uniqueFiles.map((value) => value.toLowerCase())).size !== uniqueFiles.length) {
       throw new Error('Percorsi equivalenti nel workflow.');
     }
-    const protectedFiles = new Set(item.references.map((ref) => ref.path));
+    const protectedFiles = new Set(sources);
     if (item.editable.some((entry) => protectedFiles.has(entry))) {
       throw new Error('Una fonte approvata non può essere modificata dal workflow.');
     }
@@ -150,18 +158,43 @@ export const assertWorkflowText = (content: string) => {
   }
 };
 
+export const workflowFileNames = (policy: WorkflowProject) =>
+  [...new Set([...policy.references.map((ref) => ref.path), ...(policy.workPlan ? [policy.workPlan] : []), ...policy.context, ...policy.editable])]
+    .sort()
+    .map(validateWorkflowPath);
+
+export const collectWorkflowFiles = async (policy: WorkflowProject, read: (name: string) => Promise<Buffer | null>): Promise<WorkflowFiles> => {
+  const required = new Set([...policy.references.map((ref) => ref.path), ...(policy.workPlan ? [policy.workPlan] : []), ...policy.context]);
+  let total = 0;
+  const entries: [string, string | null][] = [];
+  for (const name of workflowFileNames(policy)) {
+    const bytes = await read(name);
+    if (bytes === null && required.has(name)) {
+      throw new Error('Fonte richiesta mancante: ' + name);
+    }
+    if (bytes && bytes.length > 150_000) {
+      throw new Error('File fuori dai limiti del workflow: ' + name);
+    }
+    total += bytes?.length ?? 0;
+    if (total > 900_000) {
+      throw new Error('Riduci il perimetro dei file e delle fonti prima di avviare il task.');
+    }
+    const content = bytes === null ? null : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    if (content !== null) {
+      assertWorkflowText(content);
+    }
+    entries.push([name, content]);
+  }
+  return Object.fromEntries(entries);
+};
+
 export const snapshotWorkflowFiles = async (policy: WorkflowProject): Promise<WorkflowFiles> => {
   if (key(await fs.realpath(policy.root)) !== key(policy.root)) {
     throw new Error('Radice del progetto cambiata.');
   }
-  const files = [...new Set([...policy.references.map((ref) => ref.path), ...policy.context, ...policy.editable])].sort();
-  const required = new Set([...policy.references.map((ref) => ref.path), ...policy.context]);
-  let total = 0;
-  const entries: [string, string | null][] = [];
-  for (const name of files) {
-    const parts = validateWorkflowPath(name).split('/');
+  return collectWorkflowFiles(policy, async (name) => {
+    const parts = name.split('/');
     let target = policy.root;
-    let content: string | null = null;
     for (const [index, segment] of parts.entries()) {
       target = path.join(target, segment);
       const stat = await fs.lstat(target).catch((error) => {
@@ -171,7 +204,7 @@ export const snapshotWorkflowFiles = async (policy: WorkflowProject): Promise<Wo
         throw error;
       });
       if (!stat) {
-        break;
+        return null;
       }
       if (stat.isSymbolicLink()) {
         throw new Error('Collegamento non ammesso nel perimetro: ' + name);
@@ -180,21 +213,11 @@ export const snapshotWorkflowFiles = async (policy: WorkflowProject): Promise<Wo
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > 150_000) {
           throw new Error('File fuori dai limiti del workflow: ' + name);
         }
-        const bytes = await fs.readFile(target);
-        content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-        assertWorkflowText(content);
-        total += bytes.length;
-        if (total > 900_000) {
-          throw new Error('Riduci il perimetro dei file e delle fonti prima di avviare il task.');
-        }
+        return fs.readFile(target);
       } else if (!stat.isDirectory()) {
         throw new Error('Directory non valida nel perimetro: ' + name);
       }
     }
-    if (content === null && required.has(name)) {
-      throw new Error('Fonte richiesta mancante: ' + name);
-    }
-    entries.push([name, content]);
-  }
-  return Object.fromEntries(entries);
+    return null;
+  });
 };

@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import { labRoot, repoRoot, laboratoryEnvironment } from "./prepare.mjs";
 import { pilotFiles, pilotRequest } from "./workflow-pilot-fixture.mjs";
+import { prepareOpenCodeRoles } from "./opencode-roles.mjs";
+import { projectStartupEnvironment } from "./project-startup.mjs";
 
 const require = createRequire(path.join(repoRoot, "package.json"));
 const writeInitial = async (filename, text) => {
@@ -111,6 +113,10 @@ export const prepareWorkflowPilot = async (
       2,
     ),
   );
+  const pilotProfile = path.join(home, "agents", "workflow-pilot", "config.json");
+  const hasPilotProfile = await fs.access(pilotProfile).then(() => true, () => false);
+  const baseProfile = hasPilotProfile ? pilotProfile : path.join(home, "agents", "power-tools", "config.json");
+  prepareOpenCodeRoles(home, baseProfile);
   await writeInitial(path.join(home, "mcp-servers.json"), '{"mcpServers":{}}');
   return {
     data,
@@ -188,6 +194,7 @@ export const launchWorkflowPilot = async ({ full = false } = {}) => {
     const { project, env } = full
       ? await (await import("./workflow-environment.mjs")).prepareWorkflowEnvironment(pilot, root)
       : pilot;
+    Object.assign(env, projectStartupEnvironment());
     if (full) env.AIDER_DESK_WORKFLOW_REMOTE_PORT = "24363";
     if (pilot.env.AIDER_DESK_WORKFLOW_PILOT_DIR) preview = await serveWorkflowPreview(project);
     if (full) console.log("Configurazione e associazione remota: " + data);

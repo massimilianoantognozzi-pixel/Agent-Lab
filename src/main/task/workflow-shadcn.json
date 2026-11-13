@@ -1,0 +1,16 @@
+{
+  "server": "shadcn-catalog",
+  "directory": "ui-catalog",
+  "package": "shadcn@4.23.0",
+  "readTools": ["list_items_in_registries", "search_items_in_registries", "view_items_in_registries", "get_item_examples_from_registries"],
+  "components": ["button", "calendar", "combobox", "dialog", "drawer", "form", "select", "sidebar", "table", "tabs"],
+  "config": {
+    "$schema": "https://ui.shadcn.com/schema.json",
+    "style": "new-york",
+    "rsc": false,
+    "tsx": true,
+    "tailwind": { "config": "", "css": "src/index.css", "baseColor": "neutral", "cssVariables": true },
+    "aliases": { "components": "@/components", "utils": "@/lib/utils" },
+    "registries": { "@react-bits": "https://reactbits.dev/r/{name}.json" }
+  }
+}

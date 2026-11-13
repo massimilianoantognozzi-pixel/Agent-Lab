@@ -2,9 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { prepare, repoRoot, labRoot } from './prepare.mjs';
+import { prepare, repoRoot, labRoot, homeDir } from './prepare.mjs';
 import { configureGeneralGui, generalEnvironment } from './configure-general-gui.mjs';
 import { startLocalBackend } from './managed-local-backend.mjs';
+import { prepareOpenCodeRoles } from './opencode-roles.mjs';
+import { projectStartupEnvironment } from './project-startup.mjs';
+import { installReasoningSelector } from './install-reasoning-selector.mjs';
 
 const lockFile = path.join(labRoot, 'work', 'gui-launch.json');
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
@@ -36,12 +39,14 @@ try {
   }
   fs.writeFileSync(lockFile, JSON.stringify({ launcherPid: process.pid }), { flag: 'wx' }); ownLock = true;
   prepare(); configureGeneralGui();
+  installReasoningSelector();
+  prepareOpenCodeRoles(homeDir, path.join(homeDir, 'agents', 'lab-checkpoint', 'config.json'));
   const require = createRequire(path.join(repoRoot, 'package.json'));
   if (!fs.existsSync(path.join(repoRoot, 'out/main/index.js'))) throw new Error('Build del laboratorio non presente.');
   try { backend = await startLocalBackend(); }
   catch(error) { fs.appendFileSync(path.join(labRoot,'work','launcher-warnings.log'),`${new Date().toISOString()} Modello locale non disponibile: ${error.message}. AiderDesk resta utilizzabile con il provider scelto.\n`); }
   log = fs.openSync(path.join(labRoot, 'work', 'app-launch.log'), 'a');
-  child = spawn(require('electron'), [repoRoot], { cwd: repoRoot, env: generalEnvironment(), windowsHide: false, stdio: ['ignore', log, log] });
+  child = spawn(require('electron'), [repoRoot], { cwd: repoRoot, env: { ...generalEnvironment(), ...projectStartupEnvironment() }, windowsHide: false, stdio: ['ignore', log, log] });
   fs.writeFileSync(lockFile, JSON.stringify({ launcherPid: process.pid, electronPid: child.pid }));
   await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => { process.exitCode = code ?? 1; resolve(); }); });
 } catch (error) {

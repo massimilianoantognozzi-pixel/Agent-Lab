@@ -7,7 +7,7 @@ import path from 'path';
 import { EditFormat, ModelsData } from '@common/types';
 import { fileExists } from '@common/utils';
 import treeKill from 'tree-kill';
-import { DEFAULT_AIDER_MAIN_MODEL } from '@common/agent';
+import { DEFAULT_AIDER_MAIN_MODEL, isCodexAgentModel } from '@common/agent';
 
 import { AIDER_DESK_CONNECTOR_DIR, AIDER_DESK_PROJECT_RULES_DIR, AIDER_DESK_TASKS_DIR, PID_FILES_DIR, PYTHON_COMMAND, SERVER_PORT } from '@/constants';
 import { Connector } from '@/connector';
@@ -43,6 +43,15 @@ export class AiderManager {
     private readonly pythonInstaller: PythonDependenciesInstaller,
   ) {}
 
+  private getMainModel(): string {
+    const model = this.task.task.mainModel;
+    if (!isCodexAgentModel(model)) {
+      return model || DEFAULT_AIDER_MAIN_MODEL;
+    }
+    const projectModel = this.store.getProjectSettings(this.task.getProjectDir()).mainModel;
+    return projectModel && !isCodexAgentModel(projectModel) ? projectModel : DEFAULT_AIDER_MAIN_MODEL;
+  }
+
   public async start(forceRestart = false): Promise<void> {
     if (this.aiderProcess) {
       if (!forceRestart) {
@@ -60,8 +69,8 @@ export class AiderManager {
 
     const settings = this.store.getSettings();
     const projectSettings = this.store.getProjectSettings(this.task.getProjectDir());
-    const mainModel = this.task.task.mainModel || DEFAULT_AIDER_MAIN_MODEL;
-    const weakModel = this.task.task.weakModel;
+    const mainModel = this.getMainModel();
+    const weakModel = isCodexAgentModel(this.task.task.weakModel) ? null : this.task.task.weakModel;
     const modelEditFormats = projectSettings.modelEditFormats;
     const reasoningEffort = this.task.task.reasoningEffort;
     const thinkingTokens = this.task.task.thinkingTokens;
@@ -408,10 +417,11 @@ export class AiderManager {
   }
 
   public updateAiderModels(modelsData: ModelsData): void {
-    const mainModel = this.task.task.mainModel || DEFAULT_AIDER_MAIN_MODEL;
+    const mainModel = this.getMainModel();
     const mainModelParts = mainModel.split('/');
-    const weakModelParts = this.task.task.weakModel?.split('/') || modelsData.weakModel?.split('/');
-    const architectModelParts = this.task.task.architectModel?.split('/') || modelsData.architectModel?.split('/');
+    const savedWeakModel = this.task.task.weakModel;
+    const weakModelParts = (!isCodexAgentModel(savedWeakModel) && savedWeakModel?.split('/')) || modelsData.weakModel?.split('/');
+    const architectModelParts = this.getArchitectModel()?.split('/') || modelsData.architectModel?.split('/');
 
     const getWeakModelProvider = () => {
       if (modelsData.mainModel !== this.task.task.mainModel && weakModelParts?.[0] === modelsData.mainModel.split('/')[0]) {
@@ -439,13 +449,13 @@ export class AiderManager {
   }
 
   public updateModels(mainModel: string, weakModel: string | null, editFormat: EditFormat = 'diff'): void {
-    const mainModelMapping = this.modelManager.getAiderModelMapping(mainModel, this.task.getProjectDir());
+    const mainModelMapping = this.modelManager.getAiderModelMapping(isCodexAgentModel(mainModel) ? this.getMainModel() : mainModel, this.task.getProjectDir());
     const mainModelName = mainModelMapping.modelName;
     const envFromMain = mainModelMapping.environmentVariables;
 
     let envFromWeak = {};
     let weakModelName: string | null = null;
-    if (weakModel) {
+    if (weakModel && !isCodexAgentModel(weakModel)) {
       const weakModelMapping = this.modelManager.getAiderModelMapping(weakModel, this.task.getProjectDir());
       weakModelName = weakModelMapping.modelName;
       envFromWeak = weakModelMapping.environmentVariables;
@@ -499,7 +509,8 @@ export class AiderManager {
   }
 
   public getArchitectModel(): string | null {
-    return this.task.task.architectModel || this.store.getProjectSettings(this.task.getProjectDir()).architectModel || null;
+    const model = this.task.task.architectModel || this.store.getProjectSettings(this.task.getProjectDir()).architectModel;
+    return model && !isCodexAgentModel(model) ? model : null;
   }
 
   public getAiderModelsData(): ModelsData | null {

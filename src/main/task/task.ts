@@ -88,9 +88,19 @@ import debounce from 'lodash/debounce';
 import { isEqual } from 'lodash';
 
 import { assertManagedPilotDone, managedWorkflowStatePath, runManagedPilot, verifyPilotInBrowser } from './managed-pilot';
-import { assertRepositoryWorkflowDone, readRemoteRepositoryPatch, readRepositoryWorkflow, runRepositoryWorkflow } from './repository-workflow';
+import { projectStartupFor, startProjectEnvironment } from './project-startup';
+import {
+  assertRepositoryWorkflowDone,
+  readRemoteRepositoryPatch,
+  readRepositoryWorkflow,
+  runRepositoryWorkflow,
+  type WorkflowSkillCatalog,
+} from './repository-workflow';
 import { remoteReasoning, remoteTaskLabel, remoteWorkflowMessages, remoteWorkflowTitle, type RemoteTaskSettings } from './workflow-remote-history';
-import { isGovernedWorkflow, workflowProjectFor } from './workflow-policy';
+import { readDevelopmentFiles, readDevelopmentHead } from './workflow-development';
+import { isGovernedWorkflow, snapshotWorkflowFiles, workflowProjectFor } from './workflow-policy';
+import { parseProjectWorkflowCommand } from './workflow-project-commands';
+import { readShadcnReferences } from './workflow-shadcn';
 
 import type { z } from 'zod';
 import type { ToolContent, JSONValue } from '@common/types';
@@ -100,6 +110,7 @@ import type { SmartCompactionPassSelection } from '@/agent/smart-compaction';
 import type { SmartCompactionOptions } from '@common/extensions';
 
 import { ExtensionEventMap, ExtensionManager } from '@/extensions/extension-manager';
+import { defaultAgentReasoning } from '@/models/agent-reasoning';
 import { getAllFiles, isValidProjectFile } from '@/utils/file-system';
 import { isFreelanceEnabled } from '@/lab-projects/policy';
 import { projectUpdatedFiles, projectFileContents, projectFileDiff } from '@/lab-projects/files';
@@ -107,6 +118,7 @@ import { atomicWriteJsonFile } from '@/utils/atomic-write';
 import {
   AIDER_DESK_DATA_DIR,
   AIDER_DESK_GLOBAL_RULES_DIR,
+  AIDER_DESK_HOME_DIR,
   AIDER_DESK_PROJECT_RULES_DIR,
   AIDER_DESK_TASKS_DIR,
   AIDER_DESK_TMP_DIR,
@@ -200,7 +212,7 @@ export class Task {
   private pendingCommandImages?: string[];
   private fileWatchHandle: WatchHandle | null = null;
   private fileWatchGeneration = 0;
-  private managedPilotRun?: AbortController;
+  private workflowRun?: AbortController;
   private isCompacting = false;
   private lastSmartCompactionMessageCount = 0;
   private smartCompactionLevel = CompactionLevel.One;
@@ -960,7 +972,7 @@ export class Task {
   }
 
   public isPromptRunning() {
-    return !!this.managedPilotRun || !!this.currentPromptContext || this.agent.isRunning() || this.isCompacting;
+    return !!this.workflowRun || !!this.currentPromptContext || this.agent.isRunning() || this.isCompacting;
   }
 
   public hasQueuedPrompts(): boolean {
@@ -1004,12 +1016,12 @@ export class Task {
       taskId: this.taskId,
       name: remoteTaskLabel(this.task.name),
       state: workflow.phase === 'stale' ? 'Verifica da ripetere' : this.task.state,
-      running: !!this.managedPilotRun,
+      running: !!this.workflowRun,
       workflow,
       messages,
       autonomy: this.task.autonomyMode ?? DEFAULT_AUTONOMY_MODE,
       autonomyLocked: this.project.getProjectSettings().autonomyModeLocked ?? false,
-      reasoning: remoteReasoning(this.task.metadata?.reasoningEffort),
+      reasoning: remoteReasoning(this.task.metadata?.reasoningEffort ?? defaultAgentReasoning(policy.provider, policy.model)),
       model: policy.model,
       access: 'project' as const,
     };
@@ -1050,12 +1062,12 @@ export class Task {
     if (!isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il progetto non è il pilota governato.');
     }
-    if (this.managedPilotRun) {
+    if (this.workflowRun) {
       this.addLogMessage('warning', 'Il pilota ha già un’operazione in corso.', true);
       return [];
     }
     const controller = new AbortController();
-    this.managedPilotRun = controller;
+    this.workflowRun = controller;
     const promptContext: PromptContext = { id: uuidv4() };
     const request: ContextMessage = { id: promptContext.id, role: 'user', content: prompt, promptContext };
     this.addUserMessage(request.id, prompt, promptContext);
@@ -1074,11 +1086,38 @@ export class Task {
       const generate = async (_phase: string, instructions: string, input: string) =>
         this.agent.generateText(providerModel, instructions, input, this.getProjectDir(), [], false, controller.signal, uuidv4(), true, reasoning);
       const policy = workflowProjectFor(this.getProjectDir());
-      if (policy && (!profile || profile.provider !== policy.provider || profile.model !== policy.model)) {
+      const command = parseProjectWorkflowCommand(prompt);
+      if (policy && (!command || command.kind === 'start') && (!profile || profile.provider !== policy.provider || profile.model !== policy.model)) {
         throw new Error('Il task deve usare il provider e il modello autorizzati nel profilo del progetto.');
       }
+      const startup = projectStartupFor(this.getProjectDir(), prompt);
+      if (startup) {
+        const readDocuments = policy
+          ? async () => {
+              const sources = { ...policy, context: [], editable: [] };
+              return sources.branches
+                ? readDevelopmentFiles(sources, await readDevelopmentHead(sources))
+                : snapshotWorkflowFiles(sources);
+            }
+          : undefined;
+        await startProjectEnvironment(
+          startup,
+          controller.signal,
+          (message) => this.addLogMessage('loading', message, false, promptContext),
+          readDocuments,
+        );
+      }
       const result = policy
-        ? await runRepositoryWorkflow({ policy, statePath, prompt, signal: controller.signal, generate })
+        ? await runRepositoryWorkflow({
+            policy,
+            statePath,
+            prompt,
+            signal: controller.signal,
+            generate,
+            skills: () => this.workflowSkillCatalog(),
+            designCatalog: (items) => readShadcnReferences(items, controller.signal),
+            onProgress: (message) => this.addLogMessage('loading', message, false, promptContext),
+          })
         : await runManagedPilot({
             projectDir: this.getProjectDir(),
             statePath,
@@ -1111,7 +1150,7 @@ export class Task {
       await this.saveTask({ state: DefaultTaskState.Interrupted, completedAt: undefined });
       this.addLogMessage('error', error instanceof Error ? error.message : 'Flusso del pilota interrotto.', true, promptContext);
     } finally {
-      this.managedPilotRun = undefined;
+      this.workflowRun = undefined;
       this.addLogMessage('loading', undefined, true, promptContext);
     }
     return [];
@@ -1135,8 +1174,7 @@ export class Task {
       }
     }
 
-    if (this.isPromptRunning()) {
-      // Queue the prompt for later execution
+    const enqueuePrompt = () => {
       const queuedPrompt: QueuedPromptData = {
         id: userMessageId,
         text: prompt,
@@ -1147,8 +1185,12 @@ export class Task {
       this.queuedPrompts.push(queuedPrompt);
       this.eventManager.sendQueuedPromptsUpdated(this.project.baseDir, this.taskId, this.queuedPrompts);
       return [];
+    };
+    if (this.isPromptRunning()) {
+      return enqueuePrompt();
     }
 
+    const startup = projectStartupFor(this.getProjectDir(), prompt);
     const skillCommand = parseSkillCommand(prompt);
     if (skillCommand) {
       try {
@@ -1174,6 +1216,9 @@ export class Task {
       logger.debug('Prompt blocked by extension');
       return [];
     }
+    if (this.workflowRun || (startup && this.isPromptRunning())) {
+      return enqueuePrompt();
+    }
     prompt = extensionResult.prompt;
     mode = extensionResult.mode;
     promptContext = extensionResult.promptContext;
@@ -1185,12 +1230,43 @@ export class Task {
       promptContext,
     });
 
-    if (addToInputHistory) {
-      await this.project.addToInputHistory(prompt);
+    const controller = startup ? new AbortController() : undefined;
+    if (controller) {
+      this.workflowRun = controller;
     }
-
-    this.addUserMessage(userMessageId, prompt, promptContext, images);
-    this.addLogMessage('loading');
+    let interrupted = false;
+    try {
+      if (addToInputHistory) {
+        await this.project.addToInputHistory(prompt);
+      }
+      this.addUserMessage(userMessageId, prompt, promptContext, images);
+      this.addLogMessage('loading');
+      if (startup && controller) {
+        await startProjectEnvironment(startup, controller.signal, (message) => this.addLogMessage('loading', message, false, promptContext));
+      }
+    } catch (error) {
+      if (!controller) {
+        throw error;
+      }
+      interrupted = true;
+      await this.saveTask({ state: DefaultTaskState.Interrupted, completedAt: undefined });
+      this.addLogMessage(
+        controller.signal.aborted ? 'warning' : 'error',
+        controller.signal.aborted ? 'Avvio del lavoro interrotto.' : error instanceof Error ? error.message : 'Avvio dei container non riuscito.',
+        true,
+        promptContext,
+      );
+    } finally {
+      if (controller) {
+        this.workflowRun = undefined;
+        if (interrupted) {
+          this.addLogMessage('loading', undefined, true, promptContext);
+        }
+      }
+    }
+    if (interrupted) {
+      return this.runNextQueuedPrompt();
+    }
 
     await this.telemetryManager.captureRunPrompt(this, mode);
 
@@ -2913,6 +2989,29 @@ export class Task {
     return this.skillManager;
   }
 
+  private async workflowSkillCatalog(): Promise<WorkflowSkillCatalog> {
+    const skills = (await this.skillManager.getEnabledSkills({ globalOnly: true })).filter(({ disableModelInvocation }) => !disableModelInvocation);
+    const paths = new Map(skills.map(({ name, dirPath }) => [name, dirPath]));
+    return {
+      available: skills.map(({ name, description }) => ({ name, description })),
+      read: async (name) => {
+        const directory = paths.get(name);
+        if (!directory) {
+          return null;
+        }
+        const file = path.join(directory, 'SKILL.md');
+        if (path.relative(path.join(AIDER_DESK_HOME_DIR, 'skills'), path.dirname(directory))) {
+          return null;
+        }
+        const stat = await fs.lstat(file);
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 30_000 || path.relative(file, await fs.realpath(file))) {
+          return null;
+        }
+        return fs.readFile(file, 'utf8');
+      },
+    };
+  }
+
   public async getSkills(): Promise<Skill[]> {
     const contextMessages = await this.contextManager.getContextMessages();
     return this.skillManager.getSkills(contextMessages);
@@ -3181,8 +3280,8 @@ export class Task {
   }
 
   public async interruptResponse(interruptId?: string) {
-    if (this.managedPilotRun) {
-      this.managedPilotRun.abort();
+    if (this.workflowRun) {
+      this.workflowRun.abort();
       return;
     }
     const extensionResult = await this.extensionManager.dispatchEvent('onInterrupted', { interruptId }, this.project, this);

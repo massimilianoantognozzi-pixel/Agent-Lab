@@ -1,6 +1,7 @@
 import { extractTextContent } from '@common/utils';
 
 import { assertWorkflowText } from './workflow-policy';
+import { projectWorkflowCommandPattern } from './workflow-project-commands';
 
 import type { AutonomyMode, ContextMessage } from '@common/types';
 
@@ -40,6 +41,13 @@ export const remoteTaskLabel = (label: string): string => {
 };
 
 const resultText = (text: string): string | undefined => {
+  if (/^## (?:Piano di lavoro|Validazioni manuali)\r?\n/.test(text)) {
+    const lines = text
+      .split(/\r?\n/)
+      .slice(2)
+      .filter((line) => !hostPath.test(line));
+    return safeText(lines.join('\n').trim())?.slice(0, 3000);
+  }
   if (planTitle.test(text)) {
     const outcome = text.split(/\r?\n\r?\n/)[1]?.trim();
     if (outcome && !hostPath.test(outcome)) {
@@ -77,6 +85,7 @@ export const remoteWorkflowMessages = (history: ContextMessage[]): PublicMessage
     const content = extractTextContent(message.content).trim();
     if (
       !workflowCommand.test(request) &&
+      !projectWorkflowCommandPattern.test(request) &&
       !(planTitle.test(content) && content.includes('File autorizzati dal piano') && content.includes('Criteri') && /^Versione: [0-9a-f]{64}$/m.test(content))
     ) {
       continue;

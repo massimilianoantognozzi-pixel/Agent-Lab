@@ -1,5 +1,17 @@
+import roles from './workflow-roles.json';
+
 export type WorkflowKind = 'bug' | 'change' | 'feature';
-export type WorkflowStage = 'plan' | 'implement' | 'debug' | 'review' | 'learn';
+export type WorkflowStage = 'plan' | 'design' | 'implement' | 'debug' | 'review' | 'design-review' | 'learn';
+
+const stageRoles = {
+  plan: roles.orchestrator,
+  design: roles.designer,
+  implement: roles.programmer,
+  debug: roles.fixer,
+  review: roles.reviewer,
+  'design-review': roles.designer,
+  learn: roles.orchestrator,
+} satisfies Record<WorkflowStage, { name: string; instructions: string }>;
 
 // These are adaptations of the public methods. The executable workflow owns approvals and checks.
 export const WORKFLOW_SKILL_SOURCES = {
@@ -26,6 +38,10 @@ const stageInstructions: Record<WorkflowStage, readonly string[]> = {
     'Identifica i componenti, i pattern e i testi approvati da riusare, con i relativi percorsi quando disponibili. Per le informazioni mancanti distingui domande aperte e assunzioni reversibili.',
     'Descrivi passi piccoli e ordinati per dipendenza, file coinvolti e criteri di accettazione osservabili. Per ciascun comportamento rilevante indica precondizione, azione, risultato atteso e controllo pertinente.',
   ],
+  design: [
+    'Progetta soltanto le superfici richieste, usando come vincoli gli scenari e le fonti fornite. Per un layout mobile indica anche come si accede alle azioni secondarie e si gestiscono gli stati rilevanti.',
+    'Se una scelta modifica una decisione già approvata o cambia il prodotto, formula la domanda che deve essere risolta prima del codice.',
+  ],
   implement: [
     'Segui i passi e i criteri del piano approvato. Mantieni le responsabilità dei moduli e riusa le interfacce, i componenti, i testi e i test già presenti.',
     'Per una correzione riproducibile, usa il caso fallito come prova di regressione. Per gli altri interventi, collega la proposta ai criteri di accettazione e gestisci i casi limite del piano.',
@@ -40,6 +56,10 @@ const stageInstructions: Record<WorkflowStage, readonly string[]> = {
     'Esamina anche regressioni, casi limite, compatibilità e riuso delle scelte approvate. Motiva ogni rilievo con un file, un comportamento osservabile o un risultato del controllo.',
     'Usa soltanto le prove disponibili. Se un criterio richiede una verifica mancante, indica esattamente quale.',
   ],
+  'design-review': [
+    'Verifica dal codice e dalle prove disponibili se la proposta attua il flusso, le interazioni, gli stati e la composizione concordati. Verifica il riuso della logica e la composizione dedicata al mobile quando richiesta.',
+    'Distingui i rilievi verificabili dal codice dalle verifiche manuali o visive rimandate. Registra un esito negativo quando il codice mostra una difformità dal piano.',
+  ],
   learn: [
     'Ricava una proposta di apprendimento solo da una correzione o decisione verificata. Registra contesto, sintomo, causa, regola riutilizzabile e riferimento alla prova.',
     'Indica la destinazione più precisa per ogni proposta, per esempio una decisione, il catalogo dei componenti o un test di regressione. Segnala sovrapposizioni con fonti attive e separa i punti che richiedono approvazione.',
@@ -50,6 +70,8 @@ export const isWorkflowKind = (value: unknown): value is WorkflowKind => value =
 
 export const workflowSkills = (kind: WorkflowKind, stage: WorkflowStage): string =>
   [
+    'Ruolo: ' + stageRoles[stage].name,
+    stageRoles[stage].instructions,
     kindInstructions[kind],
     'Usa i materiali del progetto come fonti sul prodotto. Rispetta i limiti del piano, gli strumenti e le autorizzazioni imposti dall’applicazione.',
     ...stageInstructions[stage],

@@ -64,6 +64,10 @@ describe('workflow remote', () => {
       expect((await request('/api/action', { action: 'approve', id: 'outside', revision: 'b'.repeat(64) })).status).toBe(404);
       expect((await request('/api/action', { action: 'approve', id: 'task-1', revision: 'b'.repeat(64) })).status).toBe(202);
       expect(run).toHaveBeenCalledWith('task-1', '/workflow approve ' + 'b'.repeat(64));
+      for (const prompt of ['Avvia il lavoro', 'Riprendi il lavoro', 'Riprendi le validazioni', 'Conferma passaggio V-03 1', 'Registra esito V-03 superata']) {
+        expect((await request('/api/action', { action: 'run', id: 'task-1', prompt })).status).toBe(202);
+        expect(run).toHaveBeenCalledWith('task-1', prompt);
+      }
       expect((await request('/api/action', { action: 'stop', id: 'task-1' })).status).toBe(200);
       expect(stop).toHaveBeenCalledWith('task-1');
       expect((await request('/api/revoke', {})).status).toBe(200);

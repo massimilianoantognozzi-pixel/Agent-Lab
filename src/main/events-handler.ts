@@ -1,6 +1,8 @@
 import path from 'path';
 import fs from 'fs/promises';
 
+import { isCodexAgentModel } from '@common/agent';
+
 import {
   AgentProfile,
   AutonomyMode,
@@ -617,6 +619,10 @@ export class EventsHandler {
     if (!task) {
       return;
     }
+    if (isCodexAgentModel(mainModel)) {
+      task.addLogMessage('warning', 'Seleziona i modelli OpenAI Codex nel menu dell’Agente.', true);
+      return;
+    }
 
     const weakModel = task.task.weakModelLocked ? task.task.weakModel : null;
     await task.updateTask({
@@ -634,6 +640,10 @@ export class EventsHandler {
     if (!task) {
       return;
     }
+    if (isCodexAgentModel(weakModel)) {
+      task.addLogMessage('warning', 'Seleziona i modelli OpenAI Codex nel menu dell’Agente.', true);
+      return;
+    }
 
     await task.updateTask({ weakModel });
 
@@ -646,6 +656,10 @@ export class EventsHandler {
   async updateArchitectModel(baseDir: string, taskId: string, architectModel: string): Promise<void> {
     const task = this.projectManager.getProject(baseDir).getTask(taskId);
     if (!task) {
+      return;
+    }
+    if (isCodexAgentModel(architectModel)) {
+      task.addLogMessage('warning', 'Seleziona i modelli OpenAI Codex nel menu dell’Agente.', true);
       return;
     }
 
@@ -669,7 +683,7 @@ export class EventsHandler {
   }
 
   async loadMcpServerTools(serverName: string, config?: McpServerConfig, projectDir?: string): Promise<McpTool[] | string | null> {
-    const serverConfig = config ?? this.mcpConfigManager.getMergedServers(projectDir)[serverName];
+    const serverConfig = this.mcpConfigManager.resolveServer(serverName, projectDir, config);
     if (!serverConfig) {
       return null;
     }
@@ -682,11 +696,12 @@ export class EventsHandler {
   }
 
   async reloadMcpServer(serverName: string, config: McpServerConfig): Promise<McpTool[]> {
-    return await this.mcpManager.reloadSingleServer(serverName, config);
+    const serverConfig = this.mcpConfigManager.resolveServer(serverName, undefined, config);
+    return serverConfig ? await this.mcpManager.reloadSingleServer(serverName, serverConfig) : [];
   }
 
   async getMcpOAuthStatus(serverName: string, config?: McpServerConfig, projectDir?: string): Promise<McpOAuthStatusData> {
-    const serverConfig = config ?? this.mcpConfigManager.getMergedServers(projectDir)[serverName];
+    const serverConfig = this.mcpConfigManager.resolveServer(serverName, projectDir, config);
     if (!serverConfig) {
       throw new Error(`MCP server '${serverName}' is not configured`);
     }
@@ -694,7 +709,7 @@ export class EventsHandler {
   }
 
   async startMcpOAuth(serverName: string, config?: McpServerConfig, projectDir?: string): Promise<string> {
-    const serverConfig = config ?? this.mcpConfigManager.getMergedServers(projectDir)[serverName];
+    const serverConfig = this.mcpConfigManager.resolveServer(serverName, projectDir, config);
     if (!serverConfig) {
       throw new Error(`MCP server '${serverName}' is not configured`);
     }
@@ -702,7 +717,7 @@ export class EventsHandler {
   }
 
   async disconnectMcpOAuth(serverName: string, config?: McpServerConfig, projectDir?: string): Promise<void> {
-    const serverConfig = config ?? this.mcpConfigManager.getMergedServers(projectDir)[serverName];
+    const serverConfig = this.mcpConfigManager.resolveServer(serverName, projectDir, config);
     if (!serverConfig) {
       throw new Error(`MCP server '${serverName}' is not configured`);
     }
@@ -724,13 +739,19 @@ export class EventsHandler {
   async addMcpServer(name: string, config: McpServerConfig, projectDir?: string): Promise<void> {
     assertLabSetupOperation();
     await this.mcpConfigManager.addServer(projectDir, name, config);
-    await this.mcpManager.reloadSingleServer(name, this.mcpConfigManager.getMergedServers(projectDir)[name]);
+    const server = this.mcpConfigManager.resolveServer(name, projectDir);
+    if (server) {
+      await this.mcpManager.reloadSingleServer(name, server);
+    }
   }
 
   async updateMcpServer(oldName: string, name: string, config: McpServerConfig, projectDir?: string): Promise<void> {
     assertLabSetupOperation();
     await this.mcpConfigManager.updateServer(projectDir, oldName, name, config);
-    await this.mcpManager.reloadSingleServer(name, this.mcpConfigManager.getMergedServers(projectDir)[name]);
+    const server = this.mcpConfigManager.resolveServer(name, projectDir);
+    if (server) {
+      await this.mcpManager.reloadSingleServer(name, server);
+    }
   }
 
   async removeMcpServer(name: string, projectDir?: string): Promise<void> {

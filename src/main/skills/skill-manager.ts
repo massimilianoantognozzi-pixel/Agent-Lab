@@ -78,7 +78,7 @@ const safeStat = async (filePath: string): Promise<import('fs').Stats | null> =>
   }
 };
 
-const loadSkillsFromDir = async (skillsRootDir: string, location: SkillLocation): Promise<Skill[]> => {
+const loadSkillsFromDir = async (skillsRootDir: string, location: SkillLocation, canonicalOnly = false): Promise<Skill[]> => {
   const entries = await safeReadDir(skillsRootDir);
 
   const skills: Skill[] = [];
@@ -95,14 +95,19 @@ const loadSkillsFromDir = async (skillsRootDir: string, location: SkillLocation)
       continue;
     }
 
-    let markdown: string;
+    let parsed: ReturnType<typeof parseSkillFrontMatter>;
     try {
-      markdown = await fs.readFile(skillMdPath, 'utf8');
+      if (canonicalOnly) {
+        const stat = await fs.lstat(skillMdPath);
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 30_000 || path.relative(skillMdPath, await fs.realpath(skillMdPath))) {
+          continue;
+        }
+      }
+      parsed = parseSkillFrontMatter(await fs.readFile(skillMdPath, 'utf8'));
     } catch {
       continue;
     }
 
-    const parsed = parseSkillFrontMatter(markdown);
     if (!parsed) {
       continue;
     }
@@ -167,9 +172,9 @@ export class SkillManager {
     }));
   }
 
-  async getEnabledSkills(): Promise<Skill[]> {
+  async getEnabledSkills({ globalOnly = false } = {}): Promise<Skill[]> {
     const disabledSkills = this.project.getProjectSettings().disabledSkills ?? [];
-    const skills = await this.loadAllSkills();
+    const skills = globalOnly ? await loadSkillsFromDir(path.join(AIDER_DESK_HOME_DIR, SKILLS_DIR_NAME), 'global', true) : await this.loadAllSkills();
 
     return skills.filter((skill) => !disabledSkills.includes(skill.name));
   }

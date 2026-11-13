@@ -17,6 +17,8 @@ const sourceHome = os.homedir();
 const sourceOpenCode = path.join(sourceHome, '.config', 'opencode');
 const excluded = new Set(['node_modules', '.git', '__pycache__', '.cache', 'dist']);
 
+export const isKnowledgeFileAllowed = (name) => !excluded.has(name) && !/^\.env(?:\.|$)|^(?:auth|service)\.json$|\.(?:pem|key|pfx|p12|exe|dll|node|pkl)$/i.test(name);
+
 const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const inside = (root, target) => {
   const relative = path.relative(root, target);
@@ -37,7 +39,7 @@ export function prepare() {
     const stat = fs.lstatSync(source);
     if (stat.isSymbolicLink()) throw new Error(`Linked knowledge source refused: ${source}`);
     const name = path.basename(source);
-    if (excluded.has(name) || /^\.env(?:\.|$)|^(?:auth|service)\.json$|\.(?:pem|key|pfx|p12|exe|dll|node|pkl)$/i.test(name)) return;
+    if (!isKnowledgeFileAllowed(name)) return;
     if (stat.isDirectory()) {
       fs.mkdirSync(destination, { recursive: true });
       for (const item of fs.readdirSync(source)) copyKnowledge(path.join(source, item), path.join(destination, item));

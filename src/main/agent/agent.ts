@@ -86,6 +86,7 @@ import { isGovernedWorkflow } from '@/task/workflow-policy';
 import { Store } from '@/store';
 import logger from '@/logger';
 import { prepareMessagesForModel } from '@/agent/message-preparation';
+import { defaultAgentReasoning } from '@/models/agent-reasoning';
 import { ModelManager } from '@/models/model-manager';
 import { TelemetryManager } from '@/telemetry/telemetry-manager';
 import { ResponseMessage } from '@/messages';
@@ -787,6 +788,7 @@ export class Agent {
     }
     const effectiveAbortSignal = modelCallSettings.abortSignal || (controllerId ? this.abortControllers.get(controllerId)?.signal : undefined);
     const cacheControl = this.modelManager.getCacheControl(provider, modelName);
+    modelCallSettings.reasoning ??= defaultAgentReasoning(provider.id, modelName);
     const providerParameters = this.modelManager.getProviderParameters(provider, modelName, modelCallSettings.reasoning);
     const providerOptions = this.modelManager.getProviderOptions(provider, modelName, modelCallSettings?.reasoning);
 
@@ -1748,6 +1750,7 @@ export class Agent {
     const settings = this.store.getSettings();
     const model = await this.modelManager.createLlm(provider, modelName, settings, projectDir, undefined, systemPrompt, undefined, sessionId);
     const cacheControl = this.modelManager.getCacheControl(provider, modelName);
+    reasoning ??= defaultAgentReasoning(provider.id, modelName);
     const providerOptions = this.modelManager.getProviderOptions(provider, modelName, reasoning);
     const providerParameters = this.modelManager.getProviderParameters(provider, modelName, reasoning);
 

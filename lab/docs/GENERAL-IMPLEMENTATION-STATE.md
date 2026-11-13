@@ -1,5 +1,35 @@
 # Ripresa del riallineamento generale
 
+## Coda di lavoro e ripresa delle validazioni
+
+«Avvia il lavoro» e «Riprendi il lavoro» leggono il piano versionato sul ramo di sviluppo e portano avanti i task eseguibili. Se un task richiede Docker, AiderDesk prepara il motore prima dell’esecuzione. «Riprendi le validazioni» recupera dal registro del progetto la prova, la versione e il prossimo passaggio. I comandi funzionano nella chat desktop e nell’invio remoto. [Configurazione e comandi](WORKFLOW-ENVIRONMENT.md#avvio-del-piano-e-ripresa-delle-prove)
+
+Verificati 25 test mirati, con avvio a freddo simulato, container reali e ripresa del task dopo indisponibilità del motore. Il pilota senza controlli Docker ha completato la coda senza verificare il motore. Sono passati typecheck, lint, build del launcher completo e collaudo Electron/Edge. La review indipendente ha verificato che il polling prosegua anche dopo un errore del comando di avvio.
+
+Nel collaudo a freddo sul PC, «Avvia il lavoro» ha riavviato Docker Desktop in 8,2 secondi dal comando. Docker ha ripristinato i due container remoti Agent-Lab e i sette container Edilas già attivi prima dello spegnimento. La coda Turni con modello simulato ha eseguito il controllo Docker sulla base e sul candidato e ha integrato T-12, T-13 e T-14 nella copia isolata con `dev` e `main`. Il launcher completo è rimasto aperto, il relay Agent-Lab ha restituito 200 per la Home e 401 per l’API senza sessione, e il controllo di salute Edilas ha restituito 200.
+
+I launcher associano ora il checkout Edilas allo script di avvio del suo stack. Nella prova Electron entrambi i comandi hanno atteso i servizi Edilas reali prima di inviare la richiesta al modello simulato. I servizi erano già attivi durante questa prova. I test mirati hanno verificato anche che il comando di un altro checkout non selezioni Edilas e che due chat concorrenti condividano l’avvio.
+
+Il profilo generale di Agent-Lab usa GPT-6.1 Sol con ragionamento Alto come valore predefinito. «Avvia il lavoro» e «Riprendi il lavoro» attendono Docker Desktop e avviano i container privati di Agent-Lab. Poi leggono i documenti di ripresa e preparano i servizi del checkout attivo. Edilas usa lo script dedicato, QuantoMiSPESA il PostgreSQL già registrato e ViaSalus il database locale conservato con verifica di proprietà. Per gli altri progetti si usano il documento dei servizi e le etichette Docker del checkout. Il collaudo a freddo è riservato all’utente.
+
+Nel primo pilota Turni, un modello simulato ha eseguito T-12, T-13 e T-14 in Electron, con tre commit su `dev` e due soli rami. AiderDesk è stato chiuso dopo il primo passaggio di V-03 e riaperto in una nuova chat. Edge con viewport mobile ha confermato la persistenza del filtro e il registro ha salvato l’esito sulla versione provata.
+
+V-03 è passata anche sul telefono fisico tramite il pilota isolato. AiderDesk ha recuperato il primo passaggio confermato e ha mostrato il secondo. L’utente ha confermato che il filtro «Solo attivi» è rimasto selezionato dopo la riapertura. Il registro del pilota ha salvato due passaggi confermati e l’esito positivo sul commit `7c82d7a`.
+
+Il pilota successivo con GPT-6.1 Sol, tramite il profilo OpenAI Codex di AiderDesk, ha integrato T-12 (`cb46334`), T-13 (`a153733`) e T-14 (`3d98d67`) su `dev` in un solo «Avvia il lavoro». Il repository isolato conteneva soltanto `dev` e `main`. Il filtro ha superato il controllo comportamentale in Docker e la vista mobile la prova in Edge. V-03 è stata registrata in attesa sul commit di T-13 mentre la coda completava T-14. [Evidenza locale](../work/turni-live-Y7vnAS/evidence.json)
+
+I tentativi preliminari hanno evidenziato la necessità di mostrare al revisore il risultato sulla base e le definizioni dei controlli, chiarire le fonti del pilota e verificare la vista candidata in Edge prima della revisione. Sono passati 20 test mirati, incluso il controllo Docker, oltre a typecheck, lint e build.
+
+## Ruoli e skill del flusso di sviluppo
+
+Il profilo generale e il profilo dell'ambiente governato dispongono delle 20 skill recuperate da OpenCode, comprese guide, riferimenti e script. Il confronto SHA-256 ha verificato 392 file nelle cartelle delle skill. La cartella `node_modules` di TrueLine contiene dipendenze generate e resta fuori dalla copia.
+
+I launcher preparano i profili nativi **Designer UI/UX**, **Programmatore**, **Revisore del codice** e **Correttore** con gli strumenti Skills attivi. Alla creazione prendono il modello dal profilo principale di quell'ambiente. I profili sono richiamabili su richiesta nella chat Agent. Designer e Revisore hanno lettura e ricerca nel repository, con scrittura e shell disabilitate. Il Designer può consultare shadcn MCP e React Bits. Le istruzioni dei ruoli sono condivise con il flusso governato per repository.
+
+Il flusso per repository seleziona le skill pertinenti nel piano e ne verifica il contenuto prima di eseguire il lavoro. Il Designer progetta le superfici richieste e revisiona il candidato dopo i controlli e la review del codice. Per il mobile la proposta riusa logica e dati del progetto e definisce una composizione e interazioni adatte al telefono. Il Correttore riceve la proposta e i rilievi. Il motore ripete controlli e review prima di preparare la patch. Vedi [ambiente governato](WORKFLOW-ENVIRONMENT.md).
+
+Verificati build locali, typecheck, lint, Gitleaks e 45 test mirati. In Electron, un repository sintetico e un modello simulato hanno completato progettazione mobile, consultazione reale di shadcn MCP, applicazione della skill TypeScript, correzione e doppio riesame fino alla patch. Electron ed Edge hanno verificato anche il client remoto. Il test Docker opzionale e la valutazione visiva su un prodotto reale restano da eseguire.
+
 ## Ambiente governato per repository (11 novembre 2026)
 
 Il flusso sperimentato nel pilota è disponibile anche su repository dichiarati nel profilo locale. L’avvio completo riusa l’account e il selettore di ragionamento del pilota. Avvio, configurazione, comandi, memoria approvata, consegna della patch e pagina remota sono descritti in [WORKFLOW-ENVIRONMENT.md](WORKFLOW-ENVIRONMENT.md).

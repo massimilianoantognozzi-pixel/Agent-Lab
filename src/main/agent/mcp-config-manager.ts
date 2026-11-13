@@ -9,6 +9,7 @@ import type { McpServerConfig, SettingsData } from '@common/types';
 import type { Store } from '@/store';
 
 import { AIDER_DESK_DIR, AIDER_DESK_HOME_DIR, AIDER_DESK_MCP_SERVERS_FILE } from '@/constants';
+import shadcn from '@/task/workflow-shadcn.json';
 import logger from '@/logger';
 import { EventManager } from '@/events';
 import { shouldUsePolling } from '@/utils/file-watch';
@@ -73,10 +74,21 @@ export class McpConfigManager {
     if (!projectDir) {
       return this.getGlobalServers();
     }
-    return {
+    const merged = {
       ...this.globalServers,
       ...(this.projectServers.get(projectDir) || {}),
     };
+    const catalog = this.globalServers[shadcn.server];
+    if (catalog) {
+      merged[shadcn.server] = catalog;
+    } else {
+      delete merged[shadcn.server];
+    }
+    return merged;
+  }
+
+  public resolveServer(name: string, projectDir?: string, supplied?: McpServerConfig): McpServerConfig | undefined {
+    return name === shadcn.server ? this.globalServers[name] : (supplied ?? this.getMergedServers(projectDir)[name]);
   }
 
   public getState(): { global: Record<string, McpServerConfig>; projectServers: Record<string, Record<string, McpServerConfig>> } {

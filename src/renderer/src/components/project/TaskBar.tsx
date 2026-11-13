@@ -8,7 +8,7 @@ import { MdOutlineRefresh } from 'react-icons/md';
 import { VscLock, VscUnlock } from 'react-icons/vsc';
 import { RiMenuUnfold4Line, RiRobot2Line } from 'react-icons/ri';
 import { useTranslation } from 'react-i18next';
-import { getProviderModelId } from '@common/agent';
+import { getProviderModelId, isCodexAgentModel } from '@common/agent';
 import { clsx } from 'clsx';
 import { extractProviderModel } from '@common/utils';
 
@@ -63,6 +63,7 @@ export const TaskBar = forwardRef<TaskBarRef, Props>(
   ) => {
     const { t } = useTranslation();
     const preferredModels = useSettingsStore((state) => state.settings?.preferredModels) ?? [];
+    const preferredAiderModels = preferredModels.filter((modelId) => !isCodexAgentModel(modelId));
     const { models, providers } = useModelProviders();
     const api = useApi();
     const saveSettings = useSaveSettings();
@@ -86,7 +87,7 @@ export const TaskBar = forwardRef<TaskBarRef, Props>(
     );
 
     const aiderModels = useMemo(() => {
-      const aiderModels: Model[] = [...models];
+      const aiderModels = models.filter((model) => !isCodexAgentModel(getProviderModelId(model)));
       aiderModels.sort((model, otherModel) => {
         const modelId = getProviderModelId(model);
         const otherModelId = getProviderModelId(otherModel);
@@ -487,7 +488,7 @@ export const TaskBar = forwardRef<TaskBarRef, Props>(
                   models={aiderModels}
                   selectedModelId={modelsData?.mainModel}
                   onChange={updateMainModel}
-                  preferredModelIds={preferredModels}
+                  preferredModelIds={preferredAiderModels}
                   removePreferredModel={handleRemovePreferredModel}
                   providers={providers}
                 />
@@ -501,7 +502,7 @@ export const TaskBar = forwardRef<TaskBarRef, Props>(
                   models={aiderModels}
                   selectedModelId={modelsData?.weakModel || modelsData?.mainModel}
                   onChange={updateWeakModel}
-                  preferredModelIds={preferredModels}
+                  preferredModelIds={preferredAiderModels}
                   removePreferredModel={handleRemovePreferredModel}
                   providers={providers}
                 />
@@ -625,7 +626,7 @@ export const TaskBar = forwardRef<TaskBarRef, Props>(
                             models={aiderModels}
                             selectedModelId={modelsData?.architectModel || modelsData?.mainModel}
                             onChange={updateArchitectModel}
-                            preferredModelIds={preferredModels}
+                            preferredModelIds={preferredAiderModels}
                             removePreferredModel={handleRemovePreferredModel}
                             providers={providers}
                           />
