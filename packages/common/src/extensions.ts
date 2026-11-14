@@ -425,6 +425,7 @@ export interface PromptStartedEvent {
   prompt: string;
   mode: Mode;
   promptContext: PromptContext;
+  readonly steering?: boolean;
   blocked?: boolean;
 }
 

@@ -17,7 +17,7 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
   const api = useApi();
 
   const handleResponseChunk = useCallback(
-    ({ messageId, chunk, reasoning, reflectedMessage, promptContext }: ResponseChunkData) => {
+    ({ messageId, chunk, reasoning, reflectedMessage, proposedPlan, promptContext }: ResponseChunkData) => {
       touchTaskActivity(taskId);
       const timestamp = Date.now();
       let processingMessage = processingResponseMessageMap.get(taskId);
@@ -25,6 +25,7 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
         processingMessage = {
           ...processingMessage,
           content: processingMessage.content + chunk,
+          proposedPlan: proposedPlan ?? processingMessage.proposedPlan,
           reasoning: reasoning ? (processingMessage.reasoning || '') + reasoning : processingMessage.reasoning,
           promptContext,
         };
@@ -35,6 +36,7 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
               return {
                 ...message,
                 content: message.content + chunk,
+                proposedPlan: proposedPlan ?? message.proposedPlan,
                 reasoning: reasoning ? (message.reasoning || '') + reasoning : message.reasoning,
                 promptContext,
               };
@@ -64,6 +66,7 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
               id: messageId,
               type: 'response',
               content: chunk,
+              proposedPlan,
               reasoning: reasoning || undefined,
               promptContext,
               timestamp,
@@ -78,6 +81,7 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
                 return {
                   ...message,
                   content: message.content + chunk,
+                  proposedPlan: proposedPlan ?? message.proposedPlan,
                   reasoning: reasoning ? (message.reasoning || '') + reasoning : message.reasoning,
                   promptContext,
                 };
@@ -92,11 +96,11 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
   );
 
   const handleResponseCompleted = useCallback(
-    ({ messageId, usageReport, content, reasoning, reflectedMessage, promptContext, timestamp }: ResponseCompletedData) => {
+    ({ messageId, usageReport, content, reasoning, reflectedMessage, proposedPlan, promptContext, timestamp }: ResponseCompletedData) => {
       touchTaskActivity(taskId);
       const processingMessage = processingResponseMessageMap.get(taskId);
 
-      if (content) {
+      if (content || proposedPlan) {
         setMessages(taskId, (prevMessages) => {
           const responseMessage = prevMessages.find((message) => message.id === messageId) as ResponseMessage | undefined;
           if (responseMessage) {
@@ -106,6 +110,7 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
                     ...responseMessage,
                     content,
                     reasoning,
+                    proposedPlan,
                     finished: true,
                     usageReport,
                     promptContext,
@@ -131,6 +136,7 @@ export const useTaskResponseHandlers = (baseDir: string, taskId: string) => {
               type: 'response',
               content,
               reasoning,
+              proposedPlan,
               usageReport,
               promptContext,
               finished: true,

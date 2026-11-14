@@ -1216,6 +1216,7 @@
     "markAsDone": "Segna come completata",
     "reviewChanges": "Esamina modifiche",
     "taskReadyForImplementation": "Attività pronta per l'implementazione",
+    "implementPlanNewChat": "Implementa in una nuova chat",
     "taskDone": "Attività completata",
     "taskDoneArchived": "Attività completata e archiviata",
     "taskDelegated": "L'attività è stata delegata a una sottoattività. Puoi riprenderla se necessario.",
@@ -1793,7 +1794,9 @@
     "questionPlaceholder": "...oppure suggerisci altro",
     "queueTitle": "Richieste in coda",
     "queuedPrompt": "In coda",
-    "queueMessage": "Accoda messaggio (Invio)",
+    "queueMessage": "Accoda per il prossimo turno",
+    "steerMessage": "Invia al turno in corso (Invio)",
+    "steeringUnavailable": "Il turno non ha ricevuto il messaggio. Il testo è ancora nell’editor.",
     "removeQueuedPrompt": "Rimuovi",
     "sendQueuedPromptNow": "Invia subito",
     "editQueuedPrompt": "Modifica",
@@ -1923,6 +1926,7 @@
     "web": "Estrai il contenuto di una pagina web e salvalo in un file. Usa /web url [file], con [file] facoltativo.",
     "handoff": "Passa la conversazione a una nuova attività con un obiettivo specifico",
     "subtask": "Crea una sottoattività dell'attività corrente e passa a essa",
+    "goal": "Imposta o gestisci l’obiettivo autonomo della chat. Usa /goal [obiettivo], /goal pause, /goal resume o /goal clear.",
     "subagent": "Esegui una richiesta con un sottoagente specifico. Usa /subagent <subagent-id> <prompt>",
     "skill": "Attiva una skill. Il testo dopo il nome della skill viene usato come richiesta"
   },
@@ -2308,6 +2312,7 @@
     "branchUpdated": "Branch '{{branch}}' aggiornato dal repository remoto"
   },
   "nativeMenu": {
+    "Restart Agent-Lab": "Riavvia Agent-Lab",
     "File": "File",
     "New Window": "Nuova finestra",
     "Quit": "Esci",

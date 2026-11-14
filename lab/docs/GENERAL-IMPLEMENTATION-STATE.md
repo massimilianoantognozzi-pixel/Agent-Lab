@@ -1,5 +1,427 @@
 # Ripresa del riallineamento generale
 
+## Build Windows r56 — ripresa a freddo
+
+Una richiesta Riprendi ricevuta durante l'avvio attende modelli,
+estensioni, profili e caricamento dei task prima di cercare il task.
+La r55 ha superato la prova Electron dopo una chiusura regolare con
+una sola richiesta IPC ricevuta prima della lettura del profilo.
+La r56 estende la riconciliazione allo stato `InProgress` lasciato
+da un arresto improvviso prima del caricamento del task. Il test
+di regressione r55 perdeva contesto e ID del turno nel percorso
+generico. La prova Electron r56 ha terminato l'albero del processo
+isolato, lasciando sul disco lo stato `InProgress`. Una richiesta IPC
+inviata prima della disponibilità del profilo ha recuperato lo stesso
+turno. Due input già confermati sono arrivati una volta ciascuno e il
+processo nativo non è ripartito. Provider deterministico su loopback.
+
+- 190 test Node mirati, 44 test del progetto e 20 del renderer.
+- Suite Node completa su Windows, 1.691 passati, 43 falliti e due esclusi. I 43 nomi dei test falliti coincidono con il confronto precedente dei test upstream locali.
+- Typecheck Node e web, lint mirato e Semgrep locale su 43 file, 12 regole e zero rilievi.
+- ASAR SHA-256 `1A54489C54603765632BFD1FE7CBEA147DEF3AD9CCEBC44B8BAF1F4574702E8C`. Smoke Windows passato.
+- ZIP Windows x64, 466 file verificati. SHA-256 `A2F94F7EB70BD75536BEBE10C8E4173F13175ED5C832945910300D4DC4F8167C`.
+- Collegamento desktop r56, ripristino r54, sette configurazioni del profilo con hash verificati.
+- Il checkout include anche la correzione del catalogo dei menu e dell'aiuto `/goal` emersa nella suite renderer. Il pacchetto desktop r56 precede questa sola modifica ai testi dell'interfaccia.
+- Suite renderer completa sul checkout, 516 test passati dopo la correzione dei cataloghi.
+- Candidato r57 compilato per i soli cataloghi inglese e italiano. ASAR SHA-256 `7AA6CDA0D45CEB75B5B6C1CC6141C3E33912F7318AF55C40F6F939AB5535DB3B`. Prima di pubblicare lo ZIP r57 o cambiare collegamento verificare l'esito dello smoke isolato e il pacchetto. Il collegamento punta alla r56.
+- Proseguire con modello locale, prove multiprovider e pilota Edilas su copia isolata.
+
+## Build Windows r54 e checkpoint di lavoro — 14 novembre 2026
+
+Il ciclo Agent applica ora la stessa classificazione dei guasti del
+provider con o senza streaming. Rispetta il veto dell'adattatore,
+il ritardo comunicato con `Retry-After` e il limite dei tentativi.
+Un errore successivo all'avvio di uno strumento non ripete il campione.
+Due test hanno riprodotto l'interruzione al primo errore nella r53 e
+passano con la correzione. Sono passate anche le prove per quota
+esplicita, veto, ritardo del server e strumento già avviato. Su Electron
+sono passati quattro casi con provider deterministico su loopback. La
+disconnessione dopo un campione con esito nativo ha conservato la
+ricevuta e ha ripreso lo stesso turno senza rieseguire il comando.
+
+- 105 test Node mirati, typecheck e smoke Windows.
+- ASAR SHA-256 `D7126C7E6548996485DC469CD2194499896466CE86FDD4B30ED22D0F517DB221`.
+- ZIP Windows x64, 466 file verificati, SHA-256 `49671B62E60CFC9797784B54F2539284AABFB354403E84630897F2AEEE7728D8`.
+- Collegamento desktop r54, ripristino r53, sette configurazioni del profilo con hash verificati.
+
+GLM-4.5-Flash reale ha completato il goal sulla medesima ASAR. Cinque
+risposte HTTP 200, primo esito 1, nuovo turno automatico, verificatore
+con esito 0 ed evidenza nativa nel completamento. La fixture impone
+il primo confine di turno e limita il menu dei comandi per fase.
+Nessun nuovo messaggio utente e uscita Electron con codice 0.
+
+Il candidato successivo conserva una richiesta di ripresa ricevuta
+all'avvio mentre progetti e profili sono ancora in caricamento. Il test
+riproduce la perdita della richiesta sulla sorgente r54. Il candidato
+supera nove test mirati e typecheck Node. La prova sul pacchetto resta
+in corso.
+
+Per il modello locale è stata verificata una copia isolata del modello
+Devstral, con quattro componenti su digest atteso e runtime Ollama
+0.40.16 con firma valida. La revisione automatica ha rifiutato l'avvio
+dell'istanza dedicata. Il listener esistente non ha esposto modelli al
+controllo eseguito. La prova con un modello locale rimane da svolgere.
+
+Il prossimo collaudo resta nel perimetro Agent-Lab e usa un progetto
+sintetico. Qualificare retry, contabilità degli obiettivi e ripresa
+con provider reali. Collegare ogni evidenza alla build verificata.
+La qualifica del pilota Edilas richiede una copia isolata.
+
+Come precondizione del pilota, 51 prove mirate su repository sintetici
+hanno confermato dependency tracking, ripresa di integrazioni, regole
+e gestione della coda. Separatamente la verifica Docker reale è
+passata con l'immagine Node locale fissata per digest. La ricerca reale
+già collaudata nelle build precedenti non è stata ripetuta qui.
+
+## Build Windows r53 — 14 novembre 2026
+
+Il desktop avvia la r53 attraverso il launcher esistente. Con un
+provider deterministico su loopback, il collaudo Electron ha inviato
+due correzioni al turno attivo, separato un prompt in coda e interrotto
+un comando nativo con Stop. La ripresa ha conservato lo stesso ID di
+turno, ricevuto ogni correzione una sola volta e mantenuto un solo avvio
+del comando. Il collaudo ha rimosso il prompt separato dopo averne
+verificato la persistenza, per isolare la ripresa. Dopo la riapertura
+la cronologia coincide con il checkpoint. La r52 riproduceva gli ID
+duplicati nel checkpoint con la stessa procedura.
+
+- 100 test Node mirati, quattro del renderer, typecheck e smoke Electron Windows.
+- ZIP Windows x64, 466 file verificati, SHA-256 `6A7B912FC1F69F3FB022C1AF5AD040954F8AC1631AD08DA40422AA5FCA613DDC`.
+- ASAR SHA-256 `46E32E44AB031BF347F5DB06B9A13289DC072B6B30F7F383AC8A3F94638A7E50`.
+- Collegamento desktop r53, ripristino r48, sette configurazioni del profilo con hash verificati.
+
+Il confronto multiprovider con modelli reali, il collaudo del modello
+locale e il pilota su copia isolata di Edilas restano aperti. Le prove
+di Git e Docker sono state eseguite su un progetto di test. La r53
+non conclude la qualifica di parità con Codex.
+
+## Build Windows r48 — 14 novembre 2026
+
+Un verificatore nativo ancora in esecuzione può consegnare l'esito a un
+turno successivo della stessa sessione. Il processo resta associato al
+goal, al profilo e alla revisione verificata. L'esito viene consumato una
+sola volta. La pausa interrompe il verificatore anche dopo la fine del
+turno che lo ha avviato.
+
+Con un provider locale deterministico e la stessa fixture pulita, la
+r47 non registrava il poll con exit 0 dopo il cambio di turno. La r48 ha
+registrato solo l'ID di quel poll e ha completato il goal con un lancio
+del comando e zero messaggi utente aggiuntivi. La prova di pausa ha
+confermato l'uscita del PID e lo stato `paused` privo di prove. Una terza
+prova ha respinto l'esito quando l'impronta del checkout era indisponibile.
+
+- 89 test mirati, typecheck Node, lint e smoke Electron Windows.
+- ZIP Windows x64, 466 file verificati, SHA-256 `CA9D95D01AF5CE5C7939B2C0863C9BF8D15F10238BE29620A9279F0AC40AF89B`.
+- ASAR SHA-256 `C2B57F990B7B550182364617A986A15565B662B72F7CA536D8EF900A35C45B9C`.
+- Collegamento desktop r48, ripristino r47, sette impronte delle configurazioni del profilo corrispondenti.
+
+## Build Windows r47 — 14 novembre 2026
+
+Il motore risolve la directory di lavoro reale prima di attribuire la
+prova a un checkout. Un esito 0 in una directory che la junction porta
+fuori dal checkout non produce una ricevuta valida per quel goal.
+La prova Windows r46 ha riprodotto il falso completamento. Sulla r47,
+con gli stessi comandi nativi e il provider locale deterministico, il
+verificatore interno ha completato il goal e quello esterno è stato
+respinto come prova. Entrambi i comandi sono effettivamente terminati
+con exit 0.
+
+La r46 ha verificato con GPT-6.1 Sol la sequenza di avvio del verificatore
+con exit `null`, lettura del goal senza prove, `bash_poll` con exit 0 e
+completamento con il solo ID del poll. Un lancio per comando e stesso
+turno dopo riavvio. La r47 include questo comportamento.
+
+- ZIP Windows x64, 466 file verificati, SHA-256 `DE0A4CBACB77D6116FAF15EA6658568D4FAA09C90301440719EF3C496532751B`.
+- ASAR SHA-256 `DA891CD6EC088B0F5AE8B41F713CACA033BC6EFA8D3DC24A2F3DE286F874FC27`.
+- Collegamento r47 con copia r45 per ripristino. Sette file di configurazione verificati.
+
+## Build Windows r45 — 14 novembre 2026
+
+Quando due letture consecutive restituiscono lo stesso goal attivo e le
+stesse ricevute native, la richiesta successiva propone gli strumenti
+autorizzati senza `get_goal`. Il modello può continuare il lavoro o invocare
+`update_goal` se le prove coprono l'obiettivo. La lettura torna disponibile
+alla richiesta seguente. Una lettura fallita, sostituita o priva di ricevute
+non consuma il tentativo.
+
+GPT-6.1 Sol ha ripreso lo stesso turno dopo riavvio, con esito IPC
+corrispondente, quattro comandi eseguiti una volta e completamento nativo.
+GLM-4.5-Flash ha avviato il secondo turno senza nuovo input, eseguito il
+verificatore nativo e citato la ricevuta in `update_goal`. Quattro risposte
+HTTP 200 e uscita Electron 0. La fixture Z.AI controlla il confine fra i
+turni e limita i comandi per fase. Rimuove anche l'istruzione ridondante
+di rileggere il goal presente nel collaudo r43. Il ramo di recupero della
+lettura ripetuta è collaudato con provider deterministico.
+
+- ZIP Windows x64, 466 file verificati, SHA-256 `309F4A8CFB44245F15A22D55877BD79D54DBA2A416C2D1B507A2D707C3CE4A2A`.
+- ASAR SHA-256 `299F45531A722BCD7AD822983B54ADCD07CA13C5EB521E3ECAD6C13D90303771`.
+- 82 test mirati, typecheck Node e renderer, lint e smoke Windows.
+
+## Build Windows r43 — 14 novembre 2026
+
+La preparazione del contesto conserva i risultati di `get_goal` anche
+quando la chiamata si ripete. La regressione riproduceva il risultato
+aggiornato sostituito da un errore di duplicazione. Dopo una verifica
+nativa, il contesto comunica gli ID disponibili. Per completare il goal
+il modello deve invocare `update_goal` e citare una prova valida.
+
+GPT-6.1 Sol ha completato il ciclo sulla r43 dopo riavvio, con lo stesso
+ID, una sola esecuzione per comando ed entrambi i processi Electron usciti
+con exit 0. GLM-4.5-Flash ha eseguito exit 1 e poi exit 0 in due turni
+distinti. Ha ricevuto l'ID del verificatore direttamente e ha conservato
+quattro risposte di `get_goal`. Al termine del collaudo limitato non ha
+invocato `update_goal` e il goal è rimasto attivo.
+
+- ZIP Windows x64, 466 file, SHA-256 `145DE518E0ED181B19AC74EC0F698B01D4E61228DF5DD8A70C33E0541188018F`.
+- ASAR SHA-256 `7D008EFFDF8F102FA4CF40C439F9D639D84EFF2B1C1065418F3BF3976A94BF52`.
+- 88 test mirati, typecheck Node e Web, lint e smoke Windows.
+
+## Build Windows r42 — 14 novembre 2026
+
+Nella ripresa il modello riceve le identità delle operazioni registrate
+dal checkpoint come interrotte, con esito `unknown`. Il messaggio contiene
+nome del tool e ID della chiamata. Gli argomenti e le impronte interne non
+vengono reinviati. Il controllo di replay riusa il checkpoint.
+
+Il riavvio gestito r42 ha ripreso lo stesso turno. Il provider locale
+deterministico ha ricevuto il riferimento esatto e un solo comando di
+verifica è stato eseguito. L'uscita finale di Electron ha restituito 0.
+I goal in pausa e quelli mai aperti hanno conservato il proprio stato.
+
+- ZIP Windows x64, 466 file verificati, SHA-256 `2153786D022AFD787F14BE00BBC2246753EE9F3CDF94B0FE9DBACEA2A6FDDD85`.
+- ASAR SHA-256 `2A3471F9E936BB9CDA7101633410EF0D05EA2DDC2D9919CE017C0F165CA67340`.
+- Launcher del checkout SHA-256 `94FC05D8F11B7227B269BBEA3598634CFC652D8B70B9C9F23AC8D4E1EE3E3C32`.
+- 94 test mirati, typecheck Node e web, lint e smoke Windows eseguiti.
+
+## Build Windows r41 — 14 novembre 2026
+
+Il menu File offre **Riavvia Agent-Lab** nel launcher Windows portabile.
+Il launcher conserva il backend e la propria identità, sostituisce il
+processo Electron e trasferisce una ricevuta temporanea associata al riavvio.
+Il successore riprende i goal attivi già caricati in scrittura nei progetti
+aperti. La chiusura ordinaria non avvia questo percorso.
+
+Il collaudo isolato con provider locale deterministico ha azionato il menu
+effettivo. Il successore ha riusato lo stesso turno, eseguito il verificatore
+una volta e concluso il goal prima di una richiesta di caricamento dal
+renderer. Un goal in pausa e un goal mai aperto hanno conservato i digest.
+
+- ZIP Windows x64, 466 file, SHA-256 `E8D59BFCF13FB401A548D87CE2CF522A8DF9E350BD0C35F8A6EBB7251888E099`.
+- ASAR SHA-256 `B6E32E92D8491183B5169872C9CDA67FBF663C87E9D60540E1CBD0114BD04757`.
+- Il collegamento usa r41 e il launcher verificato. I sette file di configurazione hanno conservato gli hash.
+- 93 test mirati, typecheck, lint, smoke Windows e avvio simulato del backend sotto supervisione.
+
+## Build Windows r40 — 14 novembre 2026
+
+`update_goal` usa uno schema JSON semplice con stato enumerato. Il backend
+richiede ancora una ricevuta nativa per registrare `complete`. La prova
+GPT-6.1 Sol sulla r40 ha verificato due turni, riavvio, recupero con lo stesso
+ID anche via IPC e completamento verificato. I quattro strumenti sono partiti
+una volta ciascuno e i processi Electron hanno restituito exit 0.
+
+GLM-4.5-Flash ha eseguito il verificatore con exit 0 dopo il passaggio al
+secondo turno. Il relay del collaudo è terminato per timeout dello stream.
+Il goal è rimasto attivo e il completamento Z.AI resta da qualificare.
+
+- ZIP Windows x64, 466 file verificati, SHA-256 `46834A839C3CAD724D54CC9225E4D03762F7DEC197BF43D6AFAA0EDF190CB678`.
+- ASAR SHA-256 `928E97115D158A1D0E758FDE4ACE595A192BDB36D006D998EC9360FB85312F40`.
+- 108 test mirati, typecheck Node e web, lint e smoke Windows superati.
+
+## Build Windows r39 — 14 novembre 2026
+
+La provenienza del prompt viene mantenuta dalla chat fino alla coda. Un
+prompt di un altro task non può approvare un piano, gestire direttamente
+un goal o rispondere a una domanda Plan. Le domande strutturate seguono
+l'ordine di richiesta. Se la domanda cambia durante un hook, una risposta
+tardiva non consuma la domanda successiva. Pausa e cancellazione del goal
+interrompono anche il controller appena creato nella mutazione serializzata.
+
+Con GPT-6.1 Sol la r37 ha creato un goal da una richiesta naturale nel
+turno originale. Ha aperto un turno successivo e lo ha ripreso dopo un
+riavvio con lo stesso ID e un solo avvio per comando. La r39 ha collaudato
+la scelta Plan dalla finestra e l'uscita pulita di Electron. Il primo avvio
+sulla stessa ASAR ha raggiunto il timeout di osservazione della chiusura.
+
+La prova controllata Z.AI GLM-4.5-Flash r39 ha prodotto una verifica con
+exit 0 in un nuovo turno e ha reso la ricevuta nativa visibile al modello.
+L'obiettivo è rimasto attivo perché il modello ha consultato `get_goal`
+senza chiamare `update_goal`. La prova multiprovider resta parziale.
+
+- ZIP Windows x64, 466 file verificati, SHA-256 `F4617A5DAE048E4655A4813CCD51D81038D2B694029BD4EE7C8EFD0915258618`.
+- ASAR SHA-256 `433CD76F6C9C696C9D8D518A6E65609AE640D42ACA8F84A6AAA9E161E1DC569F`.
+- Collegamento desktop r39. Conservati i digest dei sette file di configurazione.
+- 106 test Node mirati, typecheck Node e web, lint e smoke isolato completati.
+
+## Build Windows r35 — 14 novembre 2026
+
+Dopo un arresto forzato, il task verifica l'identità del checkpoint prima
+di riclassificare il turno rimasto `IN_PROGRESS`. La ripresa riusa lo stesso
+turno e conserva gli esiti precedenti. GPT-6.1 Sol ha riprodotto il difetto
+sulla r34 con un nuovo ID e un doppio lancio del comando interrotto. Sulla
+r35, stesso ID e un solo lancio per ciascuno dei quattro comandi. Il sistema
+ha registrato l'esito della verifica nativa, zero nuovi messaggi utente e
+nessuna esecuzione del comando rimasto senza esito. Il listener IPC installato
+dopo la riapertura non ha osservato l'evento del turno. Le ricevute su disco
+confermano il risultato.
+
+L'implementazione Plan salva anche il testo approvato nel checkpoint del
+turno. Il budget Goal esclude l'input dalla cache e contabilizza step dei
+worker e chiamate ausiliarie della compattazione. Questi due delta hanno
+verifiche mirate. Restano da qualificare i corrispondenti scenari reali.
+
+- ZIP Windows x64, verificati 466 file, SHA-256 `62EFF0B5657610986850DC9909E4B2BC3128CCE44D43703AA292E12DD8563AF3`.
+- ASAR SHA-256 `BE438D270127DFA510B8652A21202848590469F915AA8E738241B6C3630997C7`.
+- Stesso renderer della r34. Smoke Windows, typecheck e 66 test mirati superati. Il primo aggancio Playwright alla build ha raggiunto il timeout. La ripetizione sulla stessa ASAR è passata.
+
+## Build Windows r34 — 14 novembre 2026
+
+Plan Codex usa strumenti di esplorazione, mostra il Markdown come proposta
+strutturata e conserva il piano dopo riavvio. Un ID obsoleto e una richiesta
+Agent senza decisione sono stati rifiutati prima di chiamare il modello.
+GPT-6.1 Sol ha implementato e verificato due fixture dopo approvazione.
+Una ha riusato la chat e l'altra ha ricevuto una copia esatta del piano in
+una nuova chat. Ciascun verificatore è partito una volta con exit 0.
+
+Il renderer r32 riproduceva una cronologia alta zero a 884 × 631. La barra
+delle azioni andava a capo carattere per carattere. La r34 ha reso visibile
+il piano dopo il riavvio alla stessa risoluzione, con virtualizzazione
+attiva e pulsante di approvazione raggiungibile. Il modo Plan con `plan.md`
+è ancora disponibile come estensione opzionale.
+
+La correzione Windows per la scrittura atomica ritenta il rename dopo una
+violazione di condivisione. Una prova con handle reale ha prodotto `EPERM`,
+poi ha pubblicato la ricevuta `success` sullo stesso ID dopo il rilascio.
+Il main compilato r33 e r34 è identico. Nella r33 GPT-6.1 Sol ha ripreso
+`/goal` con il medesimo turno dopo riapertura, una sola esecuzione già nota
+per comando e una verifica reale prima del completamento.
+
+- ZIP Windows x64, SHA-256 `D0DFCF5DB9BC25D7453454EA0C6E601955EFC836F324CD8391DE82B381E1A909`. Confrontati 466 file dopo estrazione.
+- ASAR SHA-256 `43827630741BD328AFB08BA85F585D27E8CE6C719D1264E800D7DEDF37C0EA28`.
+- Renderer r33 → r34, 204 byte JS e 90 byte CSS aggiunti. 518 chunk JS.
+- Verificati il flusso Docker con digest e la ricerca Internet. La prova del toolset resta riferita ai provider e alle configurazioni testate.
+
+## Build Windows r30 — 14 novembre 2026
+
+La chat Agent ordinaria conserva un obiettivo esplicito creato con `/goal`.
+Un obiettivo attivo apre turni nuovi senza nuovi messaggi utente. Quando
+Electron si chiude durante un turno del goal, riaprire la chat riprende
+automaticamente il turno registrato con lo stesso ID. La coda governata
+continua a usare il proprio stato.
+
+GPT-6.1 Sol ha superato la prova isolata con due turni, controllo nativo
+fallito, subagente Audit, chiusura completa, riapertura e verifica nativa
+riuscita. I quattro comandi sono partiti una volta ciascuno. Il goal è
+diventato `complete` dopo il controllo esplicito, con l'ID della ricevuta
+salvato e zero messaggi utente aggiunti. L'IPC testato non ha emesso un
+successivo messaggio testuale alla chiusura tramite tool. Il checkpoint e
+la ricevuta provano l'ID della ripresa.
+
+- ZIP Windows x64, SHA-256 `56D18ECD9C32AC5FE016F0011195ABF221831ADED9797DF060174FD3CB4F3BEC`. Verificati 466 file.
+- ASAR SHA-256 `C90F327C742093BF05B414DD742C3EB47416582947D1AFD21A439B5FF69408CF`.
+- 69 test mirati, typecheck, lint e cinque lingue verificati. Smoke superato al secondo avvio sulla stessa ASAR. Il primo controllo ha raggiunto il limite di osservazione durante la chiusura.
+- Renderer da 29.692.450 a 29.693.194 byte nel file d'ingresso. Numero di chunk JavaScript stabile a 518.
+
+La verifica reale ha usato un verificatore esplicito e uno specifico
+provider. La pertinenza e la freschezza delle prove senza verificatore,
+la contabilizzazione completa dei subagenti e le sceneggiature Plan
+richiedono ulteriori prove.
+
+## Consegna Windows r29 — 14 novembre 2026
+
+La r29 aggiunge il bind esplicito a `127.0.0.1` per le fixture Electron
+che collaudano l'Agent ordinario fuori da General e dal pilot. Il launcher
+desktop usa già General e il servizio di associazione del telefono conserva
+il proprio listener. I log Windows avevano registrato due eventi `2097`, TCP
+e UDP, al primo avvio diretto della r28 da un percorso nuovo. Sulla r29, una
+nuova estrazione in modalità ordinaria con il flag attivo ha aperto due
+listener TCP su `127.0.0.1`, zero listener UDP e zero nuove regole o richieste
+per l'eseguibile. Il firewall è rimasto attivo.
+
+La r28 ha verificato con GPT-6.1 Sol che il turno interrotto conserva il
+livello effettivo Alto dopo il riavvio, anche quando il selettore viene
+impostato su Basso. ID del turno invariato, un solo messaggio utente,
+risultato precedente recuperato e nessun comando rieseguito. La r29 include
+questa correzione. Il collaudo con modello reale è stato condotto sulla r28.
+
+- ZIP Windows x64 portabile, SHA-256 `2DA3DEB377773F759CFB39F7958DDB38E8FA1AEB000552F848C2E5186F096471`. Tutti i 466 file estratti corrispondono.
+- ASAR SHA-256 `FA5F9C16D2FD6A1910FD850EFFFC3003BEB708CF695C41A9D26B7D125F43BFBB`.
+- Il collegamento Agent-Lab punta alla r29. I sette file di configurazione hanno conservato gli hash originari. Prova di avvio su profilo isolato.
+
+## Consegna Windows r26 — 14 novembre 2026
+
+La ripresa del turno principale conserva anche la modalità Plan registrata,
+se l’estensione Plan è abilitata. Le istruzioni di pianificazione sono
+applicate nel prompt di sistema a ogni ripresa. Il turno mantiene il suo ID
+e il messaggio originale. Il pacchetto include la sorgente dell’estensione
+compatibile in `resources/agentlab-extensions/plan-mode.ts`. L’attivazione
+continua a dipendere dal profilo.
+
+Con GPT-6.1 Sol, la r26 ha ripreso Plan dopo chiusura completa e riapertura,
+pur con il selettore impostato su Agent. Ha creato il piano della fixture,
+chiesto approvazione e conservato l’ID negli eventi IPC e nella cronologia.
+Il comando di ispezione è partito una sola volta. I sorgenti protetti della
+fixture sono rimasti intatti. Smoke Windows e 466 file estratti verificati.
+
+- ZIP Windows x64 portabile, SHA-256 `8D9E1FBC6D56F80A73D0764B7A0CFEA93AC29A13BB7F729D7C8EFF88C889532B`.
+- ASAR SHA-256 `2BC1C9DA5E77E031F99665238994F1D7BE66CE1686EF5A596012DDFE01008086`.
+
+Il contratto dell’estensione Agent-Lab continua a produrre `plan.md`. La
+modalità Plan del riferimento Codex usa istruzioni non mutanti e un piano
+strutturato con passaggio del piano approvato. Questi contratti restano
+distinti dal recupero della modalità e dall’identità del turno.
+
+## Consegna Windows r25 — 14 novembre 2026
+
+Il turno principale in modalità Agent ha ora un checkpoint scritto prima
+dell’avvio del modello. **Riprendi** riusa l’ID originale e l’input salvato
+quando profilo, modello, modalità e checkout corrispondono al checkpoint.
+Conserva gli esiti noti, segnala le operazioni senza esito e rifiuta il replay
+identico dei comandi shell registrati. Se l’esito finale è già sul disco,
+recupera lo stato della chat senza chiamare nuovamente il modello.
+
+Con GPT-6.1 Sol, la r21 ha riprodotto il cambio di ID e la doppia esecuzione
+del comando lungo. Sulla r25 il task avviato via IPC ha conservato lo stesso
+ID su disco e negli eventi IPC dopo la chiusura completa e il riavvio. Un solo
+messaggio utente, risultato precedente conservato, un solo avvio per ciascun
+comando e nessun esito attribuito al comando interrotto. La suite estesa ha
+superato 229 test con Docker e SearXNG reali su fixture isolate.
+
+Nella r21, `resume_task` ha già verificato lo stesso contratto per subagenti,
+inclusa la conservazione del risultato di un tool quando un tool parallelo
+dello stesso passo era ancora attivo alla chiusura. Il riferimento rimane
+Codex Core `7194b21`. Il recupero dell’Agent principale è ora verificato in
+modalità Agent. La ripresa di Plan con le impostazioni del turno originario
+rimane una differenza da implementare e collaudare.
+
+## Consegna Windows r19 — 14 novembre 2026
+
+Il task registra l’identità di un subagente in background prima di avviarlo.
+Conserva gli esiti dei passaggi completati e le operazioni prive di esito. Dopo
+la chiusura, `list_workers` distingue lo stato interrotto e `followup_task`
+riprende lo stesso ID nel task e nel checkout proprietari. La ripresa informa
+il modello degli effetti incerti prima di ulteriori modifiche. La cancellazione
+esplicita del contesto revoca i precedenti ID. La compattazione conserva gli ID.
+
+Un comando Power con `yieldMs` mantiene lo stesso ID fra turni del task e
+del profilo che lo hanno avviato. La chiusura termina i processi gestiti e
+invalida gli ID, mentre la chat conserva gli output completati. Il percorso
+di recupero è stato confrontato con il sorgente Codex fissato a `7194b21`.
+[Recupero dei turni Codex](https://github.com/openai/codex/blob/7194b2177643f3c639cfc5b29f6398c545b0e7e2/codex-rs/core/src/codex_thread.rs#L609) · [Durata dei processi Codex](https://github.com/openai/codex/blob/7194b2177643f3c639cfc5b29f6398c545b0e7e2/codex-rs/core/src/unified_exec/process_manager.rs#L1235)
+
+GPT-6.1 Sol ha superato su r19 le prove di riapertura con worker interrotto
+e di input fra turni sullo stesso processo. La ripresa ha conservato il
+risultato del primo comando e lasciato l’operazione interrotta da riconciliare.
+Entrambi i conteggi di avvio sono rimasti a uno. La prova shell ha rifiutato
+l’ID dalla chat estranea e dopo la chiusura.
+
+- ZIP Windows x64 portabile, SHA-256 `D83DDFDD87E39B0889642FA0605B798BD254BDF0F73989180C9ABF4A6AA5B588`. Verificati tutti i 465 file estratti.
+- ASAR SHA-256 `9349CDFD271C3FB0DE87E0F003D6C96A54F6E722624609492C55B08936E6CB44`.
+- Avvio da profilo isolato, splash e PTY verificati. Il profilo reale è rimasto chiuso per evitare di riaprire progetti fuori perimetro.
+
+La qualifica vale per gli scenari, il riferimento e i provider indicati nelle
+prove. La sospensione di Codex si confronta con la ripresa esplicita dello
+stesso ID in Agent-Lab. La ripresa Agent-Lab usa una richiesta di follow-up.
+
 ## Consegna Windows r15 — 14 novembre 2026
 
 La r15 portabile Windows x64 è stata collaudata da una cartella esterna al

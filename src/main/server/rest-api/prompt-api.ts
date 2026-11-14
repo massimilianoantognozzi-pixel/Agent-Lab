@@ -57,6 +57,12 @@ const SaveEditedPromptSchema = SavePromptSchema.extend({
   messageId: z.string().min(1, 'Message ID is required'),
 });
 
+const SteerAgentTurnSchema = SavePromptSchema.extend({
+  turnId: z.string().min(1),
+  inputId: z.string().uuid(),
+  images: z.array(z.string()).optional(),
+});
+
 const SSE_ALLOWED_EVENT_TYPES = new Set([
   'response-chunk',
   'response-completed',
@@ -75,6 +81,16 @@ export class PromptApi extends BaseApi {
   }
 
   registerRoutes(router: Router): void {
+    router.post(
+      '/steer-agent-turn',
+      this.handleRequest(async (req, res) => {
+        const input = this.validateRequest(SteerAgentTurnSchema, req.body, res);
+        if (input) {
+          const { projectDir, taskId, turnId, inputId, prompt, images } = input;
+          res.json(await this.eventsHandler.steerAgentTurn(projectDir, taskId, turnId, inputId, prompt, images));
+        }
+      }),
+    );
     router.post('/run-prompt', (req: Request, res: Response) => {
       const acceptsSSE = req.accepts('text/event-stream');
       const acceptsJSON = req.accepts('application/json');

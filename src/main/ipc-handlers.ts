@@ -21,6 +21,7 @@ import { ipcMain, clipboard, ClipboardItem } from 'electron';
 
 import { EventsHandler } from './events-handler';
 
+import logger from '@/logger';
 import { PythonDependenciesInstaller } from '@/python-dependencies-installer';
 import { ServerController } from '@/server';
 
@@ -41,6 +42,10 @@ export const setupIpcHandlers = (eventsHandler: EventsHandler, serverController:
   ipcMain.on('run-prompt', async (_, baseDir: string, taskId: string, prompt: string, mode?: Mode, images?: string[]) => {
     void eventsHandler.runDesktopPrompt(baseDir, taskId, prompt, mode, images);
   });
+
+  ipcMain.handle('steer-agent-turn', (_, baseDir: string, taskId: string, turnId: string, inputId: string, prompt: string, images?: string[]) =>
+    eventsHandler.steerAgentTurn(baseDir, taskId, turnId, inputId, prompt, images),
+  );
 
   ipcMain.handle('save-prompt', async (_, baseDir: string, taskId: string, prompt: string) => {
     return await eventsHandler.savePrompt(baseDir, taskId, prompt);
@@ -270,7 +275,7 @@ export const setupIpcHandlers = (eventsHandler: EventsHandler, serverController:
   });
 
   ipcMain.on('resume-task', (_, baseDir: string, taskId: string) => {
-    void eventsHandler.resumeTask(baseDir, taskId);
+    void eventsHandler.resumeTask(baseDir, taskId).catch((error) => logger.error('Could not admit task resume:', { baseDir, taskId, error }));
   });
 
   ipcMain.handle('compact-conversation', async (_event, baseDir: string, taskId: string, mode: Mode, customInstructions?: string) => {

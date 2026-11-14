@@ -414,6 +414,9 @@ export class BrowserApi implements ApplicationAPI {
   runPrompt(baseDir: string, taskId: string, prompt: string, mode?: Mode, images?: string[]): void {
     this.post('/run-prompt', { projectDir: baseDir, taskId, prompt, mode, images });
   }
+  steerAgentTurn(baseDir: string, taskId: string, turnId: string, inputId: string, prompt: string, images?: string[]): Promise<boolean> {
+    return this.post('/steer-agent-turn', { projectDir: baseDir, taskId, turnId, inputId, prompt, images });
+  }
   savePrompt(baseDir: string, taskId: string, prompt: string): Promise<void> {
     return this.post('/save-prompt', { projectDir: baseDir, taskId, prompt });
   }

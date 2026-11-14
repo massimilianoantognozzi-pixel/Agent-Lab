@@ -9,6 +9,7 @@ import {
   Mode,
   ModelInfo,
   PromptContext,
+  ProposedPlan,
   RawModelInfo,
   TokensCost,
   UsageReportData,
@@ -83,6 +84,7 @@ export interface ResponseMessage extends Message {
   id: string;
   action: 'response';
   content: string;
+  proposedPlan?: ProposedPlan;
   reasoning?: string;
   reflectedMessage?: string;
   finished: boolean;

@@ -19,6 +19,7 @@ import logger, { eventTransport } from '@/logger';
 import { initManagers } from '@/managers';
 import { createLoadRetryHandler, getDefaultProjectSettings, initPath } from '@/utils';
 import { WindowManager } from '@/window-manager';
+import { managedGoalRestartPath, recoverManagedGoals, writeManagedGoalRestart } from '@/project/managed-goal-restart';
 
 // Global instances shared across all windows
 let windowManager: WindowManager;
@@ -29,7 +30,7 @@ process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled promise rejection:', reason);
 });
 
-const setupCustomMenu = (createWindowFn: () => void, showPhonePairing?: (parent: BrowserWindow) => Promise<void>): void => {
+const setupCustomMenu = (createWindowFn: () => void, showPhonePairing?: (parent: BrowserWindow) => Promise<void>, restart?: () => void): void => {
   const menuTemplate: Electron.MenuItemConstructorOptions[] = [
     // File menu
     {
@@ -41,6 +42,7 @@ const setupCustomMenu = (createWindowFn: () => void, showPhonePairing?: (parent:
           click: createWindowFn,
         },
         { type: 'separator' },
+        ...(restart ? [{ id: 'agentlab-managed-restart', label: 'Restart Agent-Lab', click: restart }] : []),
         { role: 'quit', label: 'Quit', accelerator: 'CmdOrCtrl+Q' },
       ],
     },
@@ -424,8 +426,20 @@ app.whenReady().then(async () => {
 
     // Initialize managers (shared across all windows) — creates pythonInstaller
     const managers = await initManagers(store, windowManager);
+    const restartToken = !HEADLESS_MODE && process.env.AIDER_DESK_MANAGED_RESTART_TOKEN;
+    const restartFile = managedGoalRestartPath(AIDER_DESK_DATA_DIR);
+    let restartRequested = false;
     if (!HEADLESS_MODE && !DISABLE_MENU) {
-      setupCustomMenu(() => void createNewWindow(), managers.showPhonePairing);
+      setupCustomMenu(
+        () => void createNewWindow(),
+        managers.showPhonePairing,
+        restartToken
+          ? () => {
+              restartRequested = true;
+              app.quit();
+            }
+          : undefined,
+      );
     }
 
     try {
@@ -450,20 +464,31 @@ app.whenReady().then(async () => {
     }
 
     // Setup global cleanup
-    const globalCleanup = async () => {
-      try {
-        await managers.cleanup();
-      } catch (error) {
-        logger.error('Error during cleanup:', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
+    let cleanupRun: Promise<void> | undefined;
+    const globalCleanup = () =>
+      (cleanupRun ??= managers.cleanup().catch((error) => {
+        logger.error('Error during cleanup:', { error });
+      }));
+    let quitting = false;
 
     app.on('before-quit', async (event) => {
       event.preventDefault();
+      if (quitting) {
+        return;
+      }
+      quitting = true;
+      let exitCode = 0;
+      if (restartRequested && restartToken) {
+        try {
+          await writeManagedGoalRestart(restartFile, restartToken, managers.projectManager, store);
+          exitCode = 75;
+        } catch (error) {
+          logger.error('Could not prepare Agent-Lab for a managed restart.', { error });
+          exitCode = 1;
+        }
+      }
       await globalCleanup();
-      app.exit(0);
+      app.exit(exitCode);
     });
 
     // Handle CTRL+C (SIGINT)
@@ -487,6 +512,18 @@ app.whenReady().then(async () => {
 
     // Initialize IPC handlers
     setupIpcHandlers(managers.eventsHandler, managers.serverController, managers.pythonInstaller);
+
+    if (restartToken && process.env.AIDER_DESK_RESUME_GOALS_TOKEN === restartToken) {
+      await recoverManagedGoals(restartFile, restartToken, managers.projectManager, store)
+        .then((results) => {
+          for (const result of results) {
+            if (result.status === 'rejected') {
+              logger.warn('An Agent-Lab goal could not be restored after restart.', { error: result.reason });
+            }
+          }
+        })
+        .catch((error) => logger.warn('Could not restore the managed restart snapshot.', { error }));
+    }
 
     if (!HEADLESS_MODE) {
       // Create the first window

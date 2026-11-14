@@ -40,6 +40,7 @@ const convertResponse = (data: ResponseCompletedData): Message[] => {
     type: 'response',
     content: data.content,
     reasoning: data.reasoning,
+    proposedPlan: data.proposedPlan,
     usageReport: data.usageReport,
     promptContext: data.promptContext,
     finished: true,

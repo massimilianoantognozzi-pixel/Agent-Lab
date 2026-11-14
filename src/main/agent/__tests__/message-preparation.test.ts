@@ -5,6 +5,7 @@ import { prepareMessagesForModel } from '../message-preparation';
 import { transformMessages } from '../message-preparation/transformations';
 import { applyCacheControl } from '../message-preparation/cache-control';
 import { getSubagentFinalText } from '../message-preparation/tool-results';
+import { optimizeMessages } from '../message-preparation/optimizations';
 
 import type { ModelMessage, ToolResultPart } from 'ai';
 import type { ExtensionManager } from '@/extensions';
@@ -37,6 +38,14 @@ const subagentMessage = () =>
 const extensionManager = (dispatchEvent: ReturnType<typeof vi.fn>) => ({ dispatchEvent }) as unknown as ExtensionManager;
 
 describe('message transformation', () => {
+  it('preserves changed verification state returned by a repeated get_goal call', () => {
+    const exchange = (id: string, availableVerification: { toolCallId: string; command: string }[]): ModelMessage[] => [
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: id, toolName: 'get_goal', input: {} }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: id, toolName: 'get_goal', output: { type: 'json', value: { availableVerification } } }] },
+    ];
+    const history = [...exchange('first', []), ...exchange('second', [{ toolCallId: 'native', command: 'npm test' }])];
+    expect(optimizeMessages(history)).toEqual(history);
+  });
   it('strips Aider UI fields without mutating source context', () => {
     const messages = [toolMessage(aiderTool, { type: 'json', value: { responses: ['ui'], promptContext: {}, result: 'done' } })];
     const snapshot = structuredClone(messages);

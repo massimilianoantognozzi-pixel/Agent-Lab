@@ -130,6 +130,7 @@ export const prepareWorkflowPilot = async (
       AIDER_DESK_DATA_DIR: data,
       AIDER_DESK_HOME_DIR: home,
       AIDER_DESK_DIR: ".aider-desk",
+      ...(fixture && { AIDER_DESK_LOOPBACK_ONLY: "true" }),
       ...(hasPilot && { AIDER_DESK_WORKFLOW_PILOT_DIR: project }),
       AIDER_DESK_PORT: "24361",
       AIDER_DESK_RESOURCES_DIR: path.join(repoRoot, "resources"),

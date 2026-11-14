@@ -2,7 +2,6 @@ import path from 'path';
 import fs from 'fs/promises';
 
 import { isCodexAgentModel } from '@common/agent';
-
 import {
   AgentProfile,
   AutonomyMode,
@@ -307,7 +306,13 @@ export class EventsHandler {
   }
 
   async resumeTask(baseDir: string, taskId: string): Promise<void> {
-    void this.projectManager.getProject(baseDir).getTask(taskId)?.resumeTask();
+    const project = this.projectManager.getProject(baseDir);
+    await Promise.all([this.modelManager.waitForInit(), this.extensionManager.waitForInit()]);
+    await project.start();
+    const task = project.getTask(taskId);
+    if (task) {
+      void task.resumeTask().catch((error) => logger.error('Failed to resume task:', { baseDir, taskId, error }));
+    }
   }
 
   async compactConversation(baseDir: string, taskId: string, mode: Mode, customInstructions?: string): Promise<void> {
@@ -463,7 +468,11 @@ export class EventsHandler {
 
   async runPrompt(baseDir: string, taskId: string, prompt: string, mode?: Mode, images?: string[]): Promise<ResponseCompletedData[]> {
     await Promise.all([this.modelManager.waitForInit(), this.extensionManager.waitForInit()]);
-    return this.projectManager.getProject(baseDir).getTask(taskId)?.runPrompt(prompt, mode, true, undefined, true, images) || [];
+    return this.projectManager.getProject(baseDir).getTask(taskId)?.runPrompt(prompt, mode, true, undefined, true, images, true) || [];
+  }
+
+  async steerAgentTurn(baseDir: string, taskId: string, turnId: string, inputId: string, prompt: string, images?: string[]): Promise<boolean> {
+    return this.getTaskOrThrow(baseDir, taskId).steerAgentTurn(turnId, inputId, prompt, images);
   }
 
   async runDesktopPrompt(baseDir: string, taskId: string, prompt: string, mode?: Mode, images?: string[]): Promise<ResponseCompletedData[]> {

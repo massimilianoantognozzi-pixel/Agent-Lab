@@ -34,8 +34,9 @@ export const ResponseMessageBlock = ({
   const baseClasses = 'rounded-md max-w-full text-xs bg-bg-secondary text-text-primary';
 
   const parsedContent = useParsedContent(baseDir, message.content, allFiles, renderMarkdown, showThinking, message.reasoning);
+  const planContent = useParsedContent(baseDir, message.proposedPlan?.markdown ?? '', allFiles, renderMarkdown);
 
-  if (!parsedContent || (Array.isArray(parsedContent) && parsedContent.length === 0)) {
+  if (!message.proposedPlan && (!parsedContent || (Array.isArray(parsedContent) && parsedContent.length === 0))) {
     return null;
   }
 
@@ -53,12 +54,19 @@ export const ResponseMessageBlock = ({
         <div className="mt-[1px] relative">
           <RiRobot2Line className="text-text-muted w-4 h-4" />
         </div>
-        <div className="flex-grow-1 w-full overflow-hidden">{parsedContent}</div>
+        <div className="flex-grow-1 w-full overflow-hidden">
+          {parsedContent}
+          {message.proposedPlan && (
+            <div className="mt-2 border-l-2 border-border-dark-light pl-3" data-proposed-plan={message.proposedPlan.id}>
+              {planContent}
+            </div>
+          )}
+        </div>
       </div>
       {!hideMessageBar && (
         <MessageBar
           message={message}
-          content={message.content || message.reasoning}
+          content={message.proposedPlan?.markdown || message.content || message.reasoning}
           usageReport={message.usageReport}
           remove={onRemove}
           onFork={onFork}

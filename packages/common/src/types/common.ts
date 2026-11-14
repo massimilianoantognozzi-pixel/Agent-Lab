@@ -19,7 +19,7 @@ import {
 } from '@common/agent';
 import { z } from 'zod';
 
-import { ContextFile, ContextMemoryMode, ContextMessage, PromptContext, UsageReportData } from './context';
+import { ContextFile, ContextMemoryMode, ContextMessage, PromptContext, ProposedPlan, UsageReportData } from './context';
 
 // Worktree schema definition
 export const WorktreeSchema = z.object({
@@ -231,6 +231,7 @@ export interface ResponseChunkData {
   baseDir: string;
   taskId: string;
   chunk: string;
+  proposedPlan?: ProposedPlan;
   reasoning?: string;
   reflectedMessage?: string;
   promptContext?: PromptContext;
@@ -253,6 +254,7 @@ export interface ResponseCompletedData {
   baseDir: string;
   taskId: string;
   content: string;
+  proposedPlan?: ProposedPlan;
   reasoning?: string;
   reflectedMessage?: string;
   editedFiles?: string[];

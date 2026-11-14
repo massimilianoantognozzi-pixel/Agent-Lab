@@ -70,6 +70,8 @@ const api: ApplicationAPI = {
   resetTask: (baseDir, taskId) => ipcRenderer.send('reset-task', baseDir, taskId),
   restartAiderConnector: (baseDir, taskId) => ipcRenderer.send('restart-aider-connector', baseDir, taskId),
   runPrompt: (baseDir, taskId, prompt, mode, images) => ipcRenderer.send('run-prompt', baseDir, taskId, prompt, mode, images),
+  steerAgentTurn: (baseDir, taskId, turnId, inputId, prompt, images) =>
+    ipcRenderer.invoke('steer-agent-turn', baseDir, taskId, turnId, inputId, prompt, images),
   savePrompt: (baseDir, taskId, prompt) => ipcRenderer.invoke('save-prompt', baseDir, taskId, prompt),
   saveEditedPrompt: (baseDir, taskId, messageId, prompt) => ipcRenderer.invoke('save-edited-prompt', baseDir, taskId, messageId, prompt),
   redoUserPrompt: (baseDir, taskId, messageId, mode, updatedPrompt?, updatedImages?) =>

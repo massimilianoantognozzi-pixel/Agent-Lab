@@ -51,6 +51,20 @@ const BASH_STREAMING_PREVIEW_CHARS = 8 * 1024;
 const BASH_STREAMING_UPDATE_INTERVAL_MS = 150;
 type CommandResult = { stdout: string; stderr: string; exitCode: number | null };
 type CommandInput = (input: string, close: boolean) => Promise<void>;
+export type PowerCommandSession = {
+  signal: AbortSignal;
+  commands: Map<
+    string,
+    {
+      directory: string;
+      profileId: string;
+      completion: Promise<CommandResult>;
+      preview: () => CommandResult;
+      input?: CommandInput;
+      cancel?: () => void;
+    }
+  >;
+};
 
 /**
  * Acquires a lock for a file and executes the operation.
@@ -77,14 +91,20 @@ export const createPowerToolset = (
   abortSignal?: AbortSignal,
   knowledgeRunId?: string,
   pendingCommands?: Set<Promise<unknown>>,
+  commandSession?: PowerCommandSession,
+  turnSignal?: AbortSignal,
 ): ToolSet => {
   const approvalManager = new ApprovalManager(task, profile);
   const stdinToolId = `${TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${TOOL_BASH_INPUT}`;
-  const runningCommands = new Map<string, { completion: Promise<CommandResult>; preview: () => CommandResult; input?: CommandInput }>();
+  const runningCommands: PowerCommandSession['commands'] = commandSession?.commands ?? new Map();
+  const getCommand = (id: string) => {
+    const command = runningCommands.get(id);
+    return command && command.profileId === profile.id && command.directory === task.getTaskDir() ? command : undefined;
+  };
   const readCommand = async (processId: string, yieldMs: number): Promise<CommandResult & { processId?: string }> => {
-    const command = runningCommands.get(processId);
+    const command = getCommand(processId);
     if (!command) {
-      throw new Error('This process is unavailable in the current agent run. Check its effects before repeating it.');
+      throw new Error('This process is unavailable in the current task session. Check its effects before repeating it.');
     }
     let timer: NodeJS.Timeout | number | undefined;
     try {
@@ -842,6 +862,9 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return `Bash command execution denied by user. Reason: ${userInput}`;
       }
       abortSignal?.throwIfAborted();
+      const commandSignal =
+        yieldMs !== undefined && commandSession ? (turnSignal ? AbortSignal.any([commandSession.signal, turnSignal]) : commandSession.signal) : abortSignal;
+      commandSignal?.throwIfAborted();
       if (yieldMs !== undefined && runningCommands.size >= 8) {
         return 'Read pending command results with bash_poll before starting another background command.';
       }
@@ -864,6 +887,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
 
       let preview = (): CommandResult => ({ stdout: '', stderr: '', exitCode: null });
       let commandInput: CommandInput | undefined;
+      let cancelCommand: (() => void) | undefined;
       const completion = new Promise<CommandResult>((resolve) => {
         const stdoutAccumulator = new BoundedOutputAccumulator();
         const stderrAccumulator = new BoundedOutputAccumulator();
@@ -879,6 +903,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         let stopping = false;
         let childProcess: ChildProcess | null = null;
         let terminal: pty.IPty | undefined;
+        let terminalExit: Promise<void> | undefined;
         let abortListener: (() => void) | null = null;
         let lastStreamingUpdateAt = 0;
         let streamingUpdateQueued = false;
@@ -890,7 +915,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           }
           // Remove abort listener to prevent memory leaks
           if (abortListener) {
-            abortSignal?.removeEventListener('abort', abortListener);
+            commandSignal?.removeEventListener('abort', abortListener);
           }
         };
 
@@ -969,6 +994,17 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           try {
             if (terminal) {
               terminal.kill();
+              let timer: NodeJS.Timeout | number | undefined;
+              try {
+                await Promise.race([
+                  terminalExit,
+                  new Promise<never>((_, reject) => {
+                    timer = setWaitTimer(() => reject(new Error('Terminal exit was not observed.')), 5000);
+                  }),
+                ]);
+              } finally {
+                clearWaitTimer(timer);
+              }
             } else if (childProcess?.pid) {
               await killProcess(childProcess.pid);
             }
@@ -978,9 +1014,10 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           await resolveWithResult();
         };
         abortListener = () => void stopProcess(130, 'Operation was cancelled by user.');
+        cancelCommand = abortListener;
 
         // Listen for abort signal
-        abortSignal?.addEventListener('abort', abortListener);
+        commandSignal?.addEventListener('abort', abortListener);
 
         try {
           const shellInitCommand = getShellInitCommand();
@@ -1013,13 +1050,16 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
               stdoutAccumulator.append(Buffer.from(data));
               sendStreamingUpdate();
             });
-            activeTerminal.onExit((event) => {
-              if (isResolved || stopping) {
-                return;
-              }
-              exitCode = event.exitCode;
-              void resolveWithResult();
-            });
+            terminalExit = new Promise<void>((resolve) =>
+              activeTerminal.onExit((event) => {
+                resolve();
+                if (isResolved || stopping) {
+                  return;
+                }
+                exitCode = event.exitCode;
+                void resolveWithResult();
+              }),
+            );
             timeoutHandle = startTimeout();
             return;
           }
@@ -1108,30 +1148,34 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return completion;
       }
       const processId = randomUUID();
-      runningCommands.set(processId, { completion, preview, input: commandInput });
+      runningCommands.set(processId, { directory: task.getTaskDir(), profileId: profile.id, completion, preview, input: commandInput, cancel: cancelCommand });
       return readCommand(processId, yieldMs);
     },
   });
 
   const bashPollTool = tool({
     description:
-      'Read the output and exit status of a process started by bash in the current agent run. A null exit code means it is still running. Poll its ID until it exits before reporting the command succeeded.',
+      'Read the output and exit status of a process started by bash in this task session. The ID can be used across turns while the task stays open. A null exit code means it is still running.',
     inputSchema: z.object({ processId: z.string().uuid(), yieldMs: z.number().int().min(1).max(30000).default(1000) }),
     execute: async ({ processId, yieldMs }) => readCommand(processId, yieldMs),
   });
 
   const bashInputTool = tool({
-    description: 'Send stdin to an interactive command started by bash in this run. Set close to signal EOF. Use bash_poll for the output and exit status.',
+    description:
+      'Send stdin to an interactive command started by bash in this task session. Set close to signal EOF in pipe mode. Use bash_poll for the output and exit status.',
     inputSchema: z.object({ processId: z.string().uuid(), input: z.string().max(8192), close: z.boolean().default(false) }),
     execute: async (request) => {
-      const writeInput = runningCommands.get(request.processId)?.input;
+      const writeInput = getCommand(request.processId)?.input;
       if (!writeInput) {
-        return { error: 'The process does not have an open stdin in this agent run.' };
+        return { error: 'The process does not have an open stdin in this task session.' };
       }
       const [approved] = await approvalManager.handleToolApproval(stdinToolId, { ...request }, stdinToolId, 'Approve sending input to the running command?');
       abortSignal?.throwIfAborted();
       if (!approved) {
         return { error: 'Process input was denied.' };
+      }
+      if (getCommand(request.processId)?.input !== writeInput) {
+        return { error: 'Process input is no longer available.' };
       }
       await writeInput(request.input, request.close);
       return { processId: request.processId, sent: true };

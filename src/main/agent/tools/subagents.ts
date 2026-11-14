@@ -3,10 +3,14 @@ import { clearTimeout as clearWaitTimer, setTimeout as setWaitTimer } from 'node
 
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
-import { AgentProfile, ContextMessage, InvocationMode, SettingsData } from '@common/types';
+import { AgentProfile, ContextMessage, InvocationMode, SettingsData, ToolApprovalState } from '@common/types';
 import { getSubagentId } from '@common/agent';
 import { SUBAGENTS_TOOL_GROUP_NAME, SUBAGENTS_TOOL_RUN_TASK, TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
+import type { WorkerProgress, WorkerRecord, WorkerToolReceipt } from '@/agent/worker-checkpoint';
+import type { AgentGoalTurn } from '@/task/agent-goal';
+
+import { describeInterruptedTools, recoveredTurnHistory, reconcileTurnProgress, WORKER_STOP } from '@/agent/worker-checkpoint';
 import { AgentProfileManager } from '@/agent/agent-profile-manager';
 import { findEnabledSubagent, getEnabledSubagents, runSubagentTask, type RunSubagentTaskResult } from '@/agent/subagent';
 import { Task } from '@/task';
@@ -19,14 +23,16 @@ export const createSubagentsToolset = async (
   abortSignal?: AbortSignal,
   contextMessages: ContextMessage[] = [],
   currentMessages: ContextMessage[] = [],
+  onGoalUsage?: AgentGoalTurn['onUsage'],
 ): Promise<ToolSet> => {
   const allProfiles = agentProfileManager.getProjectProfiles(task.project);
   const enabledSubagents = getEnabledSubagents(allProfiles, mainAgentProfile);
+  const epoch = task.workerEpoch?.();
+  const hasCurrentContext = () => task.workerEpoch?.() === epoch;
   const workers = new Map<
     string,
     {
       subagentId: string;
-      profileId: string;
       controller: AbortController;
       completion: Promise<RunSubagentTaskResult>;
       mailbox: string[];
@@ -34,6 +40,89 @@ export const createSubagentsToolset = async (
     }
   >();
   const waitToolName = `${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}wait_task`;
+  const startBackground = async (
+    workerId: string,
+    targetSubagent: AgentProfile,
+    prompt: string | null,
+    params: Partial<Parameters<typeof runSubagentTask>[0]> = {},
+    pendingTools: WorkerRecord['pendingTools'] = [],
+    unmergedReceipts: WorkerToolReceipt[] = [],
+  ) => {
+    if (!hasCurrentContext()) {
+      return { error: 'The task context has been cleared.' };
+    }
+    if (workers.has(workerId) || workers.size >= 8) {
+      return { error: 'Collect pending worker results before starting more workers.' };
+    }
+    if (!task.claimWorkerTurn(workerId)) {
+      return { error: 'This worker is already running or the task is closing.' };
+    }
+    const controller = new AbortController();
+    const signal = abortSignal ? AbortSignal.any([abortSignal, controller.signal]) : controller.signal;
+    const mailbox: string[] = [];
+    const turnId = params.turnId ?? randomUUID();
+    const record: WorkerRecord = {
+      profileId: targetSubagent.id,
+      directory: task.getTaskDir(),
+      epoch,
+      state: 'running',
+      turnId,
+      modelSettings: params.recoveredModelSettings,
+      messages: [...(params.workerHistory ?? []), ...(prompt === null ? [] : [{ id: turnId, role: 'user' as const, content: prompt }])],
+      pendingTools: [...pendingTools],
+      unmergedReceipts: [...unmergedReceipts],
+    };
+    let write = Promise.resolve();
+    const update = (progress: WorkerProgress) => {
+      write = write.then(async () => {
+        reconcileTurnProgress(record, progress);
+        await task.saveWorkerHistory(workerId, record);
+      });
+      return write;
+    };
+    const ready = update({});
+    const completion = ready.then(async (): Promise<RunSubagentTaskResult> => {
+      signal.throwIfAborted();
+      const result = await runSubagentTask({
+        ...params,
+        task,
+        targetSubagent,
+        prompt,
+        turnId,
+        abortSignal: signal,
+        takeSteering: () => mailbox.splice(0),
+        onProgress: update,
+        onGoalUsage,
+      });
+      await write;
+      if (result.status === 'success') {
+        record.state = 'success';
+        record.messages = result.messages;
+        const mergedIds = new Set(result.messages.flatMap((message) => (message.role === 'tool' ? message.content.map((part) => part.toolCallId) : [])));
+        record.unmergedReceipts = record.unmergedReceipts!.filter((receipt) => !mergedIds.has(receipt.id));
+      } else {
+        record.state =
+          result.status === 'error' ? (result.recoverable ? 'running' : 'error') : result.explicitStop || controller.signal.aborted ? 'cancelled' : 'running';
+      }
+      await task.saveWorkerHistory(workerId, record);
+      return result;
+    });
+    const worker = { subagentId: getSubagentId(targetSubagent), controller, completion, mailbox, settled: false };
+    workers.set(workerId, worker);
+    const settled = () => {
+      worker.settled = true;
+      task.releaseWorkerTurn(workerId);
+    };
+    void completion.then(settled, settled);
+    task.trackWorkerRun(completion);
+    try {
+      await ready;
+    } catch (error) {
+      workers.delete(workerId);
+      throw error;
+    }
+    return { workerId, status: 'running', ...(prompt === null ? { turnId } : {}) };
+  };
 
   const generateSubagentsRunTaskDescription = (): string => {
     const automaticSubagents = enabledSubagents.filter((agentProfile) => agentProfile.subagent.invocationMode === InvocationMode.Automatic);
@@ -90,19 +179,10 @@ export const createSubagentsToolset = async (
       if (input.background && workers.size >= 8) {
         return { error: 'Collect pending results with wait_task before starting more workers.' };
       }
-      const controller = input.background ? new AbortController() : undefined;
-      const signal = controller && abortSignal ? AbortSignal.any([abortSignal, controller.signal]) : (controller?.signal ?? abortSignal);
-      const mailbox: string[] = [];
-
-      const completion = runSubagentTask({
-        task,
-        targetSubagent,
-        prompt,
+      const params: Partial<Parameters<typeof runSubagentTask>[0]> = {
         description,
-        abortSignal: signal,
         contextMessages,
         currentMessages,
-        takeSteering: controller ? () => mailbox.splice(0) : undefined,
         onStarted: (promptContext) => {
           task.addToolMessage(
             toolCallId,
@@ -118,17 +198,11 @@ export const createSubagentsToolset = async (
             promptContext,
           );
         },
-      });
-      if (controller) {
-        const workerId = randomUUID();
-        const worker = { subagentId, profileId: targetSubagent.id, controller, completion, mailbox, settled: false };
-        workers.set(workerId, worker);
-        void completion.then(() => {
-          worker.settled = true;
-        });
-        return { workerId, status: 'running' };
+      };
+      if (input.background) {
+        return startBackground(randomUUID(), targetSubagent, prompt, params);
       }
-      const result = await completion;
+      const result = await runSubagentTask({ ...params, task, targetSubagent, prompt, abortSignal, onGoalUsage });
 
       if (result.status === 'cancelled') {
         return {
@@ -154,15 +228,34 @@ export const createSubagentsToolset = async (
 
   const toolSet: ToolSet = {};
 
-  if (enabledSubagents.length > 0) {
+  if (
+    enabledSubagents.length > 0 &&
+    mainAgentProfile.toolApprovals?.[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${SUBAGENTS_TOOL_RUN_TASK}`] !== ToolApprovalState.Never
+  ) {
     toolSet[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${SUBAGENTS_TOOL_RUN_TASK}`] = runTaskTool;
     toolSet[waitToolName] = tool({
       description: 'Collect the result of a background subagent. A running result means it has not finished yet.',
       inputSchema: z.object({ workerId: z.string().uuid(), timeoutMs: z.number().int().min(1).max(60000).default(10000) }),
       execute: async ({ workerId, timeoutMs }) => {
+        if (!hasCurrentContext()) {
+          return { error: 'The task context has been cleared.' };
+        }
         const worker = workers.get(workerId);
         if (!worker) {
-          return { error: 'Worker unavailable in this agent run.' };
+          const saved = await task.readWorkerHistory(workerId);
+          const profile = enabledSubagents.find(({ id }) => id === saved?.profileId);
+          if (!saved || !profile || (saved.directory && saved.directory !== task.getTaskDir())) {
+            return { error: 'Worker unavailable in this agent run.' };
+          }
+          return {
+            workerId,
+            subagentId: getSubagentId(profile),
+            status: saved.state === 'running' ? 'interrupted' : (saved.state ?? 'success'),
+            messages: saved.messages,
+            turnId: saved.turnId,
+            pendingTools: saved.pendingTools,
+            unmergedReceipts: saved.unmergedReceipts,
+          };
         }
         let timer: NodeJS.Timeout | number | undefined;
         try {
@@ -175,18 +268,71 @@ export const createSubagentsToolset = async (
           if (!result) {
             return { workerId, status: 'running' };
           }
-          if (result.status === 'success') {
-            await task.saveWorkerHistory(workerId, worker.profileId, result.messages);
-          }
           workers.delete(workerId);
+          if (!hasCurrentContext()) {
+            return { error: 'The task context has been cleared.' };
+          }
           return { workerId, subagentId: worker.subagentId, ...result };
         } finally {
           clearWaitTimer(timer);
         }
       },
     });
+    toolSet[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}list_workers`] = tool({
+      description: 'List workers owned by this task, including interrupted workers that can be recovered by ID.',
+      inputSchema: z.object({}),
+      execute: async () =>
+        (await task.listWorkerHistory()).flatMap(({ workerId, record }) => {
+          const profile = enabledSubagents.find(({ id }) => id === record.profileId);
+          if (!profile || (record.directory && record.directory !== task.getTaskDir())) {
+            return [];
+          }
+          const status = record.state === 'running' && !workers.has(workerId) ? 'interrupted' : (record.state ?? 'success');
+          return [{ workerId, subagentId: getSubagentId(profile), status, turnId: record.turnId }];
+        }),
+    });
+    toolSet[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}resume_task`] = tool({
+      description:
+        'Resume an interrupted worker turn with its original context and turn ID. No new worker prompt is added. Use wait_task to collect the result.',
+      inputSchema: z.object({ workerId: z.string().uuid() }),
+      execute: async ({ workerId }) => {
+        abortSignal?.throwIfAborted();
+        if (!hasCurrentContext() || workers.has(workerId)) {
+          return { error: 'This worker is not available for recovery.' };
+        }
+        const stored = await task.readWorkerHistory(workerId);
+        const targetSubagent = enabledSubagents.find(({ id }) => id === stored?.profileId);
+        if (!stored || !targetSubagent || stored.state !== 'running' || (stored.directory && stored.directory !== task.getTaskDir())) {
+          return { error: 'No interrupted worker turn in this task and checkout.' };
+        }
+        // Legacy checkpoints have no separate turn ID. Steering messages do not carry a prompt context.
+        const turnId = stored.turnId ?? stored.messages.findLast((message) => message.role === 'user' && message.promptContext?.id === message.id)?.id;
+        if (!turnId) {
+          return { error: 'This worker checkpoint has no recoverable turn ID.' };
+        }
+        abortSignal?.throwIfAborted();
+        const recoveryInstructions = `Resume the saved worker turn from its existing messages. ${describeInterruptedTools(stored)} Inspect current state with read-only checks before editing. Do not replay an interrupted command blindly.`;
+        const interruptedToolFingerprints = new Set(
+          [...(stored.pendingTools ?? []), ...(stored.unmergedReceipts ?? [])].flatMap(({ fingerprint }) => (fingerprint ? [fingerprint] : [])),
+        );
+        return startBackground(
+          workerId,
+          targetSubagent,
+          null,
+          {
+            workerHistory: recoveredTurnHistory(stored),
+            turnId,
+            recoveryInstructions,
+            interruptedToolFingerprints,
+            recoveredModelSettings: stored.modelSettings,
+          },
+          stored.pendingTools,
+          stored.unmergedReceipts,
+        );
+      },
+    });
     toolSet[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}followup_task`] = tool({
-      description: 'Continue a completed worker using its saved conversation. Collect the prior result with wait_task first. Returns the same worker ID.',
+      description: 'Continue a completed or interrupted worker using its saved conversation. Returns the same worker ID.',
       inputSchema: z.object({ workerId: z.string().uuid(), prompt: z.string().min(1).max(10000) }),
       execute: async ({ workerId, prompt }) => {
         abortSignal?.throwIfAborted();
@@ -194,17 +340,24 @@ export const createSubagentsToolset = async (
           return { error: 'Collect pending worker results before following up.' };
         }
         const stored = await task.readWorkerHistory(workerId);
-        const previous = stored
-          ? undefined
-          : [...contextMessages, ...currentMessages]
-              .flatMap((message) => (message.role === 'tool' ? message.content : []))
-              .filter((part) => part.type === 'tool-result' && part.toolName === waitToolName && part.output.type === 'json')
-              .map((part) => (part.output as { value?: { workerId?: string; subagentId?: string; status?: string; messages?: ContextMessage[] } }).value)
-              .findLast((value) => value?.workerId === workerId && value?.status !== 'running');
+        if (stored?.state === 'cancelled' || stored?.state === 'error') {
+          return { error: 'This worker ended unsuccessfully. Start a new worker for a new attempt.' };
+        }
+        if (stored?.directory && stored.directory !== task.getTaskDir()) {
+          return { error: 'Worker belongs to a different checkout.' };
+        }
+        const previous =
+          stored || task.workerEpoch?.()
+            ? undefined
+            : [...contextMessages, ...currentMessages]
+                .flatMap((message) => (message.role === 'tool' ? message.content : []))
+                .filter((part) => part.type === 'tool-result' && part.toolName === waitToolName && part.output.type === 'json')
+                .map((part) => (part.output as { value?: { workerId?: string; subagentId?: string; status?: string; messages?: ContextMessage[] } }).value)
+                .findLast((value) => value?.workerId === workerId && value?.status !== 'running');
         const targetSubagent = stored
           ? enabledSubagents.find(({ id }) => id === stored.profileId)
           : previous?.subagentId && findEnabledSubagent(enabledSubagents, previous.subagentId);
-        const history = stored?.messages ?? (previous?.status === 'success' ? previous.messages : undefined);
+        const history = stored ? recoveredTurnHistory(stored) : previous?.status === 'success' ? previous.messages : undefined;
         if (!targetSubagent || !Array.isArray(history)) {
           return { error: 'No completed result for this worker in the task context.' };
         }
@@ -212,29 +365,30 @@ export const createSubagentsToolset = async (
         if (workers.has(workerId) || workers.size >= 8) {
           return { error: 'Collect pending worker results before following up.' };
         }
-        const controller = new AbortController();
-        const signal = abortSignal ? AbortSignal.any([abortSignal, controller.signal]) : controller.signal;
-        const mailbox: string[] = [];
-        const completion = runSubagentTask({
-          task,
+        const unfinished = stored?.state === 'running' || Boolean(stored?.pendingTools?.length);
+        const recovery = unfinished
+          ? `\n\nThe previous worker run was interrupted. ${describeInterruptedTools(stored!)} Reconcile the workspace using read-only checks before making changes. Never replay an interrupted command blindly.`
+          : '';
+        const interruptedToolFingerprints = new Set(
+          [...(stored?.pendingTools ?? []), ...(stored?.unmergedReceipts ?? [])].flatMap(({ fingerprint }) => (fingerprint ? [fingerprint] : [])),
+        );
+        return startBackground(
+          workerId,
           targetSubagent,
-          prompt,
-          abortSignal: signal,
-          workerHistory: history,
-          takeSteering: () => mailbox.splice(0),
-        });
-        const worker = { subagentId: getSubagentId(targetSubagent), profileId: targetSubagent.id, controller, completion, mailbox, settled: false };
-        workers.set(workerId, worker);
-        void completion.then(() => {
-          worker.settled = true;
-        });
-        return { workerId, status: 'running' };
+          prompt + recovery,
+          { workerHistory: history, interruptedToolFingerprints },
+          stored?.pendingTools,
+          stored?.unmergedReceipts,
+        );
       },
     });
     toolSet[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}send_message`] = tool({
       description: 'Send instructions to a running worker at its next model step. Use followup_task for a completed worker.',
       inputSchema: z.object({ workerId: z.string().uuid(), message: z.string().min(1).max(10000) }),
       execute: async ({ workerId, message }) => {
+        if (!hasCurrentContext()) {
+          return { error: 'The task context has been cleared.' };
+        }
         const worker = workers.get(workerId);
         if (!worker || worker.settled || worker.controller.signal.aborted) {
           return { error: 'Worker is not running in this agent run.' };
@@ -250,11 +404,14 @@ export const createSubagentsToolset = async (
       description: 'Request cancellation of a background subagent in this run. Use wait_task to collect the final status.',
       inputSchema: z.object({ workerId: z.string().uuid() }),
       execute: async ({ workerId }) => {
+        if (!hasCurrentContext()) {
+          return { error: 'The task context has been cleared.' };
+        }
         const worker = workers.get(workerId);
         if (!worker) {
           return { error: 'Worker unavailable in this agent run.' };
         }
-        worker.controller.abort();
+        worker.controller.abort(WORKER_STOP);
         return { workerId, status: 'cancellation-requested' };
       },
     });

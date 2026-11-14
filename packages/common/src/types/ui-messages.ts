@@ -1,5 +1,5 @@
 import { TaskData, TokensInfoData } from './common';
-import { PromptContext, UsageReportData, Group } from './context';
+import { PromptContext, ProposedPlan, UsageReportData, Group } from './context';
 
 export interface Message {
   id: string;
@@ -18,6 +18,7 @@ export interface UserMessage extends Message {
 export interface ResponseMessage extends Message {
   type: 'response';
   reasoning?: string;
+  proposedPlan?: ProposedPlan;
   usageReport?: UsageReportData;
   finished?: boolean;
 }

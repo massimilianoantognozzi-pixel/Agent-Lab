@@ -39,6 +39,17 @@ describe('Agent Lab checkpoint boundaries', () => {
     expect(getLabServerHost()).toBeUndefined();
   });
 
+  it('restricts the listener explicitly without enabling Lab or General mode', () => {
+    vi.stubEnv('AIDER_DESK_LAB_MODE', 'false');
+    vi.stubEnv('AIDER_DESK_GENERAL_MODE', 'false');
+    vi.stubEnv('AIDER_DESK_LOOPBACK_ONLY', 'true');
+    expect(isLabMode()).toBe(false);
+    expect(getLabServerHost()).toBe('127.0.0.1');
+
+    vi.stubEnv('AIDER_DESK_LOOPBACK_ONLY', 'false');
+    expect(getLabServerHost()).toBeUndefined();
+  });
+
   it('accepts the synthetic project and rejects a sibling with a matching prefix', () => {
     expect(() => assertLabWorkspace(taskDir)).not.toThrow();
     const sibling = `${allowed}-other`;

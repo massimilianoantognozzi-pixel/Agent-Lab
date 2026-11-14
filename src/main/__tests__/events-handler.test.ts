@@ -9,6 +9,44 @@ import type { TelemetryManager } from '@/telemetry';
 import type { ProjectData } from '@common/types';
 
 describe('EventsHandler', () => {
+  it('retains a resume request received before the project and model registry are ready', async () => {
+    const ready = Promise.withResolvers<void>();
+    const resume = vi.fn(async () => {});
+    let started = false;
+    const project = {
+      start: vi.fn(async () => {
+        await ready.promise;
+        started = true;
+      }),
+      getTask: vi.fn(() => (started ? { resumeTask: resume } : null)),
+    };
+    const eventsHandler = new EventsHandler(
+      { getProject: () => project } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { waitForInit: () => ready.promise } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { waitForInit: () => ready.promise } as never,
+      {} as never,
+      {} as never,
+    );
+
+    const request = eventsHandler.resumeTask('/project', 'recoverable-task');
+    expect(resume).not.toHaveBeenCalled();
+    ready.resolve();
+    await request;
+    expect(project.getTask).toHaveBeenCalledExactlyOnceWith('recoverable-task');
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
   it('uses the default agent profile when the active project profile is scoped to another project', async () => {
     const activeProject = {
       baseDir: '/previous-project',

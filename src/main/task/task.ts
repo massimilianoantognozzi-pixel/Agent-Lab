@@ -13,6 +13,7 @@ import {
   ContextAssistantMessage,
   ContextFile,
   ContextMessage,
+  ContextUserMessage,
   ContextToolMessage,
   DEFAULT_AUTONOMY_MODE,
   DefaultTaskState,
@@ -29,6 +30,7 @@ import {
   ModelsData,
   ProjectSettings,
   PromptContext,
+  ProposedPlan,
   QuestionData,
   QueuedPromptData,
   ResponseChunkData,
@@ -104,6 +106,8 @@ import { isGovernedWorkflow, snapshotWorkflowFiles, workflowProjectFor } from '.
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
 import { projectContinuationRevision, readWorkflowValidationRevision } from './workflow-project-run';
 import { readShadcnReferences } from './workflow-shadcn';
+import { agentGoalCommandPattern, AgentGoalStore, describeAgentGoal, newAgentGoal, type AgentGoal, type AgentGoalTurn } from './agent-goal';
+import { goalWorktreeRevision, isGoalVerificationDirectory, isProjectVerificationCommand } from './goal-verification';
 
 import type { z } from 'zod';
 import type { ToolContent, JSONValue } from '@common/types';
@@ -111,11 +115,23 @@ import type { RegisteredCommand } from '@/extensions/extension-manager';
 import type { WatchHandle } from '@/file-watcher-manager';
 import type { SmartCompactionPassSelection } from '@/agent/smart-compaction';
 import type { SmartCompactionOptions } from '@common/extensions';
+import type { RecordedModelSettings, RootTurnRecord, WorkerProgress, WorkerRecord } from '@/agent/worker-checkpoint';
 
 import { ExtensionEventMap, ExtensionManager } from '@/extensions/extension-manager';
+import {
+  createRecordedInput,
+  hasSteeringToRecover,
+  describeInterruptedTools,
+  recoveredTurnHistory,
+  reconcileTurnProgress,
+  rememberCompletedShell,
+  WORKER_STOP,
+} from '@/agent/worker-checkpoint';
 import { defaultAgentReasoning } from '@/models/agent-reasoning';
+import { CODEX_PLAN_MODE } from '@/agent/codex-plan-mode';
 import { getAllFiles, isValidProjectFile } from '@/utils/file-system';
 import { isFreelanceEnabled } from '@/lab-projects/policy';
+import { isLabMode } from '@/lab-mode';
 import { projectUpdatedFiles, projectFileContents, projectFileDiff } from '@/lab-projects/files';
 import { atomicWriteJsonFile } from '@/utils/atomic-write';
 import {
@@ -159,7 +175,10 @@ export const TOOL_INPUT_FLUSH_INTERVAL_MS = 50;
 const WORKFLOW_SHUTDOWN = Symbol('workflow shutdown');
 const governedRetry = (previous = 0) => {
   const retryCount = Math.min(8, previous + 1);
-  return { retryCount, retryAt: Date.now() + Math.min(300_000, 5000 * 2 ** (retryCount - 1)) };
+  return {
+    retryCount,
+    retryAt: Date.now() + Math.min(300_000, 5000 * 2 ** (retryCount - 1)),
+  };
 };
 
 export const EMPTY_TASK_DATA: TaskData = {
@@ -190,6 +209,7 @@ const getTaskFinishedNotificationText = (task: TaskData) => {
 
 export class Task {
   private initialized = false;
+  private writableGoalLoaded = false;
   private initPromise: Promise<void> | null = null;
   private connectors: Connector[] = [];
   private currentQuestion: QuestionData | null = null;
@@ -215,8 +235,16 @@ export class Task {
   private resolutionAbortControllers: Record<string, AbortController> = {};
   private lastGitError: { action: string; message: string } | null = null;
   private subagentAbortControllers: Record<string, AbortController> = {};
+  private workerRuns = new Set<Promise<unknown>>();
+  private activeWorkerIds = new Set<string>();
+  private rootTurnInUse = false;
+  private rootTurnWrites: Promise<void> = Promise.resolve();
+  private rootTurnClosed = false;
+  private activeRootSteering?: RootTurnRecord;
+  private closing = false;
   private tokensInfo: TokensInfoData;
   private queuedPrompts: QueuedPromptData[] = [];
+  private readonly userSubmittedQueuedPrompts = new Map<string, string>();
   private pendingCommandImages?: string[];
   private fileWatchHandle: WatchHandle | null = null;
   private fileWatchGeneration = 0;
@@ -224,11 +252,18 @@ export class Task {
   private workflowRunSettled?: Promise<void>;
   private workflowWakeTimer?: ReturnType<typeof setTimeout>;
   private workflowWakeGeneration = 0;
+  private agentGoalWakeTimer?: ReturnType<typeof setTimeout>;
+  private agentGoalGeneration = 0;
+  private agentGoalPromptAdmissions = 0;
+  private agentGoalTurnController?: AbortController;
+  private agentGoalRetryDelay = 0;
+  private planAdmission = false;
   private isCompacting = false;
   private lastSmartCompactionMessageCount = 0;
   private smartCompactionLevel = CompactionLevel.One;
 
   private readonly taskDataPath: string;
+  private readonly agentGoalStore: AgentGoalStore;
   private readonly taskDataLoadPromise: Promise<void>;
   private readonly contextManager: ContextManager;
   private readonly agent: Agent;
@@ -263,6 +298,7 @@ export class Task {
       baseDir: project.baseDir,
     };
     this.taskDataPath = path.join(this.project.baseDir, AIDER_DESK_TASKS_DIR, this.taskId, 'settings.json');
+    this.agentGoalStore = new AgentGoalStore(path.join(path.dirname(this.taskDataPath), 'agent-goal.json'));
     this.contextManager = new ContextManager(this, this.taskId);
     this.skillManager = new SkillManager(project, extensionManager);
     this.agent = new Agent(
@@ -385,7 +421,10 @@ export class Task {
     Object.assign(this.task, nextTaskData);
   }
 
-  public async reloadFromDisk(): Promise<{ taskDataChanged: boolean; contextChanged: boolean }> {
+  public async reloadFromDisk(): Promise<{
+    taskDataChanged: boolean;
+    contextChanged: boolean;
+  }> {
     await this.waitForTaskDataLoad();
 
     const previousTaskData = { ...this.task };
@@ -586,7 +625,10 @@ export class Task {
     this.stopFileWatching();
     const generation = this.fileWatchGeneration;
     if (shouldBeWatching) {
-      logger.debug('Starting file watching', { baseDir: this.project.baseDir, taskId: this.taskId });
+      logger.debug('Starting file watching', {
+        baseDir: this.project.baseDir,
+        taskId: this.taskId,
+      });
       void this.project
         .getFileWatcherManager()
         .watch(this.getTaskDir(), () => this.onWatchedFilesChanged())
@@ -605,7 +647,10 @@ export class Task {
           }),
         );
     } else {
-      logger.debug('Stopping file watching', { baseDir: this.project.baseDir, taskId: this.taskId });
+      logger.debug('Stopping file watching', {
+        baseDir: this.project.baseDir,
+        taskId: this.taskId,
+      });
     }
   }
 
@@ -754,7 +799,10 @@ export class Task {
 
     await this.init(readonly);
     if (!readonly) {
+      this.writableGoalLoaded = true;
+      await this.reconcileInterruptedRootTurn();
       this.restoreGovernedContinuation();
+      this.restoreAgentGoal();
     }
 
     const mode = this.getCurrentMode();
@@ -902,20 +950,43 @@ export class Task {
   }
 
   public async close(clearContext = false, cleanupEmptyTask = true) {
+    this.closing = true;
+    try {
+      await this.closeTask(clearContext, cleanupEmptyTask);
+    } finally {
+      this.closing = false;
+    }
+  }
+
+  private async closeTask(clearContext: boolean, cleanupEmptyTask: boolean) {
+    this.writableGoalLoaded = false;
+    this.rootTurnClosed = true;
     this.stopFileWatching();
     this.stopGovernedWake();
+    this.stopAgentGoalWake();
     const workflowRunSettled = this.workflowRunSettled;
     if (workflowRunSettled) {
       await this.interruptResponse(undefined, !clearContext);
       await workflowRunSettled;
     } else {
       if (this.task.state === DefaultTaskState.InProgress && this.task.startedAt && !isGovernedWorkflow(this.getProjectDir())) {
-        await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
+        await this.saveTask({
+          state: DefaultTaskState.Interrupted,
+          interruptedAt: new Date().toISOString(),
+          completedAt: undefined,
+        });
       }
       for (const controller of Object.values(this.subagentAbortControllers)) {
-        controller.abort();
+        controller.abort(clearContext ? WORKER_STOP : undefined);
+      }
+      if (this.currentQuestion) {
+        await this.answerQuestion('n', 'Task is closing');
       }
       await this.agent.stopAndDrainCommands();
+      await this.rootTurnWrites?.catch((error) => logger.warn('Could not flush the root turn checkpoint.', { error }));
+      if (this.workerRuns?.size) {
+        await Promise.allSettled(this.workerRuns);
+      }
       if (this.initialized) {
         await this.interruptResponse(undefined, !clearContext);
       }
@@ -933,7 +1004,11 @@ export class Task {
       this.eventManager.sendClearTask(this.project.baseDir, this.taskId, true, true);
     }
     if (!clearContext) {
-      await this.contextManager.save().catch((error) => logger.warn('Could not flush task context before closing.', { error }));
+      await this.contextManager.save().catch((error) =>
+        logger.warn('Could not flush task context before closing.', {
+          error,
+        }),
+      );
     }
     this.resolveAgentRunPromises();
     this.cleanupChunkBuffers();
@@ -1005,7 +1080,7 @@ export class Task {
   }
 
   public isPromptRunning() {
-    return !!this.workflowRun || !!this.currentPromptContext || this.agent.isRunning() || this.isCompacting;
+    return this.rootTurnInUse || !!this.workflowRun || !!this.currentPromptContext || this.agent.isRunning() || this.isCompacting;
   }
 
   public hasQueuedPrompts(): boolean {
@@ -1043,7 +1118,11 @@ export class Task {
     const workflow = await readRepositoryWorkflow(this.managedPilotStatePath(), policy);
     const messages = remoteWorkflowMessages(await this.getContextMessages());
     if (workflow.phase === 'done' && !messages.some((message) => message.text === 'Ho completato le verifiche e preparato la patch.')) {
-      messages.push({ id: 'receipt-' + workflow.revision, role: 'assistant', text: 'Ho completato le verifiche e preparato la patch.' });
+      messages.push({
+        id: 'receipt-' + workflow.revision,
+        role: 'assistant',
+        text: 'Ho completato le verifiche e preparato la patch.',
+      });
     }
     return {
       taskId: this.taskId,
@@ -1108,7 +1187,12 @@ export class Task {
       settleRun = resolve;
     });
     const promptContext: PromptContext = { id: uuidv4() };
-    const request: ContextMessage = { id: promptContext.id, role: 'user', content: prompt, promptContext };
+    const request: ContextMessage = {
+      id: promptContext.id,
+      role: 'user',
+      content: prompt,
+      promptContext,
+    };
     try {
       if (!continuation) {
         this.addUserMessage(request.id, prompt, promptContext);
@@ -1141,7 +1225,12 @@ export class Task {
               ...(command
                 ? {
                     revision: continuation ? priorGoal?.revision : await repositoryContinuationRevision(policy, controller.signal),
-                    ...(continuation ? { observedHead: priorGoal?.observedHead, observedValidation: priorGoal?.observedValidation } : {}),
+                    ...(continuation
+                      ? {
+                          observedHead: priorGoal?.observedHead,
+                          observedValidation: priorGoal?.observedValidation,
+                        }
+                      : {}),
                   }
                 : {}),
               ...(!command ? { approval: expectedApproval } : {}),
@@ -1155,7 +1244,12 @@ export class Task {
         ...(goal
           ? { metadata: { ...this.task.metadata, governedContinuation: goal } }
           : priorGoal?.state === 'active' && !continuation && !command
-            ? { metadata: { ...this.task.metadata, governedContinuation: { ...priorGoal, state: 'waiting' } } }
+            ? {
+                metadata: {
+                  ...this.task.metadata,
+                  governedContinuation: { ...priorGoal, state: 'waiting' },
+                },
+              }
             : {}),
       });
       if (!continuation) {
@@ -1240,7 +1334,11 @@ export class Task {
         promptContext,
       };
       await this.addContextMessage(response);
-      await this.contextManager.save().catch((error) => logger.warn('Cronologia del flusso governato non salvata.', { error }));
+      await this.contextManager.save().catch((error) =>
+        logger.warn('Cronologia del flusso governato non salvata.', {
+          error,
+        }),
+      );
       this.reloadGroupMessages([response]);
       if (result.phase === 'done') {
         await this.sendUpdatedFilesUpdated();
@@ -1286,11 +1384,51 @@ export class Task {
     userMessageId = uuidv4(),
     sendNotification = true,
     images?: string[],
+    submittedByUser = false,
   ): Promise<ResponseCompletedData[]> {
     if (isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il pilota usa il flusso governato della finestra desktop.');
     }
-    if (this.currentQuestion) {
+    const command = agentGoalCommandPattern.exec(prompt.trim());
+    const planDecision = /^\/plan (implement|new|clear) (\S+)$/.exec(prompt.trim());
+    if (!submittedByUser && (command || planDecision)) {
+      this.addLogMessage('warning', 'Only a user-submitted chat command can manage a goal or approve a plan.', true);
+      return [];
+    }
+    if (command) {
+      await this.handleAgentGoalCommand(command[1]?.trim() ?? '', mode);
+      return [];
+    }
+    if (planDecision) {
+      await this.handlePlanDecision(planDecision[1], planDecision[2]);
+      return [];
+    }
+    this.agentGoalPromptAdmissions++;
+    try {
+      return await this.runUserPrompt(prompt, mode, addToInputHistory, userMessageId, sendNotification, images, undefined, undefined, submittedByUser);
+    } finally {
+      this.agentGoalPromptAdmissions--;
+      this.restoreAgentGoal();
+    }
+  }
+
+  private async runUserPrompt(
+    prompt: string,
+    mode: Mode,
+    addToInputHistory: boolean,
+    userMessageId: string,
+    sendNotification: boolean,
+    images?: string[],
+    approvedPlanId?: string,
+    approvedPlan?: ProposedPlan,
+    submittedByUser = false,
+  ): Promise<ResponseCompletedData[]> {
+    if (this.planAdmission && !approvedPlanId) {
+      this.addLogMessage('warning', 'The plan decision is being saved.', true);
+      return [];
+    }
+    const submittedPrompt = submittedByUser && !approvedPlanId && !approvedPlan ? prompt : undefined;
+    if (this.currentQuestion && submittedByUser) {
       if (await this.answerQuestion('n', prompt)) {
         logger.debug('Processed by the answerQuestion function.');
         return [];
@@ -1305,11 +1443,14 @@ export class Task {
         timestamp: Date.now(),
         images,
       };
+      if (submittedByUser) {
+        this.userSubmittedQueuedPrompts.set(userMessageId, prompt);
+      }
       this.queuedPrompts.push(queuedPrompt);
       this.eventManager.sendQueuedPromptsUpdated(this.project.baseDir, this.taskId, this.queuedPrompts);
       return [];
     };
-    if (this.isPromptRunning()) {
+    if (this.isPromptRunning() || this.currentQuestion) {
       return enqueuePrompt();
     }
 
@@ -1319,7 +1460,11 @@ export class Task {
       try {
         await this.activateSkill(skillCommand.skillName);
       } catch (error) {
-        logger.error('Failed to activate skill from prompt', { baseDir: this.project.baseDir, taskId: this.taskId, error });
+        logger.error('Failed to activate skill from prompt', {
+          baseDir: this.project.baseDir,
+          taskId: this.taskId,
+          error,
+        });
         this.addLogMessage('error', error instanceof Error ? error.message : String(error));
         return [];
       }
@@ -1345,6 +1490,10 @@ export class Task {
     prompt = extensionResult.prompt;
     mode = extensionResult.mode;
     promptContext = extensionResult.promptContext;
+    if (this.pendingPlan() && mode !== CODEX_PLAN_MODE && this.pendingPlan()?.id !== approvedPlanId) {
+      this.addLogMessage('warning', 'Decide what to do with the pending plan before running a new Agent prompt.', true);
+      return [];
+    }
 
     logger.info('Running prompt:', {
       baseDir: this.project.baseDir,
@@ -1353,7 +1502,7 @@ export class Task {
       promptContext,
     });
 
-    const controller = startup ? new AbortController() : undefined;
+    const controller = startup && mode !== CODEX_PLAN_MODE ? new AbortController() : undefined;
     if (controller) {
       this.workflowRun = controller;
     }
@@ -1372,7 +1521,10 @@ export class Task {
         throw error;
       }
       interrupted = true;
-      await this.saveTask({ state: DefaultTaskState.Interrupted, completedAt: undefined });
+      await this.saveTask({
+        state: DefaultTaskState.Interrupted,
+        completedAt: undefined,
+      });
       this.addLogMessage(
         controller.signal.aborted ? 'warning' : 'error',
         controller.signal.aborted ? 'Avvio del lavoro interrotto.' : error instanceof Error ? error.message : 'Avvio dei container non riuscito.',
@@ -1406,7 +1558,24 @@ export class Task {
         await this.saveTask({ agentProfileId: profile.id });
       }
 
-      responses = await this.runPromptInAgent(profile, mode, prompt, promptContext, undefined, undefined, undefined, true, sendNotification, images);
+      responses = await this.runPromptInAgent(
+        profile,
+        mode,
+        prompt,
+        promptContext,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        sendNotification,
+        images,
+        undefined,
+        undefined,
+        undefined,
+        approvedPlanId,
+        approvedPlan,
+        submittedPrompt,
+      );
     } else {
       responses = await this.runPromptInAider(mode, prompt, promptContext, sendNotification);
     }
@@ -1466,6 +1635,8 @@ export class Task {
     if (this.queuedPrompts.length > 0) {
       const nextPrompt = this.queuedPrompts.shift();
       if (nextPrompt) {
+        const submittedByUser = this.userSubmittedQueuedPrompts.get(nextPrompt.id) === nextPrompt.text;
+        this.userSubmittedQueuedPrompts.delete(nextPrompt.id);
         this.addLogMessage('loading');
         this.eventManager.sendQueuedPromptsUpdated(this.project.baseDir, this.taskId, this.queuedPrompts);
         if (nextPrompt.customCommand) {
@@ -1473,7 +1644,7 @@ export class Task {
           return [];
         }
         this.addUserMessage(nextPrompt.id, nextPrompt.text, undefined, nextPrompt.images);
-        return this.runPrompt(nextPrompt.text, nextPrompt.mode, true, nextPrompt.id, false, nextPrompt.images);
+        return this.runPrompt(nextPrompt.text, nextPrompt.mode, true, nextPrompt.id, false, nextPrompt.images, submittedByUser);
       }
     }
 
@@ -1483,6 +1654,9 @@ export class Task {
   public async runPromptInAider(mode: Mode, prompt: string, promptContext: PromptContext, sendNotification = true): Promise<ResponseCompletedData[]> {
     if (isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il pilota usa il flusso governato della finestra desktop.');
+    }
+    if (this.pendingPlan()) {
+      throw new Error('Resolve the pending plan before running Aider.');
     }
     await this.waitForCurrentPromptToFinish();
 
@@ -1592,51 +1766,238 @@ export class Task {
     sendNotification = true,
     images?: string[],
     skillsToActivate?: string[],
+    recoveredTurn?: RootTurnRecord,
+    goalTurn?: AgentGoalTurn,
+    approvedPlanId?: string,
+    approvedPlan?: ProposedPlan,
+    goalUserPrompt?: string,
   ): Promise<ResponseCompletedData[]> {
+    if (this.closing) {
+      throw new Error('Task is closing.');
+    }
     if (isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il pilota usa il flusso governato della finestra desktop.');
     }
     if (waitForCurrentAgentToFinish) {
       await this.waitForCurrentAgentToFinish();
     }
-
-    await this.saveTask({
-      name: this.task.name || this.getTaskNameFromPrompt(prompt || ''),
-      startedAt: new Date().toISOString(),
-      state: DefaultTaskState.InProgress,
-      provider: this.task.provider || profile.provider,
-      model: this.task.model || profile.model,
-    });
-
-    // reset smart compaction level on agent start
-    this.smartCompactionLevel = 1;
-
-    const agentMessages = await this.agent.runAgent(
-      this,
-      profile,
-      prompt,
-      mode,
-      promptContext,
-      contextMessages,
-      contextFiles,
-      systemPrompt,
-      true,
-      undefined,
-      images,
-      skillsToActivate,
-    );
-    if (agentMessages.length > 0) {
-      // send messages to connectors
-      this.contextManager.toConnectorMessages(agentMessages).forEach((message) => {
-        this.sendAddMessage(message.role, message.content, false);
-      });
+    if (this.closing) {
+      throw new Error('Task is closing.');
     }
+    const pendingPlan = this.pendingPlan();
+    if ((this.planAdmission || (mode !== CODEX_PLAN_MODE && pendingPlan)) && (!approvedPlanId || pendingPlan?.id !== approvedPlanId || mode !== 'agent')) {
+      throw new Error('Resolve the pending plan before running a different turn.');
+    }
+
+    const trackRoot = ((mode === 'agent' || mode === 'plan' || mode === CODEX_PLAN_MODE) && Boolean(prompt)) || Boolean(recoveredTurn || goalTurn);
+    if (trackRoot && this.rootTurnInUse) {
+      throw new Error('An agent turn is already running.');
+    }
+    if (trackRoot) {
+      this.rootTurnInUse = true;
+      this.rootTurnClosed = false;
+    }
+    const savedInput = trackRoot && prompt ? createRecordedInput(prompt, images, promptContext) : undefined;
+    let rootTurn: RootTurnRecord | undefined;
+    let progress: ((event: WorkerProgress) => Promise<void>) | undefined;
+    let agentMessages: ContextMessage[];
+    let createdGoalInTurn = false;
+    let unsampledSteering = false;
     try {
+      if (trackRoot) {
+        const history = contextMessages ?? (await this.contextManager.getContextMessages());
+        if (this.closing || this.rootTurnClosed) {
+          throw new Error('Task is closing.');
+        }
+        rootTurn = recoveredTurn ?? {
+          turnId: promptContext.id,
+          directory: this.getTaskDir(),
+          profileId: profile.id,
+          provider: profile.provider,
+          model: profile.model,
+          mode,
+          epoch: this.workerEpoch(),
+          state: 'running',
+          goalId: goalTurn?.goal.id,
+          approvedPlan: approvedPlanId && pendingPlan ? { id: pendingPlan.id, markdown: pendingPlan.markdown } : approvedPlan,
+          messages: savedInput ? [...history, savedInput] : history,
+        };
+        progress = (event) => {
+          this.rootTurnWrites = this.rootTurnWrites.then(async () => {
+            rememberCompletedShell(rootTurn!, event.receipt);
+            reconcileTurnProgress(rootTurn!, event);
+            await this.saveRootTurn(rootTurn!);
+          });
+          return this.rootTurnWrites;
+        };
+        this.rootTurnWrites = Promise.resolve();
+        await progress({});
+      }
+      if (this.closing || (trackRoot && this.rootTurnClosed)) {
+        throw new Error('Task is closing.');
+      }
+      const metadata = { ...this.task.metadata };
+      if (approvedPlanId) {
+        delete metadata.pendingPlan;
+      }
+      await this.saveTask({
+        name: this.task.name || this.getTaskNameFromPrompt(prompt || goalTurn?.goal.objective || ''),
+        startedAt: new Date().toISOString(),
+        state: DefaultTaskState.InProgress,
+        completedAt: undefined,
+        provider: this.task.provider || profile.provider,
+        model: this.task.model || profile.model,
+        ...(recoveredTurn || approvedPlanId ? { currentMode: mode } : {}),
+        ...(rootTurn
+          ? {
+              metadata: {
+                ...metadata,
+                recoverableRootTurn: rootTurn.turnId,
+              },
+            }
+          : {}),
+      });
+
+      // reset smart compaction level on agent start
+      this.smartCompactionLevel = 1;
+      if (this.closing || (trackRoot && this.rootTurnClosed)) {
+        throw new Error('Task is closing.');
+      }
+
+      const recoveryInstructions = recoveredTurn
+        ? `Continue the original recorded turn without a new user request. Review its existing evidence. ${describeInterruptedTools(recoveredTurn)} Inspect state before taking action and do not replay an interrupted operation blindly.`
+        : undefined;
+      const interruptedToolFingerprints = recoveredTurn
+        ? new Set([
+            ...(recoveredTurn.completedShellFingerprints ?? []),
+            ...[...(recoveredTurn.pendingTools ?? []), ...(recoveredTurn.unmergedReceipts ?? [])].flatMap(({ fingerprint }) =>
+              fingerprint ? [fingerprint] : [],
+            ),
+          ])
+        : undefined;
+      if (recoveredTurn && contextMessages) {
+        this.contextManager.setContextMessages([...contextMessages]);
+      }
+      const createGoalInTurn =
+        rootTurn && mode === 'agent' && goalUserPrompt && this.agentGoalAllowed()
+          ? async (objective: string, authorization: string, budget?: number) => {
+              if (this.closing || this.rootTurnClosed || !goalUserPrompt.includes(authorization)) {
+                throw new Error('Goal creation requires explicit authorization in the latest user request.');
+              }
+              const next = { ...newAgentGoal(objective, budget), originTurnId: rootTurn!.turnId };
+              let bound: AgentGoalTurn | undefined;
+              await this.agentGoalStore.mutate((current) => {
+                if (this.closing || this.rootTurnClosed || (current && current.status !== 'complete')) {
+                  throw new Error('An unfinished goal already exists or the turn is closing.');
+                }
+                bound = this.createAgentGoalTurn(next, rootTurn!.turnId);
+                goalTurn = bound;
+                createdGoalInTurn = true;
+                return next;
+              });
+              rootTurn!.goalId = next.id;
+              await progress?.({});
+              return bound!;
+            }
+          : undefined;
+      const steeringRoot = mode === 'agent' ? rootTurn : undefined;
+      if (steeringRoot) {
+        this.activeRootSteering = steeringRoot;
+      }
+      agentMessages = await this.agent.runAgent(
+        this,
+        profile,
+        prompt,
+        mode,
+        promptContext,
+        contextMessages,
+        contextFiles,
+        systemPrompt,
+        true,
+        goalTurn?.signal,
+        images,
+        skillsToActivate,
+        undefined,
+        progress,
+        recoveryInstructions,
+        interruptedToolFingerprints,
+        savedInput,
+        recoveredTurn?.modelSettings,
+        goalTurn,
+        undefined,
+        rootTurn?.approvedPlan,
+        createGoalInTurn,
+        steeringRoot
+          ? {
+              take: () => this.takeRootSteering(steeringRoot),
+              hasPendingOrClose: () => this.closeRootSteeringIfEmpty(steeringRoot),
+            }
+          : undefined,
+      );
+      if (steeringRoot && this.activeRootSteering === steeringRoot) {
+        const remaining = await this.takeRootSteering(steeringRoot, true);
+        if (remaining.length) {
+          unsampledSteering = true;
+          goalTurn?.invalidateVerification();
+          for (const input of remaining) {
+            await this.addContextMessage(input);
+            this.addUserMessage(input.id, extractTextContent(input.content), input.promptContext, extractImagesFromContent(input.content));
+          }
+          agentMessages.push(...remaining);
+        }
+      }
+      if (agentMessages.length > 0) {
+        // send messages to connectors
+        this.contextManager.toConnectorMessages(agentMessages).forEach((message) => {
+          this.sendAddMessage(message.role, message.content, false);
+        });
+      }
       await this.contextManager.save();
+      if (mode === CODEX_PLAN_MODE && !this.closing && this.task.state !== DefaultTaskState.Interrupted) {
+        const proposal = agentMessages.findLast((message) => message.role === 'assistant' && message.proposedPlan);
+        if (proposal?.role === 'assistant' && proposal.proposedPlan) {
+          await this.saveTask({
+            metadata: {
+              ...this.task.metadata,
+              pendingPlan: { ...proposal.proposedPlan, taskId: this.taskId, directory: this.getTaskDir(), turnId: promptContext.id },
+            },
+          });
+        }
+      }
+      if (goalTurn && !this.closing && !this.rootTurnClosed && this.task.state !== DefaultTaskState.Interrupted) {
+        await goalTurn.commitCompletion();
+      }
+      if (rootTurn && !this.closing && !this.rootTurnClosed && this.task.state !== DefaultTaskState.Interrupted) {
+        const last = agentMessages.at(-1);
+        const goalEnded = goalTurn && (goalTurn.signal.aborted || agentMessages.length > 0);
+        const finalText = last?.role === 'assistant' && extractTextContent(last.content).trim();
+        rootTurn.state = unsampledSteering ? 'running' : goalEnded || finalText ? 'success' : 'error';
+        await progress?.({});
+        if (rootTurn.state !== 'success') {
+          await this.saveTask({
+            state: DefaultTaskState.Interrupted,
+            interruptedAt: new Date().toISOString(),
+          });
+        }
+      }
     } catch (error) {
       this.resolveAgentRunPromises();
-      await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString() });
+      if (!this.rootTurnClosed) {
+        await this.saveTask({
+          state: DefaultTaskState.Interrupted,
+          interruptedAt: new Date().toISOString(),
+        });
+      }
       throw error;
+    } finally {
+      if (createdGoalInTurn && goalTurn) {
+        this.agentGoalTurnController = undefined;
+        await this.finishAgentGoalTurn(goalTurn.goal.id, promptContext.id);
+      }
+      if (trackRoot) {
+        this.activeRootSteering = undefined;
+        this.rootTurnInUse = false;
+      }
     }
 
     void this.sendRequestContextInfo();
@@ -1646,7 +2007,7 @@ export class Task {
 
     this.resolveAgentRunPromises();
 
-    if (waitForCurrentAgentToFinish) {
+    if (!hasSteeringToRecover(rootTurn) && (waitForCurrentAgentToFinish || goalTurn)) {
       await this.runNextQueuedPrompt();
     }
 
@@ -1655,7 +2016,7 @@ export class Task {
       const settings = this.store.getSettings();
       let state: string | null = DefaultTaskState.ReadyForReview;
 
-      if (this.isWaitingForApproval(agentMessages)) {
+      if ((mode === CODEX_PLAN_MODE && this.pendingPlan()) || this.isWaitingForApproval(agentMessages)) {
         state = DefaultTaskState.ReadyForImplementation;
       } else if (settings.taskSettings.smartTaskState) {
         state = await this.determineTaskState(agentMessages);
@@ -1745,6 +2106,137 @@ export class Task {
     return lower.includes('proceed') && lower.includes('(y/n)');
   }
 
+  private pendingPlan(): (ProposedPlan & { directory: string; turnId: string; implementationTaskId?: string; implementationTurnId?: string }) | undefined {
+    const value = this.task.metadata?.pendingPlan;
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      !('id' in value) ||
+      !('markdown' in value) ||
+      !('directory' in value) ||
+      !('turnId' in value) ||
+      !('taskId' in value) ||
+      value.taskId !== this.taskId
+    ) {
+      return undefined;
+    }
+    const { id, markdown, directory, turnId } = value;
+    return typeof id === 'string' && typeof markdown === 'string' && typeof directory === 'string' && typeof turnId === 'string'
+      ? {
+          id,
+          markdown,
+          directory,
+          turnId,
+          implementationTaskId: 'implementationTaskId' in value && typeof value.implementationTaskId === 'string' ? value.implementationTaskId : undefined,
+          implementationTurnId: 'implementationTurnId' in value && typeof value.implementationTurnId === 'string' ? value.implementationTurnId : undefined,
+        }
+      : undefined;
+  }
+
+  private async handlePlanDecision(action: string, planId: string) {
+    const plan = this.pendingPlan();
+    if (
+      !plan ||
+      plan.id !== planId ||
+      plan.directory !== this.getTaskDir() ||
+      this.closing ||
+      this.isPromptRunning() ||
+      this.hasQueuedPrompts() ||
+      this.planAdmission
+    ) {
+      this.addLogMessage('error', 'The proposal is no longer the current plan or the chat is busy.', true);
+      return;
+    }
+    this.planAdmission = true;
+    this.stopAgentGoalWake();
+    try {
+      const profile = action === 'clear' ? undefined : await this.getTaskAgentProfile();
+      if (action !== 'clear' && !profile) {
+        throw new Error('Choose an Agent profile before implementing the plan.');
+      }
+      if (action === 'new' && (this.task.workingMode === 'worktree' || Buffer.byteLength(plan.markdown, 'utf8') > 40_000)) {
+        throw new Error('Implement this plan in its original chat to preserve the complete plan and matching checkout.');
+      }
+      if (this.closing || this.isPromptRunning() || this.hasQueuedPrompts() || this.pendingPlan()?.id !== plan.id) {
+        throw new Error('The proposal changed before approval.');
+      }
+      const { pendingPlan: _, ...metadata } = this.task.metadata ?? {};
+      const updates = { metadata, state: DefaultTaskState.ReadyForReview };
+      if (action === 'implement') {
+        if (plan.implementationTaskId) {
+          throw new Error('Continue this approved plan in the new chat already prepared for it.');
+        }
+        await this.runUserPrompt('Implement the plan.', 'agent', true, uuidv4(), true, undefined, plan.id);
+      } else if (action === 'new' && profile) {
+        const targetId = plan.implementationTaskId ?? this.project.generateShortTaskId();
+        const implementationTurnId = plan.implementationTurnId ?? uuidv4();
+        if (!plan.implementationTaskId) {
+          await this.saveTask({
+            metadata: { ...this.task.metadata, pendingPlan: { ...plan, taskId: this.taskId, implementationTaskId: targetId, implementationTurnId } },
+          });
+        }
+        let target = this.project.getTask(targetId);
+        if (!target) {
+          await this.project.createNewTask(
+            {
+              name: this.task.name,
+              mode: 'agent',
+              agentProfileId: profile.id,
+              provider: profile.provider,
+              model: profile.model,
+              workingMode: 'local',
+              addInitialContextFiles: false,
+              activate: false,
+              sendEvent: false,
+            },
+            targetId,
+          );
+          target = this.project.getTask(targetId);
+        }
+        if (!target || target.getTaskDir() !== plan.directory) {
+          throw new Error('The new chat could not use the checkout that produced this plan.');
+        }
+        if (target.task.metadata?.recoverableRootTurn !== implementationTurnId) {
+          await target.loadContextMessages([
+            {
+              id: uuidv4(),
+              role: 'assistant',
+              content: `<proposed_plan>\n${plan.markdown}\n</proposed_plan>`,
+              proposedPlan: { id: plan.id, markdown: plan.markdown },
+            },
+          ]);
+          await target.saveTask({ currentMode: 'agent' });
+          await target.contextManager.save();
+          this.eventManager.sendTaskCreated(target.task, true);
+        }
+        const destination = target;
+        const alreadyAdmitted = async () => {
+          const receipt = await destination.readRootTurn();
+          return (
+            destination.task.metadata?.recoverableRootTurn === implementationTurnId && receipt?.turnId === implementationTurnId && receipt.state !== 'error'
+          );
+        };
+        if (!(await alreadyAdmitted())) {
+          await target.runUserPrompt('Implement the plan.', 'agent', true, implementationTurnId, true, undefined, undefined, {
+            id: plan.id,
+            markdown: plan.markdown,
+          });
+        }
+        if (!(await alreadyAdmitted())) {
+          throw new Error('The new chat did not admit the approved plan. The proposal remains available here.');
+        }
+        await this.saveTask(updates);
+      } else {
+        await this.saveTask(updates);
+      }
+    } catch (error) {
+      this.addLogMessage('error', error instanceof Error ? error.message : String(error), true);
+    } finally {
+      this.planAdmission = false;
+      this.restoreAgentGoal();
+    }
+  }
+
   private async determineTaskState(resultMessages: ContextMessage[]): Promise<string | null> {
     this.isDeterminingTaskState = true;
 
@@ -1830,13 +2322,18 @@ export class Task {
 
   public async runSubagent(
     profile: AgentProfile,
-    prompt: string,
+    prompt: string | null,
     contextMessages?: ContextMessage[],
     contextFiles?: ContextFile[],
     systemPrompt?: string,
     abortController?: AbortController,
     promptContext?: PromptContext,
     takeSteering?: () => string[],
+    onProgress?: (progress: WorkerProgress) => Promise<void>,
+    recoveryInstructions?: string,
+    interruptedToolFingerprints?: ReadonlySet<string>,
+    recoveredModelSettings?: RecordedModelSettings,
+    onGoalUsage?: AgentGoalTurn['onUsage'],
   ): Promise<ContextMessage[]> {
     profile = {
       ...profile,
@@ -1861,7 +2358,7 @@ export class Task {
         'onSubagentStarted',
         {
           subagentProfile: profile,
-          prompt,
+          prompt: prompt ?? '',
           contextMessages,
           contextFiles,
           systemPrompt,
@@ -1872,13 +2369,15 @@ export class Task {
       );
       if (extensionResult.blocked) {
         logger.debug('Subagent execution blocked by extension');
-        return [];
+        throw new Error('Subagent execution blocked by extension.');
       }
-      prompt = extensionResult.prompt;
+      if (prompt !== null) {
+        prompt = extensionResult.prompt;
+      }
       contextMessages = extensionResult.contextMessages;
       contextFiles = extensionResult.contextFiles;
       systemPrompt = extensionResult.systemPrompt;
-      promptContext = extensionResult.promptContext;
+      promptContext = recoveryInstructions ? promptContext : extensionResult.promptContext;
 
       let resultMessages = await this.agent.runAgent(
         this,
@@ -1894,6 +2393,13 @@ export class Task {
         undefined,
         undefined,
         takeSteering,
+        onProgress,
+        recoveryInstructions,
+        interruptedToolFingerprints,
+        undefined,
+        recoveredModelSettings,
+        undefined,
+        onGoalUsage,
       );
       const subagentFinishedExtensionResult = await this.extensionManager.dispatchEvent(
         'onSubagentFinished',
@@ -2029,7 +2535,11 @@ export class Task {
           taskId: this.taskId,
           messageId: message.id,
         });
-        this.responseChunkMap.set(messageId, { contentBuffer: '', reasoningBuffer: '', interval });
+        this.responseChunkMap.set(messageId, {
+          contentBuffer: '',
+          reasoningBuffer: '',
+          interval,
+        });
       } else {
         logger.debug('Appending to buffer', {
           baseDir: this.project.baseDir,
@@ -2073,6 +2583,7 @@ export class Task {
         type: 'response-completed',
         messageId: message.id,
         content: message.content,
+        proposedPlan: message.proposedPlan,
         reasoning: message.reasoning,
         reflectedMessage: message.reflectedMessage,
         baseDir: this.project.baseDir,
@@ -2098,6 +2609,17 @@ export class Task {
       // Sort by sequence number when adding
       this.currentPromptResponses.sort((a, b) => (a.sequenceNumber || 0) - (b.sequenceNumber || 0));
     }
+  }
+
+  public sendProposedPlanChunk(messageId: string, markdown: string, promptContext?: PromptContext) {
+    this.eventManager.sendResponseChunk({
+      messageId,
+      baseDir: this.project.baseDir,
+      taskId: this.taskId,
+      chunk: '',
+      proposedPlan: { id: `${messageId}:plan`, markdown },
+      promptContext,
+    });
   }
 
   sendResponseCompleted(data: ResponseCompletedData) {
@@ -2209,16 +2731,15 @@ export class Task {
   }
 
   public async answerQuestion(answer: string, userInput?: string): Promise<boolean> {
-    if (!this.currentQuestion) {
+    const question = this.currentQuestion;
+    if (!question) {
       return false;
     }
 
-    const extensionResult = await this.extensionManager.dispatchEvent(
-      'onQuestionAnswered',
-      { question: this.currentQuestion, answer, userInput },
-      this.project,
-      this,
-    );
+    const extensionResult = await this.extensionManager.dispatchEvent('onQuestionAnswered', { question, answer, userInput }, this.project, this);
+    if (this.currentQuestion !== question) {
+      return false;
+    }
     answer = extensionResult.answer;
     userInput = extensionResult.userInput;
 
@@ -2473,7 +2994,9 @@ export class Task {
 
     const allProfiles = this.agentProfileManager.getProjectProfiles(this.project);
     const enabledSubagents = allProfiles.filter((subagent) => subagent.subagent.enabled === true && subagent.id !== mainAgentProfile.id);
-    const targetSubagent = findEnabledSubagent(enabledSubagents, subagentId, { matchByName: true });
+    const targetSubagent = findEnabledSubagent(enabledSubagents, subagentId, {
+      matchByName: true,
+    });
 
     if (!targetSubagent) {
       this.addLogMessage('error', `Subagent '${subagentId}' not found or not enabled.`);
@@ -2612,6 +3135,9 @@ export class Task {
   }
 
   public async askQuestion(questionData: QuestionData, awaitAnswer = true): Promise<[string, string | undefined]> {
+    if (this.closing) {
+      return ['n', 'Task is closing'];
+    }
     let storedAnswer = this.storedQuestionAnswers.get(this.getQuestionKey(questionData));
     const extensionResult = await this.extensionManager.dispatchEvent(
       'onQuestionAsked',
@@ -2637,6 +3163,9 @@ export class Task {
       await new Promise((resolve) => {
         this.currentQuestionResolves.push(resolve);
       });
+    }
+    if (this.closing) {
+      return ['n', 'Task is closing'];
     }
 
     storedAnswer = this.storedQuestionAnswers.get(this.getQuestionKey(questionData));
@@ -3345,12 +3874,15 @@ export class Task {
       updateContextInfo,
     });
 
+    const workerEpoch = createSnapshot ? uuidv4() : this.workerEpoch();
     if (updateTaskState) {
       await this.updateTask({
         state: DefaultTaskState.Todo,
-        metadata: undefined,
+        metadata: workerEpoch ? { workerEpoch } : undefined,
         lastAgentProviderMetadata: null,
       });
+    } else if (createSnapshot) {
+      await this.saveTask({ metadata: { ...this.task.metadata, workerEpoch } });
     }
 
     this.contextManager.clearMessages(true, createSnapshot);
@@ -3367,6 +3899,11 @@ export class Task {
       baseDir: this.project.baseDir,
       taskId: this.taskId,
     });
+    if (!this.isInternal()) {
+      await this.saveTask({
+        metadata: { ...this.task.metadata, workerEpoch: uuidv4() },
+      });
+    }
     this.contextManager.clearContextFiles();
     this.contextManager.clearMessages();
     await this.contextManager.save();
@@ -3426,9 +3963,19 @@ export class Task {
     if (goal && !interruptId && workflowProjectFor(this.getProjectDir())) {
       if (!preserveGovernedGoal && (goal.state === 'active' || goal.state === 'waiting')) {
         this.stopGovernedWake();
-        await this.saveTask({ metadata: { ...this.task.metadata, governedContinuation: { ...goal, state: 'paused' } } });
+        await this.saveTask({
+          metadata: {
+            ...this.task.metadata,
+            governedContinuation: { ...goal, state: 'paused' },
+          },
+        });
       }
       return;
+    }
+    if (!interruptId && !preserveGovernedGoal) {
+      this.stopAgentGoalWake();
+      this.agentGoalTurnController?.abort();
+      await this.changeAgentGoalStatus('paused').catch((error) => logger.warn('Could not pause the saved goal.', { error }));
     }
     const extensionResult = await this.extensionManager.dispatchEvent('onInterrupted', { interruptId }, this.project, this);
     if (extensionResult.blocked) {
@@ -3447,7 +3994,7 @@ export class Task {
           taskId: this.taskId,
           interruptId,
         });
-        subagentAbortController.abort();
+        subagentAbortController.abort(WORKER_STOP);
         delete this.subagentAbortControllers[interruptId];
         logger.info('Aborted subagent', { interruptId });
         return;
@@ -3484,7 +4031,7 @@ export class Task {
         interruptId: firstInterruptId,
       });
       const abortController = this.subagentAbortControllers[firstInterruptId];
-      abortController.abort();
+      abortController.abort(WORKER_STOP);
       delete this.subagentAbortControllers[firstInterruptId];
       logger.info('Aborted subagent', { interruptId: firstInterruptId });
       return;
@@ -3502,6 +4049,7 @@ export class Task {
     }
 
     this.findMessageConnectors('interrupt-response').forEach((connector) => connector.sendInterruptResponseMessage());
+    this.activeRootSteering = undefined;
     this.agent.interrupt();
     this.promptFinished();
     this.cleanupChunkBuffers();
@@ -3537,11 +4085,18 @@ export class Task {
   }
 
   public removeQueuedPrompt(promptId: string): void {
+    this.userSubmittedQueuedPrompts.delete(promptId);
     this.queuedPrompts = this.queuedPrompts.filter((qp) => qp.id !== promptId);
     this.eventManager.sendQueuedPromptsUpdated(this.project.baseDir, this.taskId, this.queuedPrompts);
   }
 
   public reorderQueuedPrompts(prompts: QueuedPromptData[]): void {
+    const retained = new Set(prompts.map(({ id }) => id));
+    for (const id of this.userSubmittedQueuedPrompts.keys()) {
+      if (!retained.has(id)) {
+        this.userSubmittedQueuedPrompts.delete(id);
+      }
+    }
     this.queuedPrompts = prompts;
     this.eventManager.sendQueuedPromptsUpdated(this.project.baseDir, this.taskId, this.queuedPrompts);
   }
@@ -3550,8 +4105,102 @@ export class Task {
     const prompt = this.queuedPrompts.find((qp) => qp.id === promptId);
     if (prompt) {
       prompt.text = newText;
+      this.userSubmittedQueuedPrompts.delete(promptId);
       this.eventManager.sendQueuedPromptsUpdated(this.project.baseDir, this.taskId, this.queuedPrompts);
     }
+  }
+
+  public async steerAgentTurn(expectedTurnId: string, clientId: string, text: string, images?: string[]): Promise<boolean> {
+    const root = this.activeRootSteering;
+    if (!root || root.turnId !== expectedTurnId || !clientId || !text.trim() || text.trimStart().startsWith('/') || this.currentQuestion) {
+      return false;
+    }
+    const canAccept = () =>
+      this.activeRootSteering === root &&
+      !this.closing &&
+      !this.rootTurnClosed &&
+      !this.currentQuestion &&
+      root.directory === this.getTaskDir() &&
+      root.epoch === this.workerEpoch();
+    let accepted = false;
+    const record = this.rootTurnWrites.then(async () => {
+      if (!canAccept()) {
+        return;
+      }
+      const promptContext = { id: root.turnId };
+      const event = { prompt: text, mode: 'agent', promptContext, steering: true };
+      const inputPolicy = this.extensionManager.isInitialized()
+        ? await this.extensionManager.dispatchEvent('onPromptStarted', event, this.project, this)
+        : event;
+      if (!canAccept() || ('blocked' in inputPolicy && inputPolicy.blocked) || inputPolicy.mode !== 'agent' || !inputPolicy.prompt.trim()) {
+        return;
+      }
+      const input = { ...createRecordedInput(inputPolicy.prompt, images, promptContext), id: clientId };
+      const existing = root.pendingSteering?.find(({ id }) => id === clientId) ?? root.messages.find(({ id }) => id === clientId);
+      if (existing) {
+        accepted = existing.role === 'user' && existing.id !== root.turnId && JSON.stringify(existing.content) === JSON.stringify(input.content);
+        return;
+      }
+
+      const updated = { ...root, pendingSteering: [...(root.pendingSteering ?? []), input] };
+      await this.saveRootTurn(updated);
+      root.pendingSteering = updated.pendingSteering;
+      accepted = true;
+    });
+    this.rootTurnWrites = record.catch((error) => {
+      logger.error('Failed to record steering input:', error);
+    });
+    await record;
+    return accepted;
+  }
+
+  private async takeRootSteering(root: RootTurnRecord, final = false): Promise<ContextUserMessage[]> {
+    let messages: ContextUserMessage[] = [];
+    const drain = this.rootTurnWrites.then(async () => {
+      if (
+        this.activeRootSteering !== root ||
+        this.closing ||
+        this.rootTurnClosed ||
+        root.directory !== this.getTaskDir() ||
+        root.epoch !== this.workerEpoch()
+      ) {
+        return;
+      }
+      if (!root.pendingSteering?.length) {
+        if (final) {
+          this.activeRootSteering = undefined;
+        }
+        return;
+      }
+      const updated = { ...root, pendingSteering: [], messages: [...root.messages, ...root.pendingSteering] };
+      await this.saveRootTurn(updated);
+      messages = root.pendingSteering;
+      root.pendingSteering = [];
+      root.messages = updated.messages;
+      if (final) {
+        this.activeRootSteering = undefined;
+      }
+    });
+    this.rootTurnWrites = drain.catch((error) => {
+      logger.error('Failed to record steering history:', error);
+    });
+    await drain;
+    return messages;
+  }
+
+  private closeRootSteeringIfEmpty(root: RootTurnRecord): Promise<boolean> {
+    const cutoff = this.rootTurnWrites.then(() => {
+      if (this.activeRootSteering !== root) {
+        return false;
+      }
+      if (root.pendingSteering?.length) {
+        return true;
+      }
+      this.activeRootSteering = undefined;
+      return false;
+    });
+    this.rootTurnWrites = cutoff.then(() => undefined);
+    return cutoff;
   }
 
   public async sendQueuedPromptNow(promptId: string): Promise<void> {
@@ -3574,6 +4223,7 @@ export class Task {
       this.addUserMessage(queuedPrompt.id, queuedPrompt.text, undefined, queuedPrompt.images);
     }
     this.findMessageConnectors('interrupt-response').forEach((connector) => connector.sendInterruptResponseMessage());
+    this.activeRootSteering = undefined;
     this.agent.interrupt();
   }
 
@@ -3807,13 +4457,30 @@ export class Task {
       }
       if (queueChanged) {
         await this.saveTask({
-          metadata: { ...this.task.metadata, governedContinuation: { ...goal, state: 'waiting', observedHead: undefined, retryAt: undefined } },
+          metadata: {
+            ...this.task.metadata,
+            governedContinuation: {
+              ...goal,
+              state: 'waiting',
+              observedHead: undefined,
+              retryAt: undefined,
+            },
+          },
         });
         return;
       }
       if ((goal?.approval && (!status || !('revision' in status) || status.revision !== goal.approval)) || (!goal && status?.phase === 'empty')) {
         if (goal) {
-          await this.saveTask({ metadata: { ...this.task.metadata, governedContinuation: { ...goal, state: 'waiting', retryAt: undefined } } });
+          await this.saveTask({
+            metadata: {
+              ...this.task.metadata,
+              governedContinuation: {
+                ...goal,
+                state: 'waiting',
+                retryAt: undefined,
+              },
+            },
+          });
         }
         return;
       }
@@ -3828,6 +4495,107 @@ export class Task {
     }
 
     const mode = this.getCurrentMode();
+    if (this.task.state === DefaultTaskState.InProgress && typeof this.task.metadata?.recoverableRootTurn === 'string') {
+      await this.reconcileInterruptedRootTurn();
+      if (this.task.state === DefaultTaskState.InProgress) {
+        return;
+      }
+    }
+    if (this.task.state === DefaultTaskState.Interrupted && typeof this.task.metadata?.recoverableRootTurn === 'string') {
+      if (this.closing || this.isPromptRunning() || this.rootTurnInUse) {
+        return;
+      }
+      const record = await this.readRootTurn();
+      const profile = await this.getTaskAgentProfile();
+      const recoverMode = record?.mode ?? 'agent';
+      if (this.closing || this.isPromptRunning() || this.rootTurnInUse) {
+        return;
+      }
+      if (
+        (recoverMode !== 'agent' &&
+          recoverMode !== CODEX_PLAN_MODE &&
+          (recoverMode !== 'plan' || !this.extensionManager.getModes(this.project).some(({ mode }) => mode.name === 'plan'))) ||
+        !record ||
+        !profile ||
+        record.turnId !== this.task.metadata?.recoverableRootTurn ||
+        record.directory !== this.getTaskDir() ||
+        record.epoch !== this.workerEpoch() ||
+        record.profileId !== profile.id ||
+        record.provider !== profile.provider ||
+        record.model !== profile.model
+      ) {
+        this.addLogMessage('error', 'The saved agent turn is not recoverable with the current task configuration.');
+        return;
+      }
+      if (record.state === 'success') {
+        this.rootTurnInUse = true;
+        try {
+          this.contextManager.setContextMessages(recoveredTurnHistory(record));
+          await this.contextManager.save();
+          if (!this.closing && this.task.metadata?.recoverableRootTurn === record.turnId) {
+            await this.saveTask({
+              state: DefaultTaskState.ReadyForReview,
+              completedAt: new Date().toISOString(),
+            });
+          }
+        } finally {
+          this.rootTurnInUse = false;
+        }
+        this.restoreAgentGoal();
+        return;
+      }
+      if (record.state !== 'running') {
+        this.addLogMessage('error', 'The saved agent turn did not have a recoverable result.');
+        return;
+      }
+      const possibleGoal =
+        recoverMode === 'agent'
+          ? await this.agentGoalStore.read().catch((error) => {
+              if (record.goalId) {
+                throw error;
+              }
+              logger.warn('Could not read the agent goal during recovery.', { error });
+              return null;
+            })
+          : null;
+      const originalGoal = possibleGoal?.id === record.goalId || possibleGoal?.originTurnId === record.turnId ? possibleGoal : null;
+      if (originalGoal?.originTurnId === record.turnId) {
+        record.goalId ??= originalGoal.id;
+      }
+      if (this.closing || this.isPromptRunning() || this.rootTurnInUse) {
+        return;
+      }
+      if (record.goalId && (originalGoal?.id !== record.goalId || originalGoal.status !== 'active')) {
+        this.addLogMessage('warning', 'Resume the active goal before resuming its interrupted turn.', true);
+        return;
+      }
+      const goalTurn =
+        originalGoal?.id === record.goalId && originalGoal?.status === 'active' ? this.createAgentGoalTurn(originalGoal, record.turnId) : undefined;
+      try {
+        await this.runPromptInAgent(
+          profile,
+          recoverMode,
+          null,
+          { id: record.turnId },
+          recoveredTurnHistory(record),
+          undefined,
+          undefined,
+          true,
+          true,
+          undefined,
+          undefined,
+          record,
+          ...(goalTurn ? [goalTurn] : []),
+        );
+      } finally {
+        if (goalTurn) {
+          this.agentGoalTurnController = undefined;
+          await this.finishAgentGoalTurn(goalTurn.goal.id, record.turnId);
+        }
+        this.restoreAgentGoal();
+      }
+      return;
+    }
     const contextMessages = await this.contextManager.getContextMessages();
     const lastMessage = contextMessages[contextMessages.length - 1];
 
@@ -3872,6 +4640,386 @@ export class Task {
     this.workflowWakeGeneration++;
     clearTimeout(this.workflowWakeTimer);
     this.workflowWakeTimer = undefined;
+  }
+
+  private agentGoalAllowed() {
+    return this.taskId !== INTERNAL_TASK_ID && !this.task.archived && !isLabMode() && !isFreelanceEnabled() && !isGovernedWorkflow(this.getProjectDir());
+  }
+
+  private async changeAgentGoalStatus(status: 'paused' | 'active') {
+    if (!this.agentGoalAllowed()) {
+      return null;
+    }
+    return this.agentGoalStore.mutate((goal) => {
+      if (status === 'paused') {
+        if (this.activeRootSteering?.goalId === goal?.id && goal) {
+          this.activeRootSteering = undefined;
+        }
+        this.agent.invalidateCommandVerifications?.();
+        this.agent.stopGoalCommands?.(goal?.id);
+        this.agentGoalTurnController?.abort();
+      }
+      if (!goal || goal.status === 'complete' || goal.status === 'budget_limited' || goal.status === status) {
+        return goal;
+      }
+      if (status === 'paused' && goal.status !== 'active') {
+        return goal;
+      }
+      return { ...goal, status, blocker: undefined };
+    });
+  }
+
+  private async handleAgentGoalCommand(command: string, mode: Mode) {
+    try {
+      if (!this.agentGoalAllowed()) {
+        throw new Error('Goals are available in ordinary Agent chats.');
+      }
+      let goal: AgentGoal | null;
+      if (!command || command === 'status') {
+        goal = await this.agentGoalStore.read();
+      } else if (command === 'pause' || command === 'clear') {
+        this.stopAgentGoalWake();
+        this.agentGoalTurnController?.abort();
+        goal =
+          command === 'clear'
+            ? await this.agentGoalStore.mutate((current) => {
+                if (this.activeRootSteering?.goalId === current?.id && current) {
+                  this.activeRootSteering = undefined;
+                }
+                this.agent.invalidateCommandVerifications?.();
+                this.agent.stopGoalCommands?.(current?.id);
+                this.agentGoalTurnController?.abort();
+                return null;
+              })
+            : await this.changeAgentGoalStatus('paused');
+      } else if (mode !== 'agent') {
+        throw new Error('Switch to Agent mode to set or resume a goal.');
+      } else if (command === 'resume') {
+        goal = await this.changeAgentGoalStatus('active');
+        if (goal?.status === 'active' && this.task.state === DefaultTaskState.Interrupted && this.task.metadata?.recoverableRootTurn) {
+          await this.resumeTask();
+        }
+        this.restoreAgentGoal();
+      } else {
+        this.stopAgentGoalWake();
+        const budgetEdit = /^edit --token-budget (\d+)$/.exec(command);
+        const verifierEdit = /^verify ([\s\S]+)$/.exec(command);
+        const create = /^(?:--token-budget (\d+)\s+)?([\s\S]+)$/.exec(command);
+        goal = await this.agentGoalStore.mutate((current) => {
+          if (budgetEdit && current && current.status !== 'complete') {
+            const tokenBudget = Number(budgetEdit[1]);
+            return {
+              ...current,
+              tokenBudget,
+              status: tokenBudget <= current.tokensUsed ? 'budget_limited' : current.status === 'budget_limited' ? 'paused' : current.status,
+            };
+          }
+          if (verifierEdit && current && current.status !== 'complete') {
+            return {
+              ...current,
+              verifier: verifierEdit[1],
+              blocker: undefined,
+            };
+          }
+          if (command.startsWith('edit ') && current && current.status !== 'complete') {
+            return {
+              ...current,
+              objective: command.slice(5).trim(),
+              blocker: undefined,
+            };
+          }
+          if (current && current.status !== 'complete') {
+            throw new Error('An unfinished goal already exists. Use /goal edit, /goal resume or /goal clear.');
+          }
+          if (!create || create[2].startsWith('--token-budget') || /^(edit|verify)(?:\s|$)/.test(create[2])) {
+            throw new Error('Use /goal [--token-budget N] <objective>.');
+          }
+          return newAgentGoal(create[2], create[1] ? Number(create[1]) : undefined);
+        });
+        if (this.activeRootSteering?.goalId === goal?.id && goal) {
+          this.activeRootSteering = undefined;
+        }
+        this.agentGoalTurnController?.abort();
+        this.agent.invalidateCommandVerifications?.();
+        this.agent.stopGoalCommands?.(goal?.id);
+        this.restoreAgentGoal();
+      }
+      this.addLogMessage('info', goal ? JSON.stringify(describeAgentGoal(goal)) : 'No goal is set for this chat.', true);
+    } catch (error) {
+      this.addLogMessage('error', error instanceof Error ? error.message : String(error), true);
+      this.restoreAgentGoal();
+    }
+  }
+
+  private stopAgentGoalWake() {
+    this.agentGoalGeneration++;
+    clearTimeout(this.agentGoalWakeTimer);
+    this.agentGoalWakeTimer = undefined;
+  }
+
+  public restoreAgentGoal() {
+    if (this.agentGoalWakeTimer || this.closing || !this.initialized || !this.agentGoalAllowed()) {
+      return;
+    }
+    const generation = this.agentGoalGeneration;
+    this.agentGoalWakeTimer = setTimeout(() => {
+      this.agentGoalWakeTimer = undefined;
+      void this.wakeAgentGoal(generation).catch((error) => logger.warn('Agent goal could not continue.', { error }));
+    }, this.agentGoalRetryDelay);
+    this.agentGoalWakeTimer.unref();
+  }
+
+  public async getManagedRestartGoal(): Promise<{ project: string; taskId: string; goalId: string } | undefined> {
+    if (!this.writableGoalLoaded || !this.initialized || this.closing || !this.agentGoalAllowed() || this.pendingPlan() || this.getCurrentMode() !== 'agent') {
+      return;
+    }
+    const goal = await this.agentGoalStore.read();
+    if (goal?.status === 'active' && this.writableGoalLoaded && !this.closing) {
+      return { project: this.project.baseDir, taskId: this.taskId, goalId: goal.id };
+    }
+    return undefined;
+  }
+
+  public async resumeManagedRestartGoal(goalId: string): Promise<void> {
+    if (!this.agentGoalAllowed() || this.pendingPlan() || this.getCurrentMode() !== 'agent') {
+      return;
+    }
+    const goal = await this.agentGoalStore.read();
+    if (goal?.id === goalId && goal.status === 'active') {
+      await this.load(false);
+    }
+  }
+
+  private async wakeAgentGoal(generation: number) {
+    const canStart = (allowQueuedPrompts = false) =>
+      generation === this.agentGoalGeneration &&
+      this.initialized &&
+      !this.closing &&
+      !this.agentGoalPromptAdmissions &&
+      !this.planAdmission &&
+      !this.pendingPlan() &&
+      !this.currentQuestion &&
+      !this.isPromptRunning() &&
+      (allowQueuedPrompts || !this.hasQueuedPrompts()) &&
+      this.getCurrentMode() === 'agent' &&
+      this.task.state !== DefaultTaskState.InProgress &&
+      this.task.state !== DefaultTaskState.ReadyForImplementation;
+    if (!canStart(this.task.state === DefaultTaskState.Interrupted)) {
+      return;
+    }
+    const goal = await this.agentGoalStore.read();
+    if (goal?.status !== 'active') {
+      return;
+    }
+    const profile = await this.getTaskAgentProfile();
+    if (!profile || !canStart(this.task.state === DefaultTaskState.Interrupted)) {
+      return;
+    }
+    if (this.task.state === DefaultTaskState.Interrupted) {
+      const record = await this.readRootTurn();
+      if (
+        !canStart(hasSteeringToRecover(record)) ||
+        !record ||
+        (record.goalId !== goal.id && goal.originTurnId !== record.turnId) ||
+        record.state === 'error'
+      ) {
+        return;
+      }
+      this.agentGoalRetryDelay = Math.min(30_000, this.agentGoalRetryDelay ? this.agentGoalRetryDelay * 2 : 2000);
+      await this.resumeTask();
+      return;
+    }
+    this.agentGoalRetryDelay = 0;
+    const turnId = uuidv4();
+    const goalTurn = this.createAgentGoalTurn(goal, turnId);
+    try {
+      await this.runPromptInAgent(
+        profile,
+        'agent',
+        null,
+        { id: turnId },
+        undefined,
+        undefined,
+        undefined,
+        false,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        goalTurn,
+      );
+    } finally {
+      this.agentGoalTurnController = undefined;
+      await this.finishAgentGoalTurn(goal.id, turnId);
+      this.restoreAgentGoal();
+    }
+  }
+
+  private async finishAgentGoalTurn(goalId: string, turnId: string) {
+    await this.agentGoalStore.mutate((goal) => {
+      if (goal?.id !== goalId || goal.lastTurnId === turnId) {
+        return goal;
+      }
+      return {
+        ...goal,
+        lastTurnId: turnId,
+        blocker: goal.blocker?.lastTurnId === turnId ? goal.blocker : undefined,
+      };
+    });
+  }
+
+  private createAgentGoalTurn(goal: AgentGoal, turnId: string): AgentGoalTurn {
+    const controller = new AbortController();
+    this.agentGoalTurnController = controller;
+    let accountedAt = Date.now();
+    const verified = new Map<string, { command: string; revision: string | undefined }>();
+    const failed = new Set<string>();
+    let completion: AgentGoal['evidence'];
+    let verificationGeneration = 0;
+    const matches = (current: AgentGoal | null): current is AgentGoal =>
+      Boolean(current?.id === goal.id && current.objective === goal.objective && current.verifier === goal.verifier && current.status === 'active');
+    const mutateGoal = async (update: (current: AgentGoal) => AgentGoal) =>
+      this.agentGoalStore.mutate((current) => (matches(current) ? update(current) : current));
+    return {
+      goal,
+      signal: controller.signal,
+      readGoal: () => this.agentGoalStore.read(),
+      getAvailableVerification: () =>
+        [...verified].filter(([, proof]) => !failed.has(proof.command)).map(([toolCallId, { command }]) => ({ toolCallId, command })),
+      canExecute: async () => !this.closing && !controller.signal.aborted && matches(await this.agentGoalStore.read()),
+      onUsage: async (tokens, countTime = true) => {
+        const now = Date.now();
+        const elapsed = countTime ? Math.max(0, now - accountedAt) : 0;
+        if (countTime) {
+          accountedAt = now;
+        }
+        const result = await this.agentGoalStore.mutate((current) => {
+          if (!current || current.id !== goal.id) {
+            return current;
+          }
+          const tokensUsed = current.tokensUsed + (tokens ?? 0);
+          const limited = current.tokenBudget !== undefined && tokensUsed >= current.tokenBudget;
+          const status =
+            current.status === 'complete'
+              ? 'complete'
+              : limited
+                ? 'budget_limited'
+                : tokens === undefined && current.tokenBudget !== undefined
+                  ? 'usage_limited'
+                  : current.status;
+          return {
+            ...current,
+            tokensUsed,
+            timeUsedMs: current.timeUsedMs + elapsed,
+            status,
+          };
+        });
+        return !completion && matches(result);
+      },
+      reportUsageLimit: async () => {
+        await mutateGoal((current) => ({
+          ...current,
+          status: 'usage_limited',
+        }));
+      },
+      reportTerminalError: async () => {
+        await mutateGoal((current) => ({ ...current, status: 'blocked' }));
+      },
+      invalidateVerification: () => {
+        verificationGeneration++;
+        completion = undefined;
+        for (const [id, proof] of verified) {
+          if (!proof.revision) {
+            verified.delete(id);
+          }
+        }
+      },
+      beginVerification: async (input) => {
+        if (typeof input?.command !== 'string') {
+          return;
+        }
+        const command = input.command.trim();
+        if (command !== goal.verifier && (goal.verifier || !isProjectVerificationCommand(command))) {
+          return;
+        }
+        const checkout = this.getTaskDir();
+        const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
+        if (cwd && !(await isGoalVerificationDirectory(checkout, cwd))) {
+          return;
+        }
+        const generation = verificationGeneration;
+        const revision = await goalWorktreeRevision(checkout).catch(() => undefined);
+        return { command, revision, generation };
+      },
+      continueVerification: (verification) => ({ ...verification, generation: verificationGeneration }),
+      acceptToolResult: async (id, verification, output, stillCurrent = () => true) => {
+        if (!verification || !output || typeof output !== 'object' || !('exitCode' in output)) {
+          return;
+        }
+        const { command, generation } = verification;
+        if (output.exitCode === 0) {
+          const revision = await goalWorktreeRevision(this.getTaskDir()).catch(() => undefined);
+          if (!stillCurrent() || generation !== verificationGeneration || revision !== verification.revision || (!revision && !goal.verifier)) {
+            return;
+          }
+          failed.delete(command);
+          verified.set(id, { command, revision });
+        } else if (typeof output.exitCode === 'number') {
+          failed.add(command);
+        }
+      },
+      proposeCompletion: async (summary, evidenceIds) => {
+        if (!evidenceIds.length || evidenceIds.some((id) => !verified.has(id) || failed.has(verified.get(id)!.command))) {
+          throw new Error('Completion requires successful verification outputs observed in this turn. Run the applicable checks and cite their tool call IDs.');
+        }
+        if (goal.verifier && !evidenceIds.some((id) => verified.get(id)?.command === goal.verifier)) {
+          throw new Error('Completion requires a successful run of the verification command set by the user.');
+        }
+        if (!matches(await this.agentGoalStore.read()) || controller.signal.aborted) {
+          throw new Error('The goal changed before completion could be recorded.');
+        }
+        completion = { turnId, summary, toolCallIds: evidenceIds };
+        return 'Verification received. Completion is recorded when the history and usage are saved.';
+      },
+      commitCompletion: async () => {
+        if (!completion || controller.signal.aborted || completion.toolCallIds.some((id) => failed.has(verified.get(id)!.command))) {
+          return false;
+        }
+        const approved = completion;
+        const proofs = approved.toolCallIds.map((id) => verified.get(id)!);
+        if (proofs.some(({ revision }) => revision !== undefined)) {
+          const revision = await goalWorktreeRevision(this.getTaskDir()).catch(() => undefined);
+          if (proofs.some((proof) => proof.revision !== revision)) {
+            return false;
+          }
+        }
+        const result = await mutateGoal((current) =>
+          controller.signal.aborted || completion !== approved ? current : { ...current, status: 'complete', blocker: undefined, evidence: approved },
+        );
+        if (result?.status !== 'complete' || result.evidence?.turnId !== turnId) {
+          return false;
+        }
+        this.addLogMessage('info', `Goal completed. ${result.evidence.summary}`, true);
+        return true;
+      },
+      reportBlocker: async (condition) => {
+        const result = await mutateGoal((current) => {
+          if (current.blocker?.lastTurnId === turnId) {
+            return current;
+          }
+          const turns = current.blocker?.condition === condition ? current.blocker.turns + 1 : 1;
+          return {
+            ...current,
+            status: turns >= 3 ? 'blocked' : 'active',
+            blocker: { condition, turns, lastTurnId: turnId },
+          };
+        });
+        if (!result || result.id !== goal.id) {
+          throw new Error('The current goal changed.');
+        }
+        return result;
+      },
+    };
   }
 
   public restoreGovernedContinuation() {
@@ -3963,7 +5111,16 @@ export class Task {
         'retryCount' in goal && typeof goal.retryCount === 'number' && Number.isInteger(goal.retryCount) && goal.retryCount >= 0 && goal.retryCount <= 8
           ? goal.retryCount
           : undefined;
-      return { kind: goal.kind, state: goal.state, approval, revision, observedHead, observedValidation, retryAt, retryCount };
+      return {
+        kind: goal.kind,
+        state: goal.state,
+        approval,
+        revision,
+        observedHead,
+        observedValidation,
+        retryAt,
+        retryCount,
+      };
     }
     return undefined;
   }
@@ -4145,6 +5302,7 @@ export class Task {
     waitForAgentCompletion = true,
     loadingMessage = 'Compacting conversation...',
     retainInitialUserMessage = true,
+    onGoalUsage?: AgentGoalTurn['onUsage'],
   ): Promise<void> {
     // Get profile if not provided
     if (!profile) {
@@ -4199,6 +5357,16 @@ export class Task {
           undefined,
           false,
           abortSignal,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          onGoalUsage,
         );
         if (waitForAgentCompletion) {
           this.resolveAgentRunPromises();
@@ -4211,7 +5379,14 @@ export class Task {
 
           const finalMessages: ContextMessage[] = retainInitialUserMessage
             ? [userMessage, ...skillMessages, summaryMessage]
-            : [{ ...userMessage, content: 'Continue the task described in the conversation summary.' }, ...skillMessages, summaryMessage];
+            : [
+                {
+                  ...userMessage,
+                  content: 'Continue the task described in the conversation summary.',
+                },
+                ...skillMessages,
+                summaryMessage,
+              ];
 
           this.contextManager.setContextMessages(finalMessages);
 
@@ -4573,15 +5748,82 @@ export class Task {
     await atomicWriteJsonFile(this.getTodoFilePath(), data);
   }
 
-  public async saveWorkerHistory(workerId: string, profileId: string, messages: ContextMessage[]): Promise<void> {
-    await atomicWriteJsonFile(this.workerHistoryPath(workerId), { profileId, messages });
+  public async saveWorkerHistory(workerId: string, record: WorkerRecord): Promise<void> {
+    await atomicWriteJsonFile(this.workerHistoryPath(workerId), record);
   }
 
-  public async readWorkerHistory(workerId: string): Promise<{ profileId: string; messages: ContextMessage[] } | undefined> {
+  private async readRootTurn(): Promise<RootTurnRecord | undefined> {
+    try {
+      const record = JSON.parse(await fs.readFile(path.join(path.dirname(this.taskDataPath), 'root-turn.json'), 'utf8')) as RootTurnRecord;
+      return record && Array.isArray(record.messages) ? record : undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+      return undefined;
+    }
+  }
+
+  private async reconcileInterruptedRootTurn() {
+    const id = this.task.metadata?.recoverableRootTurn;
+    if (typeof id !== 'string' || this.task.state !== DefaultTaskState.InProgress || this.isPromptRunning() || isGovernedWorkflow(this.getProjectDir())) {
+      return;
+    }
+    const record = await this.readRootTurn();
+    const profile = await this.getTaskAgentProfile();
+    if (
+      record?.turnId === id &&
+      record.directory === this.getTaskDir() &&
+      record.epoch === this.workerEpoch() &&
+      profile?.id === record.profileId &&
+      profile.provider === record.provider &&
+      profile.model === record.model &&
+      this.task.metadata?.recoverableRootTurn === id &&
+      this.task.state === DefaultTaskState.InProgress &&
+      !this.isPromptRunning() &&
+      !this.closing
+    ) {
+      this.rootTurnInUse = true;
+      try {
+        await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
+      } finally {
+        this.rootTurnInUse = false;
+      }
+    }
+  }
+
+  private async saveRootTurn(record: RootTurnRecord): Promise<void> {
+    await atomicWriteJsonFile(path.join(path.dirname(this.taskDataPath), 'root-turn.json'), record);
+  }
+
+  public workerEpoch(): string | undefined {
+    const epoch = this.task.metadata?.workerEpoch;
+    return typeof epoch === 'string' ? epoch : undefined;
+  }
+
+  public trackWorkerRun(run: Promise<unknown>): void {
+    this.workerRuns.add(run);
+    const release = () => this.workerRuns.delete(run);
+    void run.then(release, release);
+  }
+
+  public claimWorkerTurn(workerId: string): boolean {
+    if (this.closing || this.activeWorkerIds.has(workerId)) {
+      return false;
+    }
+    this.activeWorkerIds.add(workerId);
+    return true;
+  }
+
+  public releaseWorkerTurn(workerId: string): void {
+    this.activeWorkerIds.delete(workerId);
+  }
+
+  public async readWorkerHistory(workerId: string): Promise<WorkerRecord | undefined> {
     try {
       const history = JSON.parse(await fs.readFile(this.workerHistoryPath(workerId), 'utf8'));
       if (typeof history?.profileId === 'string' && Array.isArray(history.messages)) {
-        return history;
+        return history.epoch === this.workerEpoch() ? history : undefined;
       }
       throw new Error('Invalid subagent history.');
     } catch (error) {
@@ -4590,6 +5832,35 @@ export class Task {
       }
       return undefined;
     }
+  }
+
+  public async listWorkerHistory(): Promise<{ workerId: string; record: WorkerRecord }[]> {
+    const directory = path.join(path.dirname(this.taskDataPath), 'workers');
+    let files: string[];
+    try {
+      files = await fs.readdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+    const records = await Promise.all(
+      files
+        .filter((name) => /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.json$/.test(name))
+        .map(async (name) => {
+          const workerId = name.slice(0, -5);
+          const record = await this.readWorkerHistory(workerId).catch((error) => {
+            logger.warn('Ignoring an unreadable worker checkpoint.', {
+              workerId,
+              error,
+            });
+            return undefined;
+          });
+          return record && { workerId, record };
+        }),
+    );
+    return records.filter((record) => record !== undefined);
   }
 
   private workerHistoryPath(workerId: string): string {
@@ -4947,7 +6218,11 @@ ${error.stderr}`,
       this.task.updatedAt = new Date().toISOString();
     }
 
-    return this.saveTask(updates, updateTimestamps && !!this.task.createdAt);
+    const saved = await this.saveTask(updates, updateTimestamps && !!this.task.createdAt);
+    if (updates.currentMode === 'agent') {
+      this.restoreAgentGoal();
+    }
+    return saved;
   }
 
   private async sendTaskGitStatusUpdated() {
@@ -5001,7 +6276,11 @@ ${error.stderr}`,
       return;
     }
 
-    logger.info('Running worktree post-create command:', { baseDir: this.project.baseDir, taskId: this.taskId, command });
+    logger.info('Running worktree post-create command:', {
+      baseDir: this.project.baseDir,
+      taskId: this.taskId,
+      command,
+    });
     this.addLogMessage('loading', 'Running worktree post-create command...');
     try {
       const result = await execWithShellPath(command, {
@@ -5241,7 +6520,9 @@ ${error.stderr}`,
 
         this.addLogMessage('info', `Successfully merged worktree to ${effectiveTargetBranch} branch`, true);
       } catch (error) {
-        logger.error('Failed to merge worktree and switch to local:', { error });
+        logger.error('Failed to merge worktree and switch to local:', {
+          error,
+        });
 
         const isConflict = this.isConflictError(error);
 
@@ -5395,7 +6676,10 @@ ${error.stderr}`,
           if (restoreError instanceof Error && restoreError.message.includes('restored to project root')) {
             throw restoreError;
           }
-          logger.error('Failed to restore stash to project root:', { error: restoreError, stashId });
+          logger.error('Failed to restore stash to project root:', {
+            error: restoreError,
+            stashId,
+          });
           throw new Error(
             `Failed to apply stashed changes to worktree and could not restore them. Stash ID "${stashId}" still exists. Manual recovery required. Original error: ${originalMessage}`,
           );
@@ -5618,7 +6902,10 @@ ${error.stderr}`,
     if (committed) {
       await this.extensionManager.dispatchEvent('onAfterCommit', { message, amend }, this.project, this);
     } else {
-      logger.info('Commit cancelled by user', { baseDir: this.project.baseDir, taskId: this.taskId });
+      logger.info('Commit cancelled by user', {
+        baseDir: this.project.baseDir,
+        taskId: this.taskId,
+      });
     }
   }
 
@@ -5727,7 +7014,12 @@ ${error.stderr}`,
             },
           });
         } else {
-          await this.saveTask({ worktree: { ...this.task.worktree, pendingRebaseFromBranch: undefined } });
+          await this.saveTask({
+            worktree: {
+              ...this.task.worktree,
+              pendingRebaseFromBranch: undefined,
+            },
+          });
         }
 
         this.addLogMessage('info', 'Worktree rebased successfully', true);
@@ -5744,7 +7036,12 @@ ${error.stderr}`,
           // The rebase never started, so the pending marker is no longer needed
           const { inProgress } = await this.gitManager.getRebaseState(this.task.worktree.path);
           if (!inProgress) {
-            await this.saveTask({ worktree: { ...this.task.worktree, pendingRebaseFromBranch: undefined } });
+            await this.saveTask({
+              worktree: {
+                ...this.task.worktree,
+                pendingRebaseFromBranch: undefined,
+              },
+            });
           }
         }
       }
@@ -5757,7 +7054,12 @@ ${error.stderr}`,
       try {
         const { inProgress } = await this.gitManager.getRebaseState(this.task.worktree.path);
         if (!inProgress) {
-          await this.saveTask({ worktree: { ...this.task.worktree, pendingRebaseFromBranch: undefined } });
+          await this.saveTask({
+            worktree: {
+              ...this.task.worktree,
+              pendingRebaseFromBranch: undefined,
+            },
+          });
         }
       } catch {
         // keep the marker if we cannot determine the rebase state
@@ -5775,7 +7077,12 @@ ${error.stderr}`,
       this.addLogMessage('loading', 'Aborting rebase...');
       await this.gitManager.abortRebase(this.getTaskDir());
       if (this.task.worktree?.pendingRebaseFromBranch) {
-        await this.saveTask({ worktree: { ...this.task.worktree, pendingRebaseFromBranch: undefined } });
+        await this.saveTask({
+          worktree: {
+            ...this.task.worktree,
+            pendingRebaseFromBranch: undefined,
+          },
+        });
       }
       this.addLogMessage('info', 'Rebase aborted', true);
     } catch (error) {
@@ -6196,7 +7503,10 @@ ${error.stderr}`,
           // Clear any remaining merge state after successful rebase continuation
           await this.saveTask({
             lastMergeState: undefined,
-            worktree: { ...this.task.worktree, pendingRebaseFromBranch: undefined },
+            worktree: {
+              ...this.task.worktree,
+              pendingRebaseFromBranch: undefined,
+            },
           });
         }
       }

@@ -1216,6 +1216,7 @@
     "markAsDone": "Mark as done",
     "reviewChanges": "Review changes",
     "taskReadyForImplementation": "Task Ready for Implementation",
+    "implementPlanNewChat": "Implement in a new chat",
     "taskDone": "Task Completed",
     "taskDoneArchived": "Task Completed and Archived",
     "taskDelegated": "Task was delegated to a subtask. You can resume it if needed.",
@@ -1793,7 +1794,9 @@
     "questionPlaceholder": "...or suggest something else",
     "queueTitle": "Queued Prompts",
     "queuedPrompt": "Queued",
-    "queueMessage": "Queue message (Enter)",
+    "queueMessage": "Queue for the next turn",
+    "steerMessage": "Send to the active turn (Enter)",
+    "steeringUnavailable": "The turn could not confirm the message. Your draft is still in the editor.",
     "removeQueuedPrompt": "Remove",
     "sendQueuedPromptNow": "Send immediately",
     "editQueuedPrompt": "Edit",
@@ -1923,6 +1926,7 @@
     "web": "Scrape a webpage and save it to a file. Use /web url [file] with optional [file].",
     "handoff": "Handoff conversation to new task with focus",
     "subtask": "Create a new subtask of the current task and switch to it",
+    "goal": "Set or manage the chat's autonomous goal. Use /goal [objective], /goal pause, /goal resume or /goal clear.",
     "subagent": "Run a prompt in a specific subagent. Use /subagent <subagent-id> <prompt>",
     "skill": "Activate a skill. Any text after the skill name is used as a prompt"
   },
@@ -2308,6 +2312,7 @@
     "branchUpdated": "Branch '{{branch}}' updated from remote"
   },
   "nativeMenu": {
+    "Restart Agent-Lab": "Restart Agent-Lab",
     "File": "File",
     "New Window": "New Window",
     "Quit": "Quit",
@@ -2331,6 +2336,7 @@
     "Aider": "Aider",
     "Agent": "Agent",
     "Server": "Server",
+    "Pair phone": "Pair phone",
     "About": "About"
   }
 }

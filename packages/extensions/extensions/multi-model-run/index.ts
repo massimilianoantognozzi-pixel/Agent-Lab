@@ -143,6 +143,9 @@ export default class MultiModelRunExtension implements Extension {
   }
 
   async onPromptStarted(event: PromptStartedEvent, context: ExtensionContext): Promise<void> {
+    if (event.steering) {
+      return;
+    }
     const taskContext = context.getTaskContext();
     const taskId = taskContext?.data?.id;
 

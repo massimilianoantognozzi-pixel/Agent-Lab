@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 import { prepare, repoRoot, labRoot, homeDir } from './prepare.mjs';
 import { configureGeneralGui, generalEnvironment } from './configure-general-gui.mjs';
 import { startLocalBackend } from './managed-local-backend.mjs';
@@ -64,10 +65,25 @@ try {
   catch(error) { fs.appendFileSync(path.join(labRoot,'work','launcher-warnings.log'),`${new Date().toISOString()} Modello locale non disponibile: ${error.message}. AiderDesk resta utilizzabile con il provider scelto.\n`); }
   log = fs.openSync(path.join(labRoot, 'work', 'app-launch.log'), 'a');
   const env = { ...generalEnvironment(), ...projectStartupEnvironment() };
+  delete env.AIDER_DESK_RESUME_GOALS_TOKEN;
+  delete env.AIDER_DESK_MANAGED_RESTART_TOKEN;
   if (resources) env.AIDER_DESK_RESOURCES_DIR = resources;
-  child = spawn(executable, args, { cwd: repoRoot, env, windowsHide: false, stdio: ['ignore', log, log] });
-  fs.writeFileSync(lockFile, JSON.stringify({ launcherPid: process.pid, electronPid: child.pid, electronExe: executable }));
-  await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => { process.exitCode = code ?? 1; resolve(); }); });
+  const restartEnabled = resources && !fs.existsSync(path.join(resources, 'app-update.yml'));
+  if (restartEnabled) env.AIDER_DESK_MANAGED_RESTART_TOKEN = randomUUID();
+  do {
+    child = spawn(executable, args, { cwd: repoRoot, env, windowsHide: false, stdio: ['ignore', log, log] });
+    fs.writeFileSync(lockFile, JSON.stringify({ launcherPid: process.pid, electronPid: child.pid, electronExe: executable }));
+    const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
+    if (code !== 75 || !restartEnabled || !env.AIDER_DESK_DATA_DIR) {
+      process.exitCode = code ?? 1;
+      break;
+    }
+    const receipt = JSON.parse(fs.readFileSync(path.join(env.AIDER_DESK_DATA_DIR, 'managed-goal-restart.json'), 'utf8'));
+    if (receipt.version !== 1 || receipt.token !== env.AIDER_DESK_MANAGED_RESTART_TOKEN || !Array.isArray(receipt.goals)) {
+      throw new Error('Il riavvio di Agent-Lab non ha confermato la ricevuta del processo precedente.');
+    }
+    env.AIDER_DESK_RESUME_GOALS_TOKEN = receipt.token;
+  } while (true);
 } catch (error) {
   process.exitCode = 1;
   fs.appendFileSync(path.join(labRoot, 'work', 'launcher-errors.log'), `${new Date().toISOString()} ${error.message}\n`);

@@ -25,7 +25,7 @@ const AssistantMessageBlockComponent = ({ baseDir, taskId, message, allFiles, re
 
   const parsedContent = useParsedContent(baseDir, responseMessage.content, allFiles, renderMarkdown, true, responseMessage.reasoning);
 
-  const hasContent = parsedContent && (!Array.isArray(parsedContent) || parsedContent.length > 0);
+  const hasContent = responseMessage.proposedPlan || (parsedContent && (!Array.isArray(parsedContent) || parsedContent.length > 0));
 
   const aggregateUsage = (): UsageReportData | undefined => {
     const allMessages = [responseMessage, ...toolMessages];
@@ -52,7 +52,9 @@ const AssistantMessageBlockComponent = ({ baseDir, taskId, message, allFiles, re
 
   const aggregatedUsage = aggregateUsage();
 
-  const allContent = [responseMessage.reasoning, responseMessage.content, ...toolMessages.map((t) => t.content)].filter(Boolean).join('\n\n');
+  const allContent = [responseMessage.reasoning, responseMessage.content, responseMessage.proposedPlan?.markdown, ...toolMessages.map((t) => t.content)]
+    .filter(Boolean)
+    .join('\n\n');
 
   const handleRemove = useCallback(() => {
     if (!remove) {

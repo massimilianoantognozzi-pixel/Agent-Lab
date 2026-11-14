@@ -148,6 +148,31 @@ describe('Power Tools - bash shell initialization', () => {
     expect(await tools['power---bash_poll'].execute({ processId: first.processId, yieldMs: 1000 })).toMatchObject({ exitCode: 0 });
   });
 
+  it('keeps a yielded command across turns without giving another profile access', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = Object.assign(new EventEmitter(), { writable: true, write: vi.fn((_data, callback) => callback()) });
+    vi.mocked(spawn).mockReturnValueOnce(child);
+    mockProfile.id = 'owner';
+    mockProfile.toolApprovals['power---bash_input'] = 'always';
+    const run = new AbortController();
+    const session = { signal: new AbortController().signal, commands: new Map() };
+    const first = createPowerToolset(mockTask, mockProfile, mockPromptContext, run.signal, undefined, undefined, session);
+    const { processId } = await first['power---bash'].execute(
+      { command: 'node input.cjs', timeout: 5000, yieldMs: 1, interactive: true },
+      { toolCallId: 'start' },
+    );
+    run.abort();
+    const foreign = createPowerToolset(mockTask, { ...mockProfile, id: 'other' }, mockPromptContext, undefined, undefined, undefined, session);
+    await expect(foreign['power---bash_poll'].execute({ processId, yieldMs: 1 })).rejects.toThrow('unavailable');
+    const next = createPowerToolset(mockTask, mockProfile, mockPromptContext, undefined, undefined, undefined, session);
+    expect(await next['power---bash_input'].execute({ processId, input: 'next', close: false })).toMatchObject({ sent: true });
+    child.emit('close', 0, null);
+    expect(await next['power---bash_poll'].execute({ processId, yieldMs: 1000 })).toMatchObject({ exitCode: 0 });
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
+  });
+
   it('writes keys to a native terminal and returns its output and exit status', async () => {
     let emitData!: (data: string) => void;
     let emitExit!: (exit: { exitCode: number }) => void;

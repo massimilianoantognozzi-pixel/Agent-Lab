@@ -17,6 +17,7 @@ import CodeMirror, { Annotation, Prec, type Extension, type ReactCodeMirrorRef }
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useDebounce } from '@reactuses/core';
 import { useHotkeys } from 'react-hotkeys-hook';
+import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from 'react-i18next';
 import { BiSend } from 'react-icons/bi';
 import { MdSave, MdStop, MdMic, MdMicOff, MdOutlineScheduleSend } from 'react-icons/md';
@@ -69,6 +70,7 @@ const COMMANDS = [
   '/drop',
   '/redo',
   '/resume',
+  '/goal',
   '/edit-last',
   '/compact',
   '/smart-compact',
@@ -146,6 +148,7 @@ type Props = {
   mode: Mode;
   onModeChanged: (mode: Mode) => void;
   runPrompt: (prompt: string, images?: string[]) => void;
+  steering?: { turnId: string; send: (id: string, prompt: string, images?: string[]) => Promise<boolean> };
   savePrompt: (prompt: string) => Promise<void>;
   showFileDialog: (readOnly: boolean) => void;
   addFiles?: (filePaths: string[], readOnly?: boolean) => void;
@@ -188,6 +191,7 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
       onModeChanged,
       showFileDialog,
       runPrompt,
+      steering,
       savePrompt,
       addFiles,
       clearMessages,
@@ -223,6 +227,12 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
     const queuedPrompts = useTaskQueuedPrompts(taskId);
     const [text, setText] = useState('');
     const [pastedImages, setPastedImages] = useState<string[]>([]);
+    const [sendingSteering, setSendingSteering] = useState(false);
+    const steeringRequest = useRef<{ id: string; turnId: string; text: string; images: string[] } | undefined>(undefined);
+    const latestImages = useRef(pastedImages);
+    useEffect(() => {
+      latestImages.current = pastedImages;
+    }, [pastedImages]);
     const debouncedText = useDebounce(text, 100);
     const { setText: setSavedText } = usePromptFieldText(baseDir, taskId, (text) => {
       const view = editorRef.current?.view;
@@ -784,11 +794,46 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
       [api, baseDir, taskId, runPrompt, pastedImages, prepareForNextPrompt, t],
     );
 
+    const canSteer = Boolean(
+      steering && text.trim() && !text.trimStart().startsWith('/') && !pendingCommand && !question && !isEditingLastMessage && !disabled,
+    );
+    const handleSteering = useCallback(async () => {
+      if (!steering || !canSteer || sendingSteering) {
+        return;
+      }
+      const previous = steeringRequest.current;
+      const sent =
+        previous?.turnId === steering.turnId && previous.text === text && previous.images === pastedImages
+          ? previous
+          : { id: uuidv4(), turnId: steering.turnId, text, images: pastedImages };
+      steeringRequest.current = sent;
+      setSendingSteering(true);
+      try {
+        const accepted = await steering.send(sent.id, sent.text, sent.images.length ? sent.images : undefined);
+        steeringRequest.current = undefined;
+        if (!accepted) {
+          showErrorNotification(t('promptField.steeringUnavailable'));
+          return;
+        }
+        if (editorRef.current?.view?.state.doc.toString() === sent.text && latestImages.current === sent.images) {
+          prepareForNextPrompt();
+          scrollToBottom?.();
+        }
+      } catch {
+        showErrorNotification(t('promptField.steeringUnavailable'));
+      } finally {
+        setSendingSteering(false);
+      }
+    }, [canSteer, pastedImages, prepareForNextPrompt, scrollToBottom, sendingSteering, steering, t, text]);
+
     const handleSubmit = useCallback(() => {
+      if (sendingSteering) {
+        return;
+      }
       scrollToBottom?.();
       void stopRecording();
       if (text) {
-        if (text.startsWith('/workflow ')) {
+        if (text.startsWith('/workflow ') || /^\/(?:goal|plan)(?:\s|$)/.test(text)) {
           runPrompt(text);
           prepareForNextPrompt();
           setPlaceholderIndex(Math.floor(Math.random() * PLACEHOLDER_COUNT));
@@ -865,6 +910,7 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
       handleSubmitSkill,
       runPrompt,
       runCommand,
+      sendingSteering,
       subagentProfiles,
       t,
     ]);
@@ -993,7 +1039,11 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
                   },
                 });
               } else {
-                handleSubmit();
+                if (canSteer) {
+                  void handleSteering();
+                } else {
+                  handleSubmit();
+                }
               }
               return true;
             },
@@ -1171,6 +1221,8 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
         highlightedHistoryItemIndex,
         setHistoryMenuVisible,
         handleSubmit,
+        canSteer,
+        handleSteering,
         processing,
         interruptResponse,
         text,
@@ -1298,7 +1350,7 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
                 {question.subject}
               </div>
             )}
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {question.answers && question.answers.length > 0 ? (
                 question.answers.map((answer, index) => (
                   <button
@@ -1437,13 +1489,26 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
                     </button>
                   </Tooltip>
                 )}
-                <Tooltip content={isProcessing ? t('promptField.queueMessage') : t('promptField.sendMessage')}>
+                {canSteer && (
+                  <Tooltip content={t('promptField.steerMessage')}>
+                    <button
+                      type="button"
+                      onClick={() => void handleSteering()}
+                      aria-label={t('promptField.steerMessage')}
+                      disabled={disabled || sendingSteering}
+                      className="hover:text-text-tertiary hover:bg-bg-tertiary rounded p-1 transition-all duration-200"
+                    >
+                      <BiSend className="w-4 h-4" />
+                    </button>
+                  </Tooltip>
+                )}
+                <Tooltip content={processing && !question ? t('promptField.queueMessage') : t('promptField.sendMessage')}>
                   <button
                     onClick={handleSubmit}
-                    disabled={disabled}
+                    disabled={disabled || sendingSteering}
                     className={clsx('hover:text-text-tertiary hover:bg-bg-tertiary rounded p-1 transition-all duration-200')}
                   >
-                    {isProcessing && !question ? <MdOutlineScheduleSend className="w-4 h-4" /> : <BiSend className="w-4 h-4" />}
+                    {processing && !question ? <MdOutlineScheduleSend className="w-4 h-4" /> : <BiSend className="w-4 h-4" />}
                   </button>
                 </Tooltip>
               </>

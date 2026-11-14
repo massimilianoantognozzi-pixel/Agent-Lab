@@ -83,8 +83,11 @@ export const DefaultTaskStateActions = ({
     onDeleteTask?.();
   };
 
+  const pendingPlan = task?.metadata?.pendingPlan;
+  const pendingPlanId =
+    pendingPlan && typeof pendingPlan === 'object' && 'id' in pendingPlan && typeof pendingPlan.id === 'string' ? pendingPlan.id : undefined;
   const handleProceedClick = () => {
-    onRunPrompt?.('Proceed.');
+    onRunPrompt?.(pendingPlanId ? `/plan implement ${pendingPlanId}` : 'Proceed.');
   };
 
   const handleArchiveClick = () => {
@@ -98,11 +101,13 @@ export const DefaultTaskStateActions = ({
   const renderSection = (icon: ReactNode, text: string, actions: ReactNode) => {
     return (
       <div className="px-4 p-2 max-w-full break-words text-xs border-t border-border-dark-light relative group bg-bg-primary-light-strong">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {icon}
-          <div className="flex-1 text-text-secondary">{text}</div>
-          <ExtensionComponentWrapper placement="task-state-actions" direction="horizontal" />
-          {actions}
+          <div className="min-w-0 flex-[1_1_8rem] text-text-secondary">{text}</div>
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+            <ExtensionComponentWrapper placement="task-state-actions" direction="horizontal" renderNullOnEmpty />
+            {actions}
+          </div>
         </div>
       </div>
     );
@@ -156,6 +161,11 @@ export const DefaultTaskStateActions = ({
           <IoPlayOutline className="mr-1 w-3 h-3" />
           {t('messages.proceed')}
         </Button>
+        {pendingPlanId && task?.workingMode !== 'worktree' && (
+          <Button key="newChat" variant="outline" color="tertiary" size="xs" onClick={() => onRunPrompt?.(`/plan new ${pendingPlanId}`)}>
+            {t('messages.implementPlanNewChat')}
+          </Button>
+        )}
       </>,
     );
   }

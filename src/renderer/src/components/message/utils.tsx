@@ -694,8 +694,13 @@ export const areMessagesEqual = (prevMessage: Message, nextMessage: Message): bo
     return false;
   }
 
-  // Check reasoning for ResponseMessage
-  if (isResponseMessage(prevMessage) && isResponseMessage(nextMessage) && prevMessage.reasoning !== nextMessage.reasoning) {
+  if (
+    isResponseMessage(prevMessage) &&
+    isResponseMessage(nextMessage) &&
+    (prevMessage.reasoning !== nextMessage.reasoning ||
+      prevMessage.proposedPlan?.id !== nextMessage.proposedPlan?.id ||
+      prevMessage.proposedPlan?.markdown !== nextMessage.proposedPlan?.markdown)
+  ) {
     return false;
   }
 

@@ -250,7 +250,7 @@ describe('Task - custom commands queued while prompt is running', () => {
 
     await t.runCustomCommand('ext-cmd', [], 'agent', images);
 
-    expect(runPromptSpy).toHaveBeenCalledWith('explain the image', undefined, true, undefined, true, images);
+    expect(runPromptSpy).toHaveBeenCalledWith('explain the image', undefined, true, undefined, true, images, false);
     expect(t.takePendingCommandImages()).toBeUndefined();
   });
 

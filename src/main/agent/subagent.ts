@@ -1,8 +1,13 @@
 import { AgentProfile, ContextMemoryMode, ContextMessage, PromptContext } from '@common/types';
 import { DEFAULT_AGENT_PROFILE, getSubagentId, isSubagentEnabled } from '@common/agent';
 import { SUBAGENTS_TOOL_GROUP_NAME, SUBAGENTS_TOOL_RUN_TASK } from '@common/tools';
-import { extractServerNameToolName } from '@common/utils';
+import { extractServerNameToolName, extractTextContent } from '@common/utils';
 import { v4 as uuidv4 } from 'uuid';
+
+import { TurnSettingsMismatch, WORKER_STOP } from './worker-checkpoint';
+
+import type { RecordedModelSettings, WorkerProgress } from './worker-checkpoint';
+import type { AgentGoalTurn } from '@/task/agent-goal';
 
 import { Task } from '@/task';
 import logger from '@/logger';
@@ -17,13 +22,19 @@ export type SubagentGroupName =
 export type RunSubagentTaskParams = {
   task: Task;
   targetSubagent: AgentProfile;
-  prompt: string;
+  prompt: string | null;
+  turnId?: string;
+  recoveryInstructions?: string;
+  interruptedToolFingerprints?: ReadonlySet<string>;
+  recoveredModelSettings?: RecordedModelSettings;
   description?: string;
   abortSignal?: AbortSignal;
   contextMessages?: ContextMessage[];
   currentMessages?: ContextMessage[];
   workerHistory?: ContextMessage[];
   takeSteering?: () => string[];
+  onProgress?: (progress: WorkerProgress) => Promise<void>;
+  onGoalUsage?: AgentGoalTurn['onUsage'];
   onStarted?: (promptContext: PromptContext) => void | Promise<void>;
 };
 
@@ -35,12 +46,14 @@ export type RunSubagentTaskResult =
     }
   | {
       status: 'cancelled';
+      explicitStop?: boolean;
       messages: ContextMessage[];
       promptContext: PromptContext;
     }
   | {
       status: 'error';
       error: string;
+      recoverable?: boolean;
       promptContext: PromptContext;
     };
 
@@ -217,17 +230,26 @@ export const runSubagentTask = async ({
   task,
   targetSubagent,
   prompt,
+  turnId,
+  recoveryInstructions,
+  interruptedToolFingerprints,
+  recoveredModelSettings,
   description,
   abortSignal,
   contextMessages = [],
   currentMessages = [],
   workerHistory,
   takeSteering,
+  onProgress,
+  onGoalUsage,
   onStarted,
 }: RunSubagentTaskParams): Promise<RunSubagentTaskResult> => {
   const subagentId = getSubagentId(targetSubagent);
   const subagentProfile = buildRestrictedSubagentProfile(targetSubagent);
   const promptContext = createSubagentPromptContext(targetSubagent, description);
+  if (turnId) {
+    promptContext.id = turnId;
+  }
   const interruptId = promptContext.group!.interruptId!;
   const subagentAbortController = new AbortController();
   const abortSubagent = () => subagentAbortController.abort(abortSignal?.reason);
@@ -249,7 +271,7 @@ export const runSubagentTask = async ({
         ? getSubagentContextMessages(subagentId, subagentProfile.subagent.contextMemory, contextMessages, currentMessages)
         : []);
     const effectivePrompt =
-      subagentContextMessages.length > 0
+      prompt !== null && subagentContextMessages.length > 0
         ? `${prompt}
 
 Make sure to reuse the previous conversation if possible.`
@@ -268,6 +290,11 @@ Make sure to reuse the previous conversation if possible.`
       subagentAbortController,
       promptContext,
       takeSteering,
+      onProgress,
+      recoveryInstructions,
+      interruptedToolFingerprints,
+      recoveredModelSettings,
+      onGoalUsage,
     );
 
     if (subagentAbortController.signal.aborted) {
@@ -288,11 +315,15 @@ Make sure to reuse the previous conversation if possible.`
 
       return {
         status: 'cancelled',
+        explicitStop: subagentAbortController.signal.reason === WORKER_STOP,
         messages: subagentResultMessages,
         promptContext,
       };
     }
 
+    if (!subagentResultMessages.some((message) => message.role === 'assistant' && extractTextContent(message.content).trim())) {
+      throw new Error('Subagent ended without an assistant result.');
+    }
     promptContext.group = {
       ...promptContext.group!,
       name: getCompletedGroupName(targetSubagent, description),
@@ -301,7 +332,7 @@ Make sure to reuse the previous conversation if possible.`
 
     return {
       status: 'success',
-      messages: workerHistory ? [...workerHistory, { id: uuidv4(), role: 'user', content: prompt }, ...subagentResultMessages] : subagentResultMessages,
+      messages: workerHistory ? [...workerHistory, ...subagentResultMessages] : subagentResultMessages,
       promptContext,
     };
   } catch (error) {
@@ -316,6 +347,7 @@ Make sure to reuse the previous conversation if possible.`
 
       return {
         status: 'cancelled',
+        explicitStop: subagentAbortController.signal.reason === WORKER_STOP,
         messages: [
           {
             id: uuidv4(),
@@ -341,6 +373,7 @@ Make sure to reuse the previous conversation if possible.`
     return {
       status: 'error',
       error: `Error running subagent '${targetSubagent.name}': ${errorMessage}`,
+      recoverable: error instanceof TurnSettingsMismatch,
       promptContext,
     };
   } finally {

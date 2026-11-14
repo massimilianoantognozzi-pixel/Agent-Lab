@@ -377,6 +377,10 @@ export const TaskView = forwardRef<TaskViewRef, Props>(
     }, [updateTask, task.id]);
 
     const runPrompt = useEvent((prompt: string, images?: string[]) => {
+      if (/^\/(?:goal|plan)(?:\s|$)/.test(prompt) || (task.metadata?.pendingPlan && currentMode !== 'codex-plan')) {
+        void api.runPrompt(projectDir, task.id, prompt, currentMode);
+        return;
+      }
       updateOptimisticTaskState(task.id, DefaultTaskState.InProgress);
       if (editingMessageIndex !== null) {
         // This submission is an edit of a previous message
@@ -418,6 +422,19 @@ export const TaskView = forwardRef<TaskViewRef, Props>(
         api.runPrompt(projectDir, task.id, prompt, currentMode, images);
       }
     });
+
+    const activeAgentTurn =
+      inProgress && currentMode === 'agent' && typeof task.metadata?.recoverableRootTurn === 'string' ? task.metadata.recoverableRootTurn : undefined;
+    const steering = useMemo(
+      () =>
+        activeAgentTurn
+          ? {
+              turnId: activeAgentTurn,
+              send: (id: string, prompt: string, images?: string[]) => api.steerAgentTurn(projectDir, task.id, activeAgentTurn, id, prompt, images),
+            }
+          : undefined,
+      [activeAgentTurn, api, projectDir, task.id],
+    );
 
     const handleSavePrompt = useCallback(
       async (prompt: string) => {
@@ -970,6 +987,7 @@ export const TaskView = forwardRef<TaskViewRef, Props>(
                   mode={currentMode}
                   onModeChanged={handleModeChange}
                   runPrompt={runPrompt}
+                  steering={steering}
                   savePrompt={handleSavePrompt}
                   editUserMessage={handleEditLastUserMessage}
                   lastMessageIsUserMessage={lastMessageIsUserMessage}

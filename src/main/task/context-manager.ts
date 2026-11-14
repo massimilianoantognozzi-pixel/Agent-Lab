@@ -25,6 +25,7 @@ import { Task } from '@/task';
 import { isDirectory, isFileIgnored, withLock } from '@/utils';
 import { atomicWriteJsonFile, cleanupStaleTempFiles } from '@/utils/atomic-write';
 import { extractPromptContextFromToolResult } from '@/agent/utils';
+import { extractProposedPlan, planResponseText } from '@/agent/proposed-plan';
 import { getSubagentMessages, getSubagentFinalText } from '@/agent/message-preparation/tool-results';
 import { migrateContextV1toV2 } from '@/task/migrations/v1-to-v2';
 import { AIDER_DESK_TASKS_DIR } from '@/constants';
@@ -1136,6 +1137,20 @@ export class ContextManager {
           let reasoning = '';
           let responseMessageIndex = 0;
 
+          if (message.proposedPlan) {
+            messagesData.push({
+              type: 'response-completed',
+              messageId: message.id,
+              content: extractProposedPlan(planResponseText(message.content)).text,
+              proposedPlan: message.proposedPlan,
+              baseDir: this.task.getProjectDir(),
+              taskId: this.taskId,
+              usageReport: message.usageReport,
+              promptContext: message.promptContext,
+              timestamp: message.timestamp,
+            });
+            responseMessageIndex++;
+          }
           const pushResponseCompletedData = (content = '') => {
             const messageId = responseMessageIndex === 0 ? message.id : `${message.id}-${responseMessageIndex}`;
             const responseCompletedData: ResponseCompletedData = {
@@ -1167,7 +1182,7 @@ export class ContextManager {
               } else {
                 reasoning = part.text.trim();
               }
-            } else if (part.type === 'text' && part.text) {
+            } else if (!message.proposedPlan && part.type === 'text' && part.text) {
               pushResponseCompletedData(part.text);
             } else if (part.type === 'tool-call') {
               if (reasoning) {
@@ -1218,8 +1233,9 @@ export class ContextManager {
             }
           }
         } else if (isTextContent(message.content)) {
-          const content = extractTextContent(message.content);
-          if (!content.trim()) {
+          const rawContent = extractTextContent(message.content);
+          const content = message.proposedPlan ? extractProposedPlan(rawContent).text : rawContent;
+          if (!content.trim() && !message.proposedPlan) {
             continue;
           }
 
@@ -1227,6 +1243,7 @@ export class ContextManager {
             type: 'response-completed',
             messageId: message.id,
             content: content,
+            proposedPlan: message.proposedPlan,
             baseDir: this.task.getProjectDir(),
             taskId: this.taskId,
             reflectedMessage: message.reflectedMessage,

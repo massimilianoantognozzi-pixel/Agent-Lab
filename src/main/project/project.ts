@@ -6,6 +6,10 @@ import { fileExists } from '@common/utils';
 import { v4 as uuidv4 } from 'uuid';
 
 import { AgentProfileManager, McpConfigManager, McpManager } from '@/agent';
+import { CODEX_PLAN_MODE } from '@/agent/codex-plan-mode';
+import { isGovernedWorkflow } from '@/task/workflow-policy';
+import { isFreelanceEnabled } from '@/lab-projects/policy';
+import { isLabMode } from '@/lab-mode';
 import { Connector } from '@/connector';
 import { DataManager } from '@/data-manager';
 import logger from '@/logger';
@@ -85,7 +89,7 @@ export class Project {
     await task.resetContext();
   }
 
-  public async createNewTask(params?: CreateTaskParams) {
+  public async createNewTask(params?: CreateTaskParams, reservedTaskId?: string) {
     logger.info('Creating new task', {
       baseDir: this.baseDir,
       params,
@@ -165,7 +169,7 @@ export class Project {
       taskData.worktree = undefined;
     }
 
-    const task = await this.prepareTask(undefined, taskData);
+    const task = await this.prepareTask(reservedTaskId, taskData);
     if (params?.sendEvent !== false) {
       this.eventManager.sendTaskCreated(task.task, params?.activate);
     }
@@ -180,7 +184,7 @@ export class Project {
     return task.task;
   }
 
-  private generateShortTaskId(): string {
+  public generateShortTaskId(): string {
     let id: string;
     do {
       id = uuidv4().substring(0, 8);
@@ -391,7 +395,14 @@ export class Project {
   }
 
   public getCustomModes(): ModeDefinition[] {
-    return this.extensionManager.getModes(this).map((registered) => registered.mode);
+    const extensionModes = this.extensionManager.getModes(this).map((registered) => registered.mode);
+    if (isGovernedWorkflow(this.baseDir) || isFreelanceEnabled() || isLabMode()) {
+      return extensionModes;
+    }
+    return [
+      { name: CODEX_PLAN_MODE, label: 'Plan (Codex)', description: 'Explore and propose a plan in the chat', icon: 'GoProjectRoadmap' },
+      ...extensionModes,
+    ];
   }
 
   public getCustomCommandManager(): CustomCommandManager {

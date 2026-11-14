@@ -165,11 +165,17 @@ export interface ContextUserMessage extends BaseContextMessage {
 export interface ContextAssistantMessage extends BaseContextMessage {
   role: 'assistant';
   content: AssistantContent;
+  proposedPlan?: ProposedPlan;
   reflectedMessage?: string;
   editedFiles?: string[];
   commitHash?: string;
   commitMessage?: string;
   diff?: string;
+}
+
+export interface ProposedPlan {
+  id: string;
+  markdown: string;
 }
 
 // Tool message with usage report
