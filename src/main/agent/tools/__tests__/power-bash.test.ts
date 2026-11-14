@@ -10,11 +10,14 @@
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 
+import * as pty from '@homebridge/node-pty-prebuilt-multiarch';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetShellInitCommand = vi.fn();
 const mockGetShellCommandArgs = vi.fn();
 const mockGetShellPath = vi.fn(() => '/usr/bin:/bin');
+
+vi.mock('@homebridge/node-pty-prebuilt-multiarch', () => ({ spawn: vi.fn() }));
 
 vi.mock('@/utils/shell', () => ({
   getShellInitCommand: mockGetShellInitCommand,
@@ -106,6 +109,71 @@ describe('Power Tools - bash shell initialization', () => {
     const bashToolKey = `${POWER_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${POWER_TOOL_BASH}`;
     return tools[bashToolKey];
   };
+
+  it('can yield and later read the completed process without spawning another command', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    vi.mocked(spawn).mockReturnValueOnce(child);
+    const tools = createPowerToolset(mockTask, mockProfile, mockPromptContext);
+    const pending = tools['power---bash'].execute({ command: 'node fixture.cjs', timeout: 5000, yieldMs: 1 }, { toolCallId: 'start' });
+    const first = await Promise.race([pending, new Promise((resolve) => setTimeout(() => resolve(undefined), 100))]);
+    child.stdout.emit('data', Buffer.from('FINAL'));
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
+
+    expect(first).toMatchObject({ exitCode: null, processId: expect.any(String) });
+    expect(await tools['power---bash_poll'].execute({ processId: first.processId, yieldMs: 1000 })).toMatchObject({ stdout: 'FINAL', exitCode: 0 });
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes stdin to the same approved process and closes input on request', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = Object.assign(new EventEmitter(), {
+      writable: true,
+      write: vi.fn((_data, callback) => callback()),
+      end: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValueOnce(child);
+    mockProfile.toolApprovals['power---bash_input'] = 'always';
+    const tools = createPowerToolset(mockTask, mockProfile, mockPromptContext);
+    const first = await tools['power---bash'].execute({ command: 'node input.cjs', timeout: 5000, yieldMs: 1, interactive: true }, { toolCallId: 'start' });
+    expect(vi.mocked(spawn).mock.lastCall?.[2]).toMatchObject({ stdio: ['pipe', 'pipe', 'pipe'] });
+    expect(await tools['power---bash_input'].execute({ processId: first.processId, input: 'test\n', close: true })).toMatchObject({ sent: true });
+    expect(child.stdin.write).toHaveBeenCalledWith('test\n', expect.any(Function));
+    expect(child.stdin.end).toHaveBeenCalledOnce();
+    child.emit('close', 0, null);
+    expect(await tools['power---bash_poll'].execute({ processId: first.processId, yieldMs: 1000 })).toMatchObject({ exitCode: 0 });
+  });
+
+  it('writes keys to a native terminal and returns its output and exit status', async () => {
+    let emitData!: (data: string) => void;
+    let emitExit!: (exit: { exitCode: number }) => void;
+    const terminal = {
+      write: vi.fn(),
+      onData: (handler: typeof emitData) => {
+        emitData = handler;
+      },
+      onExit: (handler: typeof emitExit) => {
+        emitExit = handler;
+      },
+    };
+    vi.mocked(pty.spawn).mockReturnValueOnce(terminal as never);
+    mockProfile.toolApprovals['power---bash_input'] = 'always';
+    const tools = createPowerToolset(mockTask, mockProfile, mockPromptContext);
+    const first = await tools['power---bash'].execute(
+      { command: 'node input.cjs', timeout: 5000, yieldMs: 1, interactive: true, tty: true },
+      { toolCallId: 'start' },
+    );
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    await tools['power---bash_input'].execute({ processId: first.processId, input: 'test\r', close: false });
+    expect(terminal.write).toHaveBeenCalledWith('test\r');
+    emitData('verified');
+    emitExit({ exitCode: 0 });
+    expect(await tools['power---bash_poll'].execute({ processId: first.processId, yieldMs: 1000 })).toEqual({ stdout: 'verified', stderr: '', exitCode: 0 });
+  });
 
   const execBash = async (command: string, options: { cwd?: string; timeout?: number } = {}) => {
     const bashTool = getBashTool();

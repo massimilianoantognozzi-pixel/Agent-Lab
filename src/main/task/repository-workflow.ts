@@ -10,16 +10,25 @@ import { z } from 'zod';
 
 import {
   createDevelopmentCommit,
+  developmentFilesMatch,
   isIntegrated,
+  isKnownDevelopmentCommit,
+  matchesDevelopmentReceipt,
   prepareDevelopmentTree,
   publishDevelopmentCommit,
   readDevelopmentFiles,
   readDevelopmentHead,
 } from './workflow-development';
-import { ensureWorkflowDocker } from './workflow-docker';
+import { ensureWorkflowDocker, WorkflowServiceUnavailable, workflowServiceRetryable } from './workflow-docker';
 import { assertWorkflowText, snapshotWorkflowFiles, validateWorkflowPath, type WorkflowFiles, type WorkflowProject } from './workflow-policy';
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
-import { runProjectWorkflow, type ProjectTaskContext } from './workflow-project-run';
+import {
+  projectAttestationRevision,
+  projectContinuationRevision,
+  runProjectWorkflow,
+  workflowInvestigation,
+  type ProjectTaskContext,
+} from './workflow-project-run';
 import shadcn from './workflow-shadcn.json';
 import { isWorkflowKind, workflowSkills, type WorkflowKind, type WorkflowStage } from './workflow-skills';
 
@@ -64,6 +73,41 @@ const changeSchema = z.strictObject({
 const reviewSchema = z.strictObject({ verdict: z.enum(['pass', 'fail']), findings: z.array(line).max(20) });
 const lessonSchema = z.strictObject({ context: line, symptom: line, cause: line, rule: line, destination: line });
 const checkResult = z.object({ id: z.string(), passed: z.boolean(), detail: z.string() });
+const recoveryAttempt = z.strictObject({
+  feedback: z.union([z.string(), z.array(z.string()), z.array(checkResult)]),
+});
+const recoveryStrategy = z.strictObject({ hypothesis: line, approach: line });
+const researchTopic = (policy: WorkflowProject, failures: z.infer<typeof recoveryAttempt>[]): string => {
+  const failedIds = new Set(
+    failures.flatMap(({ feedback }) =>
+      Array.isArray(feedback) ? feedback.filter((item): item is CheckResult => typeof item === 'object').map(({ id }) => id) : [],
+    ),
+  );
+  const types = new Set(policy.checks.filter(({ id }) => failedIds.has(id)).map(({ type }) => type));
+  if (types.has('typescript') || types.has('typescript-expression')) {
+    return 'TypeScript ' + ts.version + ' syntax compiler diagnostics';
+  }
+  if (types.has('docker')) {
+    return 'Docker container application integration test troubleshooting';
+  }
+  if (types.has('browser')) {
+    return 'browser integration test behavior diagnostics';
+  }
+  if (types.has('json')) {
+    return 'JSON validation syntax troubleshooting';
+  }
+  return 'software regression tests debugging strategy';
+};
+const recoveryState = z.strictObject({
+  attempts: z.array(recoveryAttempt),
+  rejected: z.array(hash),
+  changes: changeSchema.shape.changes.optional(),
+  verifyPending: z.literal(true).optional(),
+  strategies: z.array(recoveryStrategy).optional(),
+  research: z.array(z.strictObject({ query: z.string(), references: z.string(), attempt: z.number().int().nonnegative().optional() })).optional(),
+  researchedAt: z.number().int().nonnegative().optional(),
+  rejectedOutcomes: z.array(hash).optional(),
+});
 const gitCommit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 const integration = z.object({ base: gitCommit, commit: gitCommit, policy: hash });
 const receipt = z.object({
@@ -83,9 +127,15 @@ const stateSchema = z.strictObject({
   baseline: hash,
   source: hash,
   baseCommit: gitCommit.optional(),
+  attestationRevision: hash.optional(),
+  projectTaskId: z
+    .string()
+    .regex(/^[A-Z0-9]+(?:-[A-Z0-9]+)*$/)
+    .optional(),
   revision: hash,
   plan: planSchema,
   approved: z.boolean(),
+  recovery: recoveryState.optional(),
   delivered: receipt.optional(),
   pendingIntegration: receipt.extend({ integration }).optional(),
   lesson: z.object({ revision: hash, value: lessonSchema }).optional(),
@@ -96,7 +146,15 @@ type State = z.infer<typeof stateSchema>;
 type Receipt = z.infer<typeof receipt>;
 type CheckResult = z.infer<typeof checkResult>;
 type Generate = (stage: WorkflowStage, instructions: string, input: string) => Promise<string | undefined>;
-type Outcome = { phase: 'plan' | 'waiting' | 'done'; message: string };
+type Outcome = {
+  phase: 'plan' | 'waiting' | 'done';
+  message: string;
+  recoveryProgress?: true;
+  objectiveComplete?: boolean;
+  observedHead?: string;
+  observedValidation?: string;
+  retryable?: boolean;
+};
 export type WorkflowSkillCatalog = {
   available: { name: string; description: string }[];
   read: (name: string) => Promise<string | null>;
@@ -105,14 +163,29 @@ const running = new Set<string>();
 const runningProjects = new Set<string>();
 const run = promisify(execFile);
 
+class InvalidModelResponse extends Error {}
+class WorkflowModelFailure extends Error {}
+
 const parse = <T>(schema: z.ZodType<T>, raw: string | undefined): T => {
   if (!raw || raw.length > 400_000) {
-    throw new Error('Risposta del modello assente o troppo lunga.');
+    throw new InvalidModelResponse('Risposta del modello assente o troppo lunga.');
   }
   const fence = String.fromCharCode(96).repeat(3);
   const trimmed = raw.trim();
   const json = trimmed.startsWith(fence) && trimmed.endsWith(fence) ? trimmed.slice(3, -3).replace(/^json\s*/i, '') : trimmed;
   return schema.parse(JSON.parse(json));
+};
+
+const invalidModelResponse = (error: unknown) => error instanceof z.ZodError || error instanceof SyntaxError || error instanceof InvalidModelResponse;
+
+const recoveryMessage = (error: unknown, fallback: string) => {
+  const message = error instanceof Error ? error.message.slice(0, 1500) : '';
+  try {
+    assertWorkflowText(message);
+    return message || fallback;
+  } catch {
+    return fallback;
+  }
 };
 
 const readJson = async <T>(file: string, schema: z.ZodType<T>, fallback: T): Promise<T> => {
@@ -127,6 +200,85 @@ const readJson = async <T>(file: string, schema: z.ZodType<T>, fallback: T): Pro
 };
 
 const getState = (file: string) => readJson(file, stateSchema.optional(), undefined);
+
+const legacyQueueReceipts = async (workspace: string, policy: WorkflowProject, head: string, signal?: AbortSignal) => {
+  const files = await fs.readdir(workspace, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  });
+  const receipts: { key: string; policyHash: string; base: string; taskId?: string }[] = [];
+  const candidates = files.filter((file) => file.isFile() && /^[a-f0-9]{64}\.json$/.test(file.name));
+  if (!candidates.length) {
+    return receipts;
+  }
+  for (const file of candidates) {
+    signal?.throwIfAborted();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await fs.readFile(path.join(workspace, file.name), 'utf8'));
+    } catch (error) {
+      if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        continue;
+      }
+      throw error;
+    }
+    const parsed = stateSchema.safeParse(raw);
+    if (!parsed.success) {
+      continue;
+    }
+    const state = parsed.data;
+    const receipt = state.delivered ?? state.pendingIntegration;
+    const integration = receipt?.integration;
+    if (integration && state.approved && state.baseCommit === integration.base && (await isKnownDevelopmentCommit(policy, integration.commit, head, signal))) {
+      if (!(await matchesDevelopmentReceipt(policy, integration.commit, integration.base, state.revision, signal))) {
+        continue;
+      }
+      receipts.push({
+        key: file.name.slice(0, -5),
+        policyHash: integration.policy,
+        base: integration.base,
+        taskId: state.projectTaskId,
+      });
+    }
+  }
+  return receipts;
+};
+
+const settlePublishedReceipt = (state: State, pending: NonNullable<State['pendingIntegration']>): State => {
+  const { pendingIntegration: _pending, ...previous } = state;
+  return { ...previous, delivered: pending };
+};
+
+const requirePublishedReceiptMatch = async (policy: WorkflowProject, state: State, receipt: NonNullable<Receipt['integration']>, signal?: AbortSignal) => {
+  if (
+    !state.approved ||
+    state.baseCommit !== receipt.base ||
+    !(await matchesDevelopmentReceipt(policy, receipt.commit, receipt.base, state.revision, signal))
+  ) {
+    throw new Error('Il commit pubblicato non corrisponde alla ricevuta.');
+  }
+};
+
+const recoverPublishedReceipt = async (statePath: string, policy: WorkflowProject, head: string, taskId: string, signal?: AbortSignal): Promise<void> => {
+  const state = await getState(statePath);
+  if (state?.projectTaskId && state.projectTaskId !== taskId) {
+    throw new Error('La ricevuta appartiene a un task diverso.');
+  }
+  const integrated = state?.delivered?.integration ?? state?.pendingIntegration?.integration;
+  if (!state?.approved || !integrated) {
+    return;
+  }
+  const pending = state?.pendingIntegration;
+  const { commit } = integrated;
+  if (await isIntegrated(policy, commit, signal, head)) {
+    await requirePublishedReceiptMatch(policy, state, integrated, signal);
+    if (pending) {
+      await atomicWriteJsonFile(statePath, settlePublishedReceipt({ ...state, projectTaskId: taskId }, pending));
+    }
+  }
+};
 const memoryFile = (file: string, policy: WorkflowProject) => path.join(path.dirname(file), 'memory-' + digest(policy.root) + '.json');
 const jobs = (file: string) => path.join(path.dirname(file), path.basename(file, '.json') + '-jobs');
 const hashSnapshot = (policy: WorkflowProject, files: WorkflowFiles, memory: unknown) => digest({ policy, files, memory });
@@ -138,6 +290,13 @@ const fileSnapshot = async (policy: WorkflowProject, statePath: string, signal?:
   const files = commit ? await readDevelopmentFiles(policy, commit, signal) : await snapshotWorkflowFiles(policy);
   const baseline = hashSnapshot(policy, files, memory);
   return { files, memory, commit, hash: commit ? digest([baseline, commit]) : baseline, source: digest({ policy, files }) };
+};
+
+export const repositoryContinuationRevision = async (policy: WorkflowProject, signal?: AbortSignal): Promise<string> => {
+  if (!policy.branches || !policy.workPlan) {
+    throw new Error('Il piano governato non è disponibile.');
+  }
+  return projectContinuationRevision(policy, await readDevelopmentHead(policy, signal), signal);
 };
 
 const approvedContext = (policy: WorkflowProject, files: WorkflowFiles) =>
@@ -223,7 +382,7 @@ const sandboxCommand = async (dir: string, image: string, args: string[], signal
     const commandError = error as { code?: string | number; killed?: boolean };
     // A missing sandbox, timeout or failure to start the image is not a reproducible bug.
     if (typeof commandError.code !== 'number' || commandError.killed || commandError.code >= 125) {
-      throw new Error('Controllo Docker indisponibile o interrotto. Verifica il motore e l’immagine locale approvata.');
+      throw new WorkflowServiceUnavailable('Controllo Docker indisponibile o interrotto.');
     }
     return 'Il comando isolato ha restituito codice ' + commandError.code + '.';
   } finally {
@@ -343,6 +502,7 @@ const renderDelivery = (state: State, statePath: string) => {
     'Patch: ' + path.join(jobs(statePath), delivery.directory + '.patch'),
     'Versione verificata: ' + delivery.snapshot,
     ...(delivery.integration ? ['Commit integrato sul ramo di sviluppo: ' + delivery.integration.commit] : []),
+    ...(delivery.integration ? ['Gli esiti si riferiscono al commit indicato.'] : []),
     'Per proporre un apprendimento riutilizzabile: /workflow learn',
   ].join('\n');
 };
@@ -399,7 +559,7 @@ export const readRemoteRepositoryPatch = async (policy: WorkflowProject, statePa
   return patch;
 };
 
-export const readRepositoryWorkflow = async (statePath: string, policy?: WorkflowProject) => {
+export const readRepositoryWorkflow = async (statePath: string, policy?: WorkflowProject, historical = false) => {
   const state = await getState(statePath);
   if (!state) {
     return { phase: 'empty' as const };
@@ -407,8 +567,25 @@ export const readRepositoryWorkflow = async (statePath: string, policy?: Workflo
   if (state.delivered && policy) {
     try {
       await assertRepositoryWorkflowDone(policy, statePath);
+      if (!historical && state.delivered.integration) {
+        const head = await readDevelopmentHead(policy);
+        if (
+          !(await isIntegrated(policy, state.delivered.integration.commit, undefined, head)) ||
+          !(await developmentFilesMatch(policy, state.delivered.integration.commit, head))
+        ) {
+          throw new Error('Le verifiche della consegna si riferiscono a una versione precedente.');
+        }
+      }
     } catch {
-      return { phase: 'stale' as const, kind: state.kind, revision: state.revision, plan: state.plan, checks: [], files: [] };
+      return {
+        phase: 'stale' as const,
+        kind: state.kind,
+        revision: state.revision,
+        plan: state.plan,
+        checks: [],
+        files: [],
+        ...(state.delivered.integration ? { commit: state.delivered.integration.commit } : {}),
+      };
     }
   }
   return {
@@ -419,7 +596,13 @@ export const readRepositoryWorkflow = async (statePath: string, policy?: Workflo
     checks: state.delivered?.checks ?? [],
     files: state.delivered?.files ?? [],
     ...(state.baseCommit ? { baseCommit: state.baseCommit } : {}),
-    ...(state.pendingIntegration ? { pendingCommit: state.pendingIntegration.integration.commit } : {}),
+    ...(state.attestationRevision ? { attestationRevision: state.attestationRevision } : {}),
+    ...(state.pendingIntegration
+      ? {
+          pendingCommit: state.pendingIntegration.integration.commit,
+          pendingPolicyChanged: !!policy && state.pendingIntegration.integration.policy !== digest(policy),
+        }
+      : {}),
     ...(state.delivered?.integration ? { commit: state.delivered.integration.commit } : {}),
   };
 };
@@ -429,10 +612,15 @@ const runWorkflowTask = async (args: {
   statePath: string;
   prompt: string;
   expectedWorkPlan?: string;
+  expectedDevelopmentHead?: string;
   projectTask?: ProjectTaskContext;
   generate: Generate;
   skills?: () => Promise<WorkflowSkillCatalog>;
   designCatalog?: (items: readonly string[]) => Promise<string[] | null>;
+  search?: (query: string) => Promise<string | undefined>;
+  continueRecovery?: boolean;
+  expectedContinuationRevision?: string;
+  expectedApprovedRevision?: string;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
 }): Promise<Outcome> => {
@@ -442,27 +630,30 @@ const runWorkflowTask = async (args: {
     throw new Error('Richiesta assente o oltre 1500 caratteri.');
   }
   if (running.has(policy.root)) {
-    throw new Error('Un task di questo progetto è già in corso.');
+    throw new WorkflowServiceUnavailable('Un task di questo progetto è già in corso.');
   }
   running.add(policy.root);
   const save = (state: State) => atomicWriteJsonFile(statePath, state);
   const finishIntegration = async (state: State, pending: NonNullable<State['pendingIntegration']>): Promise<State> => {
+    const { base, commit } = pending.integration;
+    if (await isIntegrated(policy, commit, signal)) {
+      await requirePublishedReceiptMatch(policy, state, pending.integration, signal);
+      const integrated = settlePublishedReceipt(state, pending);
+      await save(integrated);
+      return integrated;
+    }
     if (pending.integration.policy !== digest(policy)) {
       throw new Error('La configurazione è cambiata durante l’integrazione.');
     }
     const { candidate } = await readVerifiedCandidate(policy, statePath, state, pending);
-    const { base, commit } = pending.integration;
     if (digest(await readDevelopmentFiles(policy, commit, signal)) !== digest(candidate)) {
       throw new Error('Il commit preparato differisce dalla versione verificata.');
     }
-    if (!(await isIntegrated(policy, commit, signal))) {
-      if ((await fileSnapshot(policy, statePath, signal)).hash !== state.baseline) {
-        throw new Error('Il ramo di sviluppo o le fonti sono cambiati prima dell’integrazione.');
-      }
-      await publishDevelopmentCommit(policy, base, commit, jobs(statePath), signal);
+    if ((await fileSnapshot(policy, statePath, signal)).hash !== state.baseline) {
+      throw new Error('Il ramo di sviluppo o le fonti sono cambiati prima dell’integrazione.');
     }
-    const { pendingIntegration: _pending, ...previous } = state;
-    const integrated = { ...previous, delivered: pending };
+    await publishDevelopmentCommit(policy, base, commit, jobs(statePath), signal);
+    const integrated = settlePublishedReceipt(state, pending);
     await save(integrated);
     return integrated;
   };
@@ -498,7 +689,13 @@ const runWorkflowTask = async (args: {
     let feedback = '';
     for (let attempt = 0; attempt < 2; attempt++) {
       signal?.throwIfAborted();
-      const raw = await args.generate(stage, contract + feedback, text);
+      let raw;
+      try {
+        raw = await args.generate(stage, contract + feedback, text);
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw new WorkflowModelFailure(recoveryMessage(error, 'Chiamata al modello non riuscita.'), { cause: error });
+      }
       signal?.throwIfAborted();
       if (raw) {
         assertWorkflowText(raw);
@@ -506,23 +703,30 @@ const runWorkflowTask = async (args: {
       try {
         return parse(schema, raw);
       } catch (error) {
-        if (stage !== 'plan' || attempt || !(error instanceof z.ZodError || error instanceof SyntaxError)) {
+        if (!['plan', 'design', 'strategy'].includes(stage) || attempt || !invalidModelResponse(error)) {
           throw error;
         }
-        const fields =
-          error instanceof z.ZodError
-            ? error.issues
-                .slice(0, 10)
-                .map((issue) => issue.path.join('.'))
-                .join(', ')
-            : 'JSON';
-        feedback = '\nLa risposta precedente non rispettava lo schema nei campi: ' + fields + '. Correggi tutti i tipi.';
+        if (error instanceof InvalidModelResponse) {
+          feedback = '\nLa risposta precedente era assente o superava il limite. Produci solo il risultato strutturato, con testi concisi.';
+        } else {
+          const fields =
+            error instanceof z.ZodError
+              ? error.issues
+                  .slice(0, 10)
+                  .map((issue) => issue.path.join('.'))
+                  .join(', ')
+              : 'JSON';
+          feedback = '\nLa risposta precedente non rispettava lo schema nei campi: ' + fields + '. Correggi tutti i tipi.';
+        }
       }
     }
     throw new Error('Il modello non ha prodotto un piano con lo schema richiesto.');
   };
   try {
     let state = await getState(statePath);
+    if (args.expectedApprovedRevision && state?.revision !== args.expectedApprovedRevision) {
+      throw new Error('La revisione del task autorizzato è cambiata prima della ripresa.');
+    }
     if (input === '/workflow status') {
       if (!state) {
         return { phase: 'waiting', message: 'Invia /workflow bug, /workflow change o /workflow feature con la richiesta.' };
@@ -568,6 +772,9 @@ const runWorkflowTask = async (args: {
     const approval = /^\/workflow approve ([0-9a-f]{64})$/.exec(input);
     const resume = input === '/workflow resume';
     const snapshot = await fileSnapshot(policy, statePath, signal);
+    if (args.expectedDevelopmentHead !== undefined && snapshot.commit !== args.expectedDevelopmentHead) {
+      throw new Error('Il ramo di sviluppo è cambiato dopo la verifica delle dipendenze.');
+    }
     if (args.expectedWorkPlan !== undefined && (!policy.workPlan || snapshot.files[policy.workPlan] !== args.expectedWorkPlan)) {
       throw new Error('Il piano di lavoro è cambiato prima di avviare il task.');
     }
@@ -576,9 +783,13 @@ const runWorkflowTask = async (args: {
     }
     if (state?.pendingIntegration) {
       const pending = state.pendingIntegration;
-      if (pending.integration.policy === digest(policy) && (await isIntegrated(policy, pending.integration.commit, signal))) {
+      const samePolicy = pending.integration.policy === digest(policy);
+      if ((args.projectTask || samePolicy) && (await isIntegrated(policy, pending.integration.commit, signal))) {
         state = await finishIntegration(state, pending);
-      } else if (snapshot.hash === state.baseline) {
+        if (args.projectTask) {
+          return { phase: 'done', message: renderDelivery(state, statePath) };
+        }
+      } else if (samePolicy && snapshot.hash === state.baseline) {
         throw new Error('Integrazione in attesa. Usa /workflow resume per riprendere il commit preparato.');
       }
     }
@@ -617,35 +828,135 @@ const runWorkflowTask = async (args: {
           await fs.rm(baselineDir, { recursive: true, force: true });
         }
       }
-      let feedback: unknown = null;
-      let previousChanges: z.infer<typeof changeSchema>['changes'] | undefined;
-      const context = Object.fromEntries(policy.context.map((name) => [name, snapshot.files[name]]));
-      for (let attempt = 0; attempt < 3; attempt++) {
+      let attempts = state.recovery?.attempts ?? [];
+      const rejected = new Set(state.recovery?.rejected);
+      const rejectedOutcomes = new Set(state.recovery?.rejectedOutcomes);
+      const initialOutcomeCount = rejectedOutcomes.size;
+      let strategies = state.recovery?.strategies ?? [];
+      let researchHistory = state.recovery?.research ?? [];
+      let researchedAt = state.recovery?.researchedAt ?? 0;
+      let previousChanges = state.recovery?.changes;
+      let serviceUnavailable = false;
+      let feedback: z.infer<typeof recoveryAttempt>['feedback'] | null = attempts.at(-1)?.feedback ?? null;
+      const saveRecovery = async (verifyPending = false) => {
+        state = {
+          ...state!,
+          recovery: {
+            attempts,
+            rejected: [...rejected],
+            rejectedOutcomes: [...rejectedOutcomes],
+            changes: previousChanges,
+            strategies,
+            research: researchHistory,
+            researchedAt,
+            ...(verifyPending ? { verifyPending: true } : {}),
+          },
+        };
+        await save(state);
+      };
+      const recordFailure = async (reason: NonNullable<typeof feedback>, candidate?: string, verifyPending = false) => {
+        feedback = reason;
+        attempts = [...attempts, { feedback: reason }];
+        if (candidate) {
+          rejected.add(candidate);
+          if (Array.isArray(reason) && reason.length && reason.every((item) => typeof item === 'object')) {
+            rejectedOutcomes.add(digest(reason.map(({ id, detail }) => [id, detail])));
+          }
+        }
+        await saveRecovery(verifyPending);
+      };
+      const context = Object.fromEntries([...policy.context, ...(policy.optionalInputs ?? [])].map((name) => [name, snapshot.files[name]]));
+      const pendingVerification = state.recovery?.verifyPending ? previousChanges : undefined;
+      const researchThreshold = policy.researchAfterFailures ?? 3;
+      const strategyLimit = 3;
+      let strategyReviews = 0;
+      let lastStrategyAt = researchedAt;
+      let searched = false;
+      const strategyEnabled = !!args.search || args.continueRecovery === true;
+      let proposalLimit = strategyEnabled ? Math.max(3, researchThreshold + 1) : 3;
+      for (let attempt = pendingVerification ? -1 : 0; attempt < proposalLimit; attempt++) {
+        if (strategyEnabled && attempt >= 0 && attempts.length - lastStrategyAt >= researchThreshold && strategyReviews < strategyLimit) {
+          strategyReviews++;
+          lastStrategyAt = attempts.length;
+          const topic = researchTopic(policy, attempts.slice(-researchThreshold));
+          try {
+            // Search only with public diagnostics selected by the engine, never model text, logs or paths.
+            const query = topic + ' official documentation GitHub Stack Overflow';
+            const savedResearch = researchHistory.findLast((item) => item.attempt === attempts.length && item.query === query);
+            const previousResearch = researchHistory.findLast((item) => item.query === query);
+            const alreadySearched = searched;
+            searched = true;
+            const research = savedResearch?.references ?? (alreadySearched ? previousResearch?.references : (await args.search?.(query))?.slice(0, 12_000));
+            signal?.throwIfAborted();
+            if (research) {
+              assertWorkflowText(research);
+              if (!savedResearch) {
+                researchHistory = [...researchHistory, { query, references: research, attempt: attempts.length }];
+                await saveRecovery();
+              }
+            } else if (args.search) {
+              await recordFailure('Ricerca tecnica senza fonti disponibili. Continua la diagnosi locale.');
+            }
+            const strategy = await generate(state.kind, 'strategy', recoveryStrategy, 'Schema: hypothesis, approach. Prepara il prossimo tentativo tecnico.', {
+              plan: state.plan,
+              previousChanges,
+              failures: attempts.slice(-12).map(({ feedback }) => feedback),
+              strategies: strategies.slice(-6),
+              research,
+              skills,
+            });
+            const duplicate = strategies.some((previous) => digest(previous) === digest(strategy));
+            if (!duplicate) {
+              strategies = [...strategies, strategy];
+              if (research || args.continueRecovery) {
+                proposalLimit = Math.max(proposalLimit, attempt + researchThreshold + (strategyReviews < strategyLimit ? 1 : 0));
+              }
+            }
+            if (research) {
+              researchedAt = attempts.length;
+            }
+            await saveRecovery();
+          } catch (error) {
+            signal?.throwIfAborted();
+            await recordFailure(recoveryMessage(error, 'Ricerca o strategia non disponibile.'));
+          }
+        }
         let patch: z.infer<typeof changeSchema>;
         try {
-          patch = await generate(
-            state.kind,
-            attempt ? 'debug' : 'implement',
-            changeSchema,
-            'Schema: changes [{path, content}]. content è il testo completo o null per una rimozione approvata. Restituisci solo file del piano.',
-            {
-              plan: state.plan,
-              sources: approvedContext(policy, snapshot.files),
-              files: state.plan.files.map((name) => [name, snapshot.files[name]]),
-              context,
-              baselineChecks,
-              checkDefinitions: policy.checks,
-              skills,
-              previousChanges,
-              feedback,
-              projectTask: args.projectTask,
-            },
-          );
+          patch =
+            attempt < 0 && pendingVerification
+              ? { changes: pendingVerification }
+              : await generate(
+                  state.kind,
+                  feedback !== null ? 'debug' : 'implement',
+                  changeSchema,
+                  'Schema: changes [{path, content}]. content è il testo completo o null per una rimozione approvata. Restituisci solo file del piano.',
+                  {
+                    plan: state.plan,
+                    sources: approvedContext(policy, snapshot.files),
+                    files: state.plan.files.map((name) => [name, snapshot.files[name]]),
+                    context,
+                    baselineChecks,
+                    checkDefinitions: policy.checks,
+                    skills,
+                    previousChanges,
+                    feedback,
+                    ...(attempts.length ? { previousFailures: attempts.slice(-12).map(({ feedback }) => feedback) } : {}),
+                    ...(strategies.length ? { strategy: strategies.at(-1), previousStrategies: strategies.slice(-6) } : {}),
+                    ...(researchHistory.length ? { technicalReferences: researchHistory.at(-1) } : {}),
+                    projectTask: args.projectTask,
+                  },
+                );
         } catch (error) {
-          if (!(error instanceof z.ZodError || error instanceof SyntaxError)) {
+          if (error instanceof WorkflowModelFailure) {
+            serviceUnavailable ||= workflowServiceRetryable(error);
+            await recordFailure('Chiamata al Programmatore o al Correttore non riuscita. ' + error.message);
+            continue;
+          }
+          if (!invalidModelResponse(error)) {
             throw error;
           }
-          feedback = 'Proposta priva di uno schema JSON valido.';
+          await recordFailure('Proposta priva di uno schema JSON valido.');
           continue;
         }
         const names = patch.changes.map((item) => item.path);
@@ -654,10 +965,16 @@ const runWorkflowTask = async (args: {
           names.some((name) => !state?.plan.files.includes(name)) ||
           patch.changes.some((item) => snapshot.files[item.path] === item.content || ((snapshot.files[item.path] ?? '') === '' && (item.content ?? '') === ''))
         ) {
-          feedback = 'La proposta duplica file, contiene file non approvati o non produce una patch di testo applicabile.';
+          await recordFailure('La proposta duplica file, contiene file non approvati o non produce una patch di testo applicabile.');
+          continue;
+        }
+        const candidateHash = digest([...patch.changes].sort((a, b) => a.path.localeCompare(b.path)));
+        if (rejected.has(candidateHash)) {
+          await recordFailure('La proposta coincide con un candidato già respinto. Usa le evidenze precedenti e cambia strategia.');
           continue;
         }
         previousChanges = patch.changes;
+        await saveRecovery(true);
         const candidate = Object.fromEntries(Object.entries(snapshot.files));
         for (const change of patch.changes) {
           candidate[change.path] = change.content;
@@ -668,7 +985,11 @@ const runWorkflowTask = async (args: {
           await stageFiles(dir, candidate);
           const checks = await runChecks(policy, candidate, dir, signal);
           if (checks.some((check) => !check.passed)) {
-            feedback = checks.filter((check) => !check.passed);
+            const failures = checks.filter((check) => !check.passed);
+            const deterministic = failures.every(({ id }) =>
+              policy.checks.some((check) => check.id === id && check.type !== 'browser' && check.type !== 'docker'),
+            );
+            await recordFailure(failures, deterministic ? candidateHash : undefined);
             continue;
           }
           const reviewInput = {
@@ -690,15 +1011,20 @@ const runWorkflowTask = async (args: {
               reviews.push(await generate(state.kind, 'design-review', reviewSchema, contract, reviewInput));
             }
           } catch (error) {
-            if (!(error instanceof z.ZodError || error instanceof SyntaxError)) {
+            if (error instanceof WorkflowModelFailure) {
+              serviceUnavailable ||= workflowServiceRetryable(error);
+              await recordFailure('Chiamata al Revisore non riuscita. ' + error.message);
+              continue;
+            }
+            if (!invalidModelResponse(error)) {
               throw error;
             }
-            feedback = 'Verdetto di revisione non valido.';
+            await recordFailure('Verdetto di revisione non valido.');
             continue;
           }
           const failed = reviews.find((review) => review.verdict !== 'pass' || review.findings.length);
           if (failed) {
-            feedback = failed.findings.length ? failed.findings : 'Revisione negativa.';
+            await recordFailure(failed.findings.length ? failed.findings : 'Revisione negativa.');
             continue;
           }
           if ((await fileSnapshot(policy, statePath)).hash !== state.baseline) {
@@ -730,7 +1056,8 @@ const runWorkflowTask = async (args: {
               if (signal?.aborted) {
                 throw error;
               }
-              throw new Error('Git non riesce ad applicare la patch alla copia di partenza.');
+              await recordFailure('Git non riesce ad applicare la patch alla copia di partenza.');
+              continue;
             } finally {
               await fs.rm(baselineDir, { recursive: true, force: true });
             }
@@ -760,7 +1087,7 @@ const runWorkflowTask = async (args: {
               await fs.rm(integrationDir, { recursive: true, force: true });
             }
             if (delivered.checks.some((check) => !check.passed)) {
-              feedback = delivered.checks.filter((check) => !check.passed);
+              await recordFailure(delivered.checks.filter((check) => !check.passed));
               continue;
             }
             const commit = await createDevelopmentCommit(policy, base, tree, state.revision, signal);
@@ -775,6 +1102,11 @@ const runWorkflowTask = async (args: {
           await save(state);
           accepted = true;
           return { phase: 'done', message: renderDelivery(state, statePath) };
+        } catch (error) {
+          if (!signal?.aborted && !accepted) {
+            await recordFailure(recoveryMessage(error, 'Verifica o preparazione del candidato interrotta.'), undefined, true);
+          }
+          throw error;
         } finally {
           if (!accepted) {
             await fs.rm(dir, { recursive: true, force: true });
@@ -782,7 +1114,12 @@ const runWorkflowTask = async (args: {
           }
         }
       }
-      return { phase: 'waiting', message: 'Consegna sospesa. ' + JSON.stringify(feedback) + '\n/workflow resume' };
+      return {
+        phase: 'waiting',
+        message: 'Correzione in attesa. Stato e diagnosi salvati. ' + JSON.stringify(feedback),
+        ...(rejectedOutcomes.size > initialOutcomeCount ? { recoveryProgress: true } : {}),
+        ...(serviceUnavailable ? { retryable: true } : {}),
+      };
     }
 
     const command = /^\/workflow (bug|change|feature)\s+([\s\S]+)$/.exec(input);
@@ -811,7 +1148,7 @@ const runWorkflowTask = async (args: {
       kind,
       'plan',
       scopedPlan,
-      'Schema: outcome, delta, files[], reuse[], steps[], criteria[{scenario,check}], reproduction (ID per bug o null), questions[], surface, skillNames[], components[]. Scegli i file da editable e i check dalla configurazione. Collega i criteri alla copertura effettiva delle definizioni dei controlli. Indica surface=none per la sola logica, ui se cambiano interfaccia o interazioni, mobile se è richiesta una UI dedicata al telefono, ui-and-mobile se cambiano entrambe. Seleziona fino a quattro skill pertinenti. Se per la UI serve valutare nuovi componenti e lo stack è compatibile con shadcn, scegli fino a tre tipi da consultare. Quando projectTask è presente, il suo id indica il task attivo e i commit integrati aggiornano il punto di ripresa delle note di stato.',
+      'Schema: outcome, delta, files[], reuse[], steps[], criteria[{scenario,check}], reproduction (ID per bug o null), questions[], surface, skillNames[], components[]. Scegli i file da editable e i check dalla configurazione. Collega i criteri alla copertura effettiva delle definizioni dei controlli. Indica surface=none per la sola logica, ui se cambiano interfaccia o interazioni, mobile se è richiesta una UI dedicata al telefono, ui-and-mobile se cambiano entrambe. Seleziona fino a quattro skill pertinenti. Se per la UI serve valutare nuovi componenti e lo stack è compatibile con shadcn, scegli fino a tre tipi da consultare. Quando projectTask è presente, il suo id indica il task attivo e i commit integrati aggiornano il punto di ripresa delle note di stato. projectTask.attestations contiene gli esiti già verificati dalla coda per i prerequisiti del task. Usa questi esiti e il commit attestato, senza chiedere di ripetere la stessa prova.',
       {
         request,
         previous: state ? { request: state.request, outcome: state.plan.outcome, questions: state.plan.questions, delivered: !!state.delivered } : undefined,
@@ -852,7 +1189,15 @@ const runWorkflowTask = async (args: {
         'design',
         designSchema.extend({ ui: ui ? line : z.null(), mobile: mobile ? line : z.null() }),
         'Descrivi sharedLogic, ui, mobile e questions. Per le superfici richieste descrivi un flusso implementabile nei file del piano. Per una superficie esclusa usa null. I risultati del catalogo sono riferimenti esterni. Cita i componenti pertinenti e rispetta la grafica e i contratti del progetto.',
-        { request, plan, sources: approvedContext(policy, snapshot.files), files: snapshot.files, skills: selectedSkills, componentReferences },
+        {
+          request,
+          plan,
+          sources: approvedContext(policy, snapshot.files),
+          files: snapshot.files,
+          skills: selectedSkills,
+          componentReferences,
+          projectTask: args.projectTask,
+        },
       );
       plan.questions = plan.design.questions;
     }
@@ -862,7 +1207,11 @@ const runWorkflowTask = async (args: {
         throw new Error('Cartella di lavoro del workflow sostituita.');
       }
       await atomicWriteJsonFile(path.join(jobRoot, state.pendingIntegration.directory + '.json'), state);
+      if (args.projectTask && (await isIntegrated(policy, state.pendingIntegration.integration.commit, signal))) {
+        return { phase: 'done', message: renderDelivery(await finishIntegration(state, state.pendingIntegration), statePath) };
+      }
     }
+    const attestationRevision = projectAttestationRevision(args.projectTask?.attestations);
     state = {
       version: 2,
       kind,
@@ -870,6 +1219,8 @@ const runWorkflowTask = async (args: {
       baseline: snapshot.hash,
       source: snapshot.source,
       ...(snapshot.commit ? { baseCommit: snapshot.commit } : {}),
+      ...(args.projectTask ? { projectTaskId: args.projectTask.id } : {}),
+      ...(attestationRevision ? { attestationRevision } : {}),
       revision: digest([kind, request, plan, snapshot.hash]),
       plan,
       approved: false,
@@ -881,17 +1232,38 @@ const runWorkflowTask = async (args: {
   }
 };
 
+const runWorkflowObjective = async (args: Parameters<typeof runWorkflowTask>[0]): Promise<Outcome> => {
+  let result = await runWorkflowTask(args);
+  while (args.continueRecovery && result.recoveryProgress) {
+    args.signal?.throwIfAborted();
+    args.onProgress?.('Rivaluto la correzione dalle nuove evidenze salvate.');
+    result = await runWorkflowTask({ ...args, prompt: '/workflow resume' });
+  }
+  return result;
+};
+
 export const runRepositoryWorkflow = async (args: Parameters<typeof runWorkflowTask>[0]): Promise<Outcome> => {
   const command = parseProjectWorkflowCommand(args.prompt);
   const root = args.policy.root;
   if (runningProjects.has(root)) {
-    throw new Error('Il piano di lavoro di questo progetto è già in esecuzione.');
+    throw new WorkflowServiceUnavailable('Il piano di lavoro di questo progetto è già in esecuzione.');
   }
   if (!command) {
-    return runWorkflowTask(args);
+    if (!args.continueRecovery) {
+      return runWorkflowTask(args);
+    }
+    if (running.has(root)) {
+      throw new WorkflowServiceUnavailable('Un task di questo progetto è già in corso.');
+    }
+    runningProjects.add(root);
+    try {
+      return await runWorkflowObjective(args);
+    } finally {
+      runningProjects.delete(root);
+    }
   }
   if (running.has(root)) {
-    throw new Error('Un task di questo progetto è già in corso.');
+    throw new WorkflowServiceUnavailable('Un task di questo progetto è già in corso.');
   }
   runningProjects.add(root);
   try {
@@ -899,9 +1271,43 @@ export const runRepositoryWorkflow = async (args: Parameters<typeof runWorkflowT
       policy: args.policy,
       statePath: args.statePath,
       command,
-      status: readRepositoryWorkflow,
-      execute: (statePath, policy, prompt, expectedWorkPlan, projectTask) =>
-        runWorkflowTask({ ...args, statePath, policy, prompt, expectedWorkPlan, projectTask }),
+      trackObjective: args.continueRecovery,
+      expectedContinuationRevision: args.expectedContinuationRevision,
+      status: (statePath, policy) => readRepositoryWorkflow(statePath, policy, true),
+      recover: (statePath, policy, head, taskId) => recoverPublishedReceipt(statePath, policy, head, taskId, args.signal),
+      legacyReceipts: (workspace, head) => legacyQueueReceipts(workspace, args.policy, head, args.signal),
+      execute: (statePath, policy, prompt, expectedWorkPlan, projectTask, expectedDevelopmentHead) =>
+        runWorkflowObjective({ ...args, statePath, policy, prompt, expectedWorkPlan, projectTask, expectedDevelopmentHead }),
+      verify: async (statePath, policy, commit) => {
+        const files = await readDevelopmentFiles(policy, commit, args.signal);
+        if (policy.checks.some((check) => check.type === 'docker')) {
+          await ensureWorkflowDocker(args.signal, args.onProgress);
+        }
+        const dir = await fs.mkdtemp(path.join(path.dirname(statePath), 'recheck-'));
+        try {
+          await stageFiles(dir, files);
+          return await runChecks(policy, files, dir, args.signal);
+        } finally {
+          await fs.rm(dir, { recursive: true, force: true });
+        }
+      },
+      investigate: async (policy, input) => {
+        const files = await readDevelopmentFiles(policy, input.commit, args.signal);
+        args.signal?.throwIfAborted();
+        const payload = JSON.stringify({ ...input, files, checks: policy.checks });
+        assertWorkflowText(payload);
+        const instructions =
+          workflowSkills(input.kind, 'investigate') +
+          '\nRestituisci JSON con findings[] e checks[] (ID di controlli configurati). Le conclusioni sono diagnostiche e non autorizzano modifiche o riuso di prove.';
+        const raw = await args.generate('investigate', instructions, payload);
+        args.signal?.throwIfAborted();
+        if (raw) {
+          assertWorkflowText(raw);
+        }
+        const result = parse(workflowInvestigation, raw);
+        const configured = new Set(policy.checks.map(({ id }) => id));
+        return { ...result, checks: [...new Set(result.checks.filter((id) => configured.has(id)))] };
+      },
       signal: args.signal,
     });
   } finally {

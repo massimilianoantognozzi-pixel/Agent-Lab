@@ -878,7 +878,7 @@ describe('Agent - compactMessagesIfNeeded', () => {
     },
   ];
 
-  const runCompact = async (resultMessages: any[], taskTokensOverride?: number) => {
+  const runCompact = async (resultMessages: any[], taskTokensOverride?: number, modelMessages: any[] = [], userMessage = makeUserRequestMessage()) => {
     const task = createMockTask();
     task.task.contextCompactingThresholdTokens = taskTokensOverride;
     task.compactConversation = vi.fn().mockResolvedValue(undefined);
@@ -890,17 +890,7 @@ describe('Agent - compactMessagesIfNeeded', () => {
 
     agent['prepareMessages'] = vi.fn().mockResolvedValue([]);
 
-    await agent['compactMessagesIfNeeded'](
-      task,
-      mockProfile,
-      { id: 'test-provider' } as any,
-      'test-model',
-      makeUserRequestMessage(),
-      [],
-      [],
-      [],
-      resultMessages,
-    );
+    await agent['compactMessagesIfNeeded'](task, mockProfile, { id: 'test-provider' } as any, 'test-model', userMessage, [], [], modelMessages, resultMessages);
 
     return task;
   };
@@ -908,6 +898,25 @@ describe('Agent - compactMessagesIfNeeded', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockProfile = createMockAgentProfile();
+  });
+
+  it('estimates the initial model input before a provider has reported usage', async () => {
+    agent = buildAgent(() => undefined);
+    const task = await runCompact([], 64, [{ role: 'user', content: 'Alpha beta gamma. '.repeat(150) }]);
+
+    expect(task.compactConversation).toHaveBeenCalledOnce();
+  });
+
+  it('continues from the summary without reinserting the oversized original text', async () => {
+    agent = buildAgent(() => undefined);
+    const text = 'Alpha beta gamma. '.repeat(150);
+    const userMessage = { id: 'user-1', role: 'user', content: text };
+    const modelMessages = [{ role: 'user', content: text }];
+    const task = await runCompact([userMessage], 64, modelMessages, userMessage);
+
+    expect(vi.mocked(task.compactConversation).mock.lastCall?.[8]).toBe(false);
+    expect(JSON.stringify(modelMessages)).not.toContain(text);
+    expect(modelMessages.at(-1)).toMatchObject({ role: 'user' });
   });
 
   it('should compact based on the token threshold when the model context size is unknown', async () => {

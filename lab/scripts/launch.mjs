@@ -10,6 +10,7 @@ import { projectStartupEnvironment } from './project-startup.mjs';
 import { installReasoningSelector } from './install-reasoning-selector.mjs';
 
 const lockFile = path.join(labRoot, 'work', 'gui-launch.json');
+const bundledElectron = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
 const quotePS = value => "'" + value.replace(/'/g, "''") + "'";
 const isOwnLauncher = pid => {
@@ -18,11 +19,28 @@ const isOwnLauncher = pid => {
   const command = `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}'; if($p.ExecutablePath -eq ${quotePS(process.execPath)} -and $p.CommandLine.IndexOf(${quotePS(script)},[StringComparison]::OrdinalIgnoreCase) -ge 0){'owned'}`;
   return execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, encoding: 'utf8' }).trim() === 'owned';
 };
-const focus = pid => {
+const focus = (pid, executable) => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return;
-  const expected = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
+  const expected = typeof executable === 'string' ? executable : bundledElectron;
   const command = `$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($p -and $p.Path -eq ${quotePS(expected)} -and $p.MainWindowHandle -ne 0) { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class LabFocus { [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'; [LabFocus]::ShowWindowAsync($p.MainWindowHandle,9)|Out-Null; [LabFocus]::SetForegroundWindow($p.MainWindowHandle)|Out-Null }`;
   execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], { windowsHide: true, stdio: 'ignore' });
+};
+const resolveLaunchTarget = () => {
+  const configured = process.env.AIDER_DESK_PACKAGED_EXE;
+  if (!configured) {
+    if (!fs.existsSync(path.join(repoRoot, 'out/main/index.js'))) throw new Error('Build del laboratorio non presente.');
+    const require = createRequire(path.join(repoRoot, 'package.json'));
+    return { executable: require('electron'), args: [repoRoot] };
+  }
+  if (!path.isAbsolute(configured) || path.extname(configured).toLowerCase() !== '.exe') {
+    throw new Error('AIDER_DESK_PACKAGED_EXE deve indicare il percorso assoluto dell’eseguibile Windows.');
+  }
+  const executable = fs.realpathSync(configured);
+  const resources = path.join(path.dirname(executable), 'resources');
+  if (!fs.statSync(executable).isFile() || !fs.statSync(path.join(resources, 'app.asar'), { throwIfNoEntry: false })?.isFile()) {
+    throw new Error('Pacchetto Agent-Lab incompleto. Conserva l’eseguibile e la cartella resources nella stessa directory.');
+  }
+  return { executable, args: [], resources };
 };
 let backend;
 let child;
@@ -33,21 +51,22 @@ try {
   if (fs.existsSync(lockFile)) {
     const previous = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
     if (isOwnLauncher(previous.launcherPid)) {
-      focus(previous.electronPid); process.exit(0);
+      focus(previous.electronPid, previous.electronExe); process.exit(0);
     }
     fs.unlinkSync(lockFile);
   }
   fs.writeFileSync(lockFile, JSON.stringify({ launcherPid: process.pid }), { flag: 'wx' }); ownLock = true;
+  const { executable, args, resources } = resolveLaunchTarget();
   prepare(); configureGeneralGui();
   installReasoningSelector();
   prepareOpenCodeRoles(homeDir, path.join(homeDir, 'agents', 'lab-checkpoint', 'config.json'));
-  const require = createRequire(path.join(repoRoot, 'package.json'));
-  if (!fs.existsSync(path.join(repoRoot, 'out/main/index.js'))) throw new Error('Build del laboratorio non presente.');
   try { backend = await startLocalBackend(); }
   catch(error) { fs.appendFileSync(path.join(labRoot,'work','launcher-warnings.log'),`${new Date().toISOString()} Modello locale non disponibile: ${error.message}. AiderDesk resta utilizzabile con il provider scelto.\n`); }
   log = fs.openSync(path.join(labRoot, 'work', 'app-launch.log'), 'a');
-  child = spawn(require('electron'), [repoRoot], { cwd: repoRoot, env: { ...generalEnvironment(), ...projectStartupEnvironment() }, windowsHide: false, stdio: ['ignore', log, log] });
-  fs.writeFileSync(lockFile, JSON.stringify({ launcherPid: process.pid, electronPid: child.pid }));
+  const env = { ...generalEnvironment(), ...projectStartupEnvironment() };
+  if (resources) env.AIDER_DESK_RESOURCES_DIR = resources;
+  child = spawn(executable, args, { cwd: repoRoot, env, windowsHide: false, stdio: ['ignore', log, log] });
+  fs.writeFileSync(lockFile, JSON.stringify({ launcherPid: process.pid, electronPid: child.pid, electronExe: executable }));
   await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => { process.exitCode = code ?? 1; resolve(); }); });
 } catch (error) {
   process.exitCode = 1;

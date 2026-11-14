@@ -13,6 +13,7 @@ const oneOffLabel = 'com.docker.compose.oneoff';
 const servicesDocument = 'docs/agentlab-services.json';
 const viaSalusHandoff = 'docs/supporto_codex/handoff/VIASALUS_CONTEXT_HANDOFF_CORRENTE.md';
 const viaSalusDatabase = 'supabase_db_ViaSalus';
+class ContainersNotReady extends Error {}
 const labelPath = async (value) => {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return undefined;
   return realpath(value).catch(() => undefined);
@@ -160,12 +161,12 @@ async function startContainers(selected) {
     if (states.every((state) => state.Running && !state.Paused && (!state.Health || state.Health.Status === 'healthy'))) return;
     await setTimeout(1000);
   } while (Date.now() < deadline);
-  throw new Error('I container del progetto non sono pronti.');
+  throw new ContainersNotReady('I container del progetto non sono pronti.');
 }
 
 try {
   await startProject();
 } catch (error) {
   console.error(error instanceof Error && !('cmd' in error) ? error.message : 'Avvio dei container del progetto non riuscito.');
-  process.exitCode = 1;
+  process.exitCode = error instanceof ContainersNotReady ? 75 : 1;
 }

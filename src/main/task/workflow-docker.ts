@@ -2,10 +2,35 @@ import { execFile } from 'node:child_process';
 import { setTimeout } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
+import { RetryError } from 'ai';
+
 const run = promisify(execFile);
 const engineProbeTimeout = 3_000;
 const startupTimeout = 120_000;
 let startup: Promise<void> | undefined;
+
+export class WorkflowServiceUnavailable extends Error {}
+
+export const workflowServiceRetryable = (error: unknown): boolean => {
+  const seen = new Set<Error>();
+  for (let cause = error; cause instanceof Error && !seen.has(cause); cause = RetryError.isInstance(cause) ? cause.lastError : cause.cause) {
+    seen.add(cause);
+    if (RetryError.isInstance(cause) && cause.reason === 'abort') {
+      return false;
+    }
+    if (cause instanceof WorkflowServiceUnavailable) {
+      return true;
+    }
+    const { code, statusCode, isRetryable } = cause as Error & { code?: string; statusCode?: number; isRetryable?: boolean };
+    if (
+      ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN'].includes(code ?? '') ||
+      (isRetryable && (statusCode === undefined || statusCode === 408 || statusCode === 429 || statusCode >= 500))
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
 
 export const assertLocalWorkflowDocker = async (signal?: AbortSignal): Promise<void> => {
   const { stdout } = await run('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {
@@ -53,9 +78,9 @@ const startDockerDesktop = async () => {
     }
   }
   if (startFailed) {
-    throw new Error('Avvio automatico di Docker Desktop fallito. Verifica Docker Desktop sul PC e riprendi il lavoro.');
+    throw new WorkflowServiceUnavailable('Avvio automatico di Docker Desktop non riuscito.');
   }
-  throw new Error('Il motore Docker non ha risposto entro due minuti. Verifica Docker Desktop sul PC e riprendi il lavoro.');
+  throw new WorkflowServiceUnavailable('Il motore Docker non ha risposto entro due minuti.');
 };
 
 export const ensureWorkflowDocker = async (signal?: AbortSignal, onProgress?: (message: string) => void): Promise<void> => {

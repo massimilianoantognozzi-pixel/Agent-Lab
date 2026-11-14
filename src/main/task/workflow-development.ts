@@ -110,10 +110,20 @@ export const createDevelopmentCommit = async (policy: WorkflowProject, base: str
     .toString('utf8')
     .trim();
 
-export const isIntegrated = async (policy: WorkflowProject, commit: string, signal?: AbortSignal): Promise<boolean> => {
-  const head = await readDevelopmentHead(policy, signal);
+export const matchesDevelopmentReceipt = async (
+  policy: WorkflowProject,
+  commit: string,
+  base: string,
+  revision: string,
+  signal?: AbortSignal,
+): Promise<boolean> => {
+  const record = (await git(policy.root, ['show', '-s', '--format=%P%x00%B', commit], signal)).toString('utf8').trim();
+  return record === base + '\0Integra task verificato da AiderDesk\n\nPiano ' + revision;
+};
+
+export const isIntegrated = async (policy: WorkflowProject, commit: string, signal?: AbortSignal, head?: string): Promise<boolean> => {
   try {
-    await git(policy.root, ['merge-base', '--is-ancestor', commit, head], signal);
+    await git(policy.root, ['merge-base', '--is-ancestor', commit, head ?? (await readDevelopmentHead(policy, signal))], signal);
     return true;
   } catch (error) {
     if ((error as { code?: number }).code === 1) {
@@ -123,9 +133,21 @@ export const isIntegrated = async (policy: WorkflowProject, commit: string, sign
   }
 };
 
-export const developmentFilesMatch = async (policy: WorkflowProject, from: string, to: string, files: string[], signal?: AbortSignal): Promise<boolean> => {
+export const isKnownDevelopmentCommit = async (policy: WorkflowProject, commit: string, head: string, signal?: AbortSignal): Promise<boolean> => {
   try {
-    await git(policy.root, ['diff', '--quiet', '--no-ext-diff', '--no-textconv', from, to, '--', ...files], signal);
+    await git(policy.root, ['cat-file', '-e', commit + '^{commit}'], signal);
+  } catch (error) {
+    if ((error as { code?: number }).code === 128 || (error as { code?: number }).code === 1) {
+      return false;
+    }
+    throw error;
+  }
+  return isIntegrated(policy, commit, signal, head);
+};
+
+export const developmentFilesMatch = async (policy: WorkflowProject, from: string, to: string, files?: string[], signal?: AbortSignal): Promise<boolean> => {
+  try {
+    await git(policy.root, ['diff', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', from, to, '--', ...(files ?? [])], signal);
     return true;
   } catch (error) {
     if ((error as { code?: number }).code === 1) {
@@ -134,6 +156,12 @@ export const developmentFilesMatch = async (policy: WorkflowProject, from: strin
     throw error;
   }
 };
+
+export const developmentChangedFiles = async (policy: WorkflowProject, from: string, to: string, signal?: AbortSignal): Promise<string[]> =>
+  (await git(policy.root, ['diff', '--name-only', '--no-renames', '--ignore-submodules=none', '-z', from, to, '--'], signal))
+    .toString('utf8')
+    .split('\0')
+    .filter(Boolean);
 
 export const publishDevelopmentCommit = async (policy: WorkflowProject, base: string, commit: string, jobs: string, signal?: AbortSignal): Promise<void> => {
   const parents = (await git(policy.root, ['rev-list', '--parents', '-n', '1', commit], signal)).toString('utf8').trim();

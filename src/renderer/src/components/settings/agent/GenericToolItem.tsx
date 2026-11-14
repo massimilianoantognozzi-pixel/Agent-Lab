@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { ReactNode } from 'react';
 import { AgentProfile, GenericTool, ToolApprovalState } from '@common/types';
-import { TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
+import { POWER_TOOL_BASH_INPUT, POWER_TOOL_GROUP_NAME, TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
 import { Select } from '@/components/common/Select';
 import { InfoIcon } from '@/components/common/InfoIcon';
@@ -17,8 +17,8 @@ export const GenericToolItem = ({ tool, profile, onApprovalChange, renderToolSet
   const { t } = useTranslation();
   const fullToolId = `${tool.groupName}${TOOL_GROUP_NAME_SEPARATOR}${tool.name}`;
 
-  // Default to 'Always' if approvals are not being managed in this context
-  const currentApproval = profile.toolApprovals ? profile.toolApprovals[fullToolId] || ToolApprovalState.Always : ToolApprovalState.Always;
+  const defaultApproval = tool.groupName === POWER_TOOL_GROUP_NAME && tool.name === POWER_TOOL_BASH_INPUT ? ToolApprovalState.Never : ToolApprovalState.Always;
+  const currentApproval = profile.toolApprovals?.[fullToolId] ?? defaultApproval;
 
   const approvalOptions = [
     { value: ToolApprovalState.Always, label: t('tool.approval.always') },

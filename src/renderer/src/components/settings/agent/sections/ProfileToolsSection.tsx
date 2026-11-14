@@ -9,6 +9,7 @@ import {
   AIDER_TOOL_GROUP_NAME,
   AIDER_TOOL_RUN_PROMPT,
   POWER_TOOL_BASH,
+  POWER_TOOL_BASH_INPUT,
   POWER_TOOL_DESCRIPTIONS,
   POWER_TOOL_FETCH,
   POWER_TOOL_FILE_EDIT,
@@ -105,6 +106,11 @@ const tools: Record<string, GenericTool[]> = {
       groupName: POWER_TOOL_GROUP_NAME,
       name: POWER_TOOL_BASH,
       description: POWER_TOOL_DESCRIPTIONS[POWER_TOOL_BASH],
+    },
+    {
+      groupName: POWER_TOOL_GROUP_NAME,
+      name: POWER_TOOL_BASH_INPUT,
+      description: POWER_TOOL_DESCRIPTIONS[POWER_TOOL_BASH_INPUT],
     },
     {
       groupName: POWER_TOOL_GROUP_NAME,

@@ -166,6 +166,21 @@ describe('Extension Tool Integration with Agent', () => {
   });
 
   describe('createExtensionToolset', () => {
+    it('restricts automatic research to the initialized global extension', async () => {
+      const registry = manager['registry'] as ExtensionRegistry;
+      const globalTool = createValidTool({ name: 'search' });
+      const localTool = createValidTool({ name: 'search' });
+      const globalFile = '/global/searxng-search/index.ts';
+      const localFile = '/test/project/searxng-search/index.ts';
+      await registry.register(createMockExtension({ getTools: () => [globalTool] }), createMockMetadata(), globalFile);
+      await registry.register(createMockExtension({ getTools: () => [localTool] }), createMockMetadata(), localFile, '/test/project');
+      registry.setInitialized(localFile, true);
+      expect(manager.getTools(createMockTask(), 'agent', createMockProfile(), 'searxng-search')).toEqual([]);
+      registry.setInitialized(globalFile, true);
+      const registered = manager.getTools(createMockTask(), 'agent', createMockProfile(), 'searxng-search');
+      expect(registered.map(({ tool }) => tool)).toEqual([globalTool]);
+    });
+
     it('should return empty ToolSet when no tools registered', async () => {
       const task = createMockTask();
       const profile = createMockProfile();

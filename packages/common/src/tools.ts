@@ -18,6 +18,7 @@ export const POWER_TOOL_GLOB = 'glob';
 export const POWER_TOOL_GREP = 'grep';
 export const POWER_TOOL_SEMANTIC_SEARCH = 'semantic_search';
 export const POWER_TOOL_BASH = 'bash';
+export const POWER_TOOL_BASH_INPUT = 'bash_input';
 export const POWER_TOOL_FETCH = 'fetch';
 
 export const SUBAGENTS_TOOL_GROUP_NAME = 'subagents';
@@ -92,6 +93,7 @@ const myFunction = () => {
   [POWER_TOOL_SEMANTIC_SEARCH]:
     'Search code in the repository using natural-language queries with 2-5 descriptive words including key concepts and context. Use it to locate related implementations, explore unfamiliar areas, or identify potentially affected files. It can filter results with hints such as ext:ts, dir:src, or lang:typescript.',
   [POWER_TOOL_BASH]: 'Executes a shell command. For safety, commands may be sandboxed or require user approval (approval handled by Agent).',
+  [POWER_TOOL_BASH_INPUT]: 'Allows the agent to start interactive commands and send input to their standard input.',
   [POWER_TOOL_FETCH]:
     'Fetches and returns the content of a web page from a specified URL. Useful for retrieving web content, documentation, or external resources. Supports three formats: "markdown" (default, converts HTML to markdown), "html" (returns raw HTML), "raw" (fetches raw content via HTTP, ideal for API responses or raw files like GitHub raw files).',
   [SUBAGENTS_TOOL_RUN_TASK]: 'Description is generated dynamically based on enabled agent profiles with subagent functionality.',

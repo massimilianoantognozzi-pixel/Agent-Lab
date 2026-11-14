@@ -1,5 +1,96 @@
 # Ripresa del riallineamento generale
 
+## Consegna Windows r15 — 14 novembre 2026
+
+La r15 portabile Windows x64 è stata collaudata da una cartella esterna al
+repository. Sono stati confrontati tutti i 465 file dopo l’estrazione. Il
+collegamento Agent-Lab sul desktop punta alla r15. Il collaudo di avvio ha
+usato un profilo isolato e l’hash della configurazione del profilo esistente
+è rimasto identico durante l’aggiornamento del collegamento.
+
+- ZIP `Agent-Lab-Windows-x64.zip`, SHA-256 `41D54B64B366B4A5E1A6F6263100D18111DC8FAC9F2FC209C5F57E59F4F4C1B4`.
+- ASAR SHA-256 `FC03C594F703BFD5ED36E509E0EBBB4276B81C104DA927C56AFC6C1CF712212E`.
+- 218 test mirati in 19 file sul sorgente della r15 con Docker e SearXNG reali. Typecheck Node e renderer, lint, review indipendente, scansione del diff e smoke Windows completati.
+- GPT-6.1 Sol ha usato fonti Internet dopo un candidato fallito. Il controllo negativo con errore di ricerca ha lasciato `dev` fermo. Il confronto sullo stesso difetto con Codex desktop ha usato un verificatore immutato e ha restituito exit 1 prima e 0 dopo su entrambi i percorsi.
+- Z.AI GLM-4.5-Flash ha recuperato autonomamente da HTTP 400/1261 nativo. La prova OpenAI ha iniettato il rifiuto nell’adattatore e ha eseguito il recupero con GPT-6.1 Sol reale.
+- Le prove con modello reale coprono PTY, input e risultato sullo stesso ID, worker concorrenti, messaggio a un worker attivo, interruzione selettiva, follow-up dopo compattazione e riapertura. In r15 la chiusura durante il lavoro ha terminato i tre processi di prova. Alla riapertura lo stesso task risultava interrotto, senza rilanciare i comandi.
+
+Il confronto qualifica gli scenari descritti. La parità integrale, il recupero
+automatico di un worker interrotto dalla chiusura e il collaudo su copia di
+Edilas restano da dimostrare. La CLI Codex annidata ha ricevuto un rifiuto dal
+runner. I 43 fallimenti Node e il fallimento renderer della suite integrale
+precedente sono stati riprodotti sulla baseline Windows. Lo ZIP, le tracce
+grezze e i profili sono conservati localmente.
+
+## Recupero tecnico nel motore
+
+Il flusso governato registra gli esiti falliti, conserva l’ultima proposta e
+riprende dal Correttore sulla stessa base. Distingue i candidati smentiti da
+controlli deterministici dagli errori temporanei del modello o del runner.
+Se un verificatore si interrompe, riprende la verifica del candidato salvato
+prima di chiedere una nuova proposta. La review resta necessaria per consegnare.
+La coda avvia una nuova valutazione su `dev` dopo un avanzamento concorrente.
+Se mancano input per qualificare una prova, avvia e conserva la diagnosi sulla
+revisione osservata. Le attività dipendenti attendono prove utilizzabili.
+
+Con la ricerca globale SearXNG autorizzata, il motore può cambiare strategia
+dopo la soglia configurata, conservare i riferimenti e continuare nella
+stessa esecuzione. La prova d’integrazione usa un endpoint SearXNG reale e
+risposte del modello controllate.
+
+L’Agent ordinario propaga gli errori di iterazione dei subagenti al chiamante.
+Un arresto per limiti di iterazione o output mantiene il task incompleto e una
+cancellazione durante l’iterazione viene riportata come tale.
+Se il modello si ferma dopo un tool, il motore gli restituisce il risultato
+con un’indicazione di ripresa. Il limite dei retry resta effettivo.
+
+L’Agent ordinario stima il contesto anche prima che il provider comunichi
+l’uso dei token. Se il provider segnala un limite di contesto prima di
+restituire un esito, il motore sintetizza la cronologia in blocchi e ritenta
+il passo. L’esito del turno viene salvato prima di pubblicare il completamento.
+
+Gli strumenti Power possono restituire un ID di processo e raccoglierne
+l’esito in una chiamata successiva. Con `bash_input` impostato su **Sempre**
+nel profilo, il modello può inviare dati ed EOF ai comandi avviati in modalità
+interattiva. L’interruzione termina l’albero del comando. Dopo riapertura
+restano consultabili gli esiti salvati nel task.
+
+I subagenti in background restituiscono un ID prima di terminare. Il padre
+può attendere o interrompere il singolo worker. Dopo la raccolta di un esito
+positivo, la conversazione del worker viene salvata nella cartella del task e
+può essere usata in un follow-up sullo stesso ID.
+
+La coda torna ai task in attesa dopo un’integrazione che può cambiare i loro
+prerequisiti. Un batch di correzione può avviarne un altro quando emergono
+nuovi esiti deterministici. La riapertura di un task governato attivo verifica
+la stessa approvazione oppure piano, fonti e configurazione autorizzati.
+L’audit della coda verifica le prove correnti prima di completare l’obiettivo.
+
+La coda include i `requiredChecks` del progetto anche quando il singolo task
+non li elenca. Al riavvio dell’app riprende gli obiettivi governati attivi e
+ricontrolla l’autorizzazione. Per quelli in attesa osserva la revisione di `dev`,
+le attestazioni e la scadenza dei tentativi per i guasti temporanei riconosciuti.
+Lo Stop esplicito mette in pausa l’obiettivo. La preparazione dei servizi legge
+i documenti dalla revisione verificata e condivide l’avvio tra chat concorrenti
+quando i documenti coincidono.
+
+Quando la coda riattiva un task dopo un’attestazione, il pianificatore riceve
+l’ID, il commit e l’esito già verificato per quel prerequisito. Un piano
+incompleto può essere riesaminato quando cambia quel contesto. La coda conserva
+le ricevute dei task già integrati.
+
+Nel pilota isolato con GPT-6.1 Sol, Docker ed Edge, Electron è stato chiuso
+dopo T-12 e riaperto con lo stesso profilo. La coda ha poi integrato T-13 e
+T-14 e ha verificato gli esiti, senza duplicare T-12. [Evidenza locale](../work/turni-live-J1J7L2/evidence.json)
+
+Il requisito permanente è nel [blueprint generale](AIDERDESK-GENERAL-BLUEPRINT.md#responsabilità-tecnica-e-continuità).
+Un secondo pilota, con Z.AI GLM-4.5-Flash, ha completato due task con Docker
+e ripresa automatica dopo un’attestazione registrata da una seconda chat.
+[Evidenza locale](../work/turni-wake-UEaS0m/evidence.json)
+Restano il confronto completo con Codex e la prova su una copia di Edilas.
+Le dipendenze esterne al perimetro rimangono coperte dalle prove di
+sospensione prudente.
+
 ## Coda di lavoro e ripresa delle validazioni
 
 «Avvia il lavoro» e «Riprendi il lavoro» leggono il piano versionato sul ramo di sviluppo e portano avanti i task eseguibili. Se un task richiede Docker, AiderDesk prepara il motore prima dell’esecuzione. «Riprendi le validazioni» recupera dal registro del progetto la prova, la versione e il prossimo passaggio. I comandi funzionano nella chat desktop e nell’invio remoto. [Configurazione e comandi](WORKFLOW-ENVIRONMENT.md#avvio-del-piano-e-ripresa-delle-prove)

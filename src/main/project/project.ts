@@ -73,6 +73,8 @@ export class Project {
 
         await this.extensionManager.dispatchEvent('onProjectStarted', { baseDir: this.baseDir }, this);
         this.eventManager.sendProjectStarted(this.baseDir);
+        await this.tasksLoadingPromise;
+        this.forEachTask((task) => task.restoreGovernedContinuation(), false);
       })();
     }
     return this.startPromise;

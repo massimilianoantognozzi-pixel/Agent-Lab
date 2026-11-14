@@ -93,13 +93,16 @@ import {
   assertRepositoryWorkflowDone,
   readRemoteRepositoryPatch,
   readRepositoryWorkflow,
+  repositoryContinuationRevision,
   runRepositoryWorkflow,
   type WorkflowSkillCatalog,
 } from './repository-workflow';
 import { remoteReasoning, remoteTaskLabel, remoteWorkflowMessages, remoteWorkflowTitle, type RemoteTaskSettings } from './workflow-remote-history';
 import { readDevelopmentFiles, readDevelopmentHead } from './workflow-development';
+import { workflowServiceRetryable } from './workflow-docker';
 import { isGovernedWorkflow, snapshotWorkflowFiles, workflowProjectFor } from './workflow-policy';
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
+import { projectContinuationRevision, readWorkflowValidationRevision } from './workflow-project-run';
 import { readShadcnReferences } from './workflow-shadcn';
 
 import type { z } from 'zod';
@@ -153,6 +156,11 @@ import { CompactionLevel, extractSummary, smartCompactMessages } from '@/agent/c
 export const INTERNAL_TASK_ID = 'internal';
 export const RESPONSE_CHUNK_FLUSH_INTERVAL_MS = 10;
 export const TOOL_INPUT_FLUSH_INTERVAL_MS = 50;
+const WORKFLOW_SHUTDOWN = Symbol('workflow shutdown');
+const governedRetry = (previous = 0) => {
+  const retryCount = Math.min(8, previous + 1);
+  return { retryCount, retryAt: Date.now() + Math.min(300_000, 5000 * 2 ** (retryCount - 1)) };
+};
 
 export const EMPTY_TASK_DATA: TaskData = {
   id: '',
@@ -213,6 +221,9 @@ export class Task {
   private fileWatchHandle: WatchHandle | null = null;
   private fileWatchGeneration = 0;
   private workflowRun?: AbortController;
+  private workflowRunSettled?: Promise<void>;
+  private workflowWakeTimer?: ReturnType<typeof setTimeout>;
+  private workflowWakeGeneration = 0;
   private isCompacting = false;
   private lastSmartCompactionMessageCount = 0;
   private smartCompactionLevel = CompactionLevel.One;
@@ -742,6 +753,9 @@ export class Task {
     }
 
     await this.init(readonly);
+    if (!readonly) {
+      this.restoreGovernedContinuation();
+    }
 
     const mode = this.getCurrentMode();
     return {
@@ -889,6 +903,23 @@ export class Task {
 
   public async close(clearContext = false, cleanupEmptyTask = true) {
     this.stopFileWatching();
+    this.stopGovernedWake();
+    const workflowRunSettled = this.workflowRunSettled;
+    if (workflowRunSettled) {
+      await this.interruptResponse(undefined, !clearContext);
+      await workflowRunSettled;
+    } else {
+      if (this.task.state === DefaultTaskState.InProgress && this.task.startedAt && !isGovernedWorkflow(this.getProjectDir())) {
+        await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
+      }
+      for (const controller of Object.values(this.subagentAbortControllers)) {
+        controller.abort();
+      }
+      await this.agent.stopAndDrainCommands();
+      if (this.initialized) {
+        await this.interruptResponse(undefined, !clearContext);
+      }
+    }
     if (!this.initialized) {
       return;
     }
@@ -901,7 +932,9 @@ export class Task {
     if (clearContext) {
       this.eventManager.sendClearTask(this.project.baseDir, this.taskId, true, true);
     }
-    await this.interruptResponse();
+    if (!clearContext) {
+      await this.contextManager.save().catch((error) => logger.warn('Could not flush task context before closing.', { error }));
+    }
     this.resolveAgentRunPromises();
     this.cleanupChunkBuffers();
 
@@ -1058,7 +1091,7 @@ export class Task {
     return readRemoteRepositoryPatch(policy, this.managedPilotStatePath(), revision);
   }
 
-  public async runManagedDesktopPrompt(prompt: string): Promise<ResponseCompletedData[]> {
+  public async runManagedDesktopPrompt(prompt: string, continuation = false): Promise<ResponseCompletedData[]> {
     if (!isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il progetto non è il pilota governato.');
     }
@@ -1066,13 +1099,21 @@ export class Task {
       this.addLogMessage('warning', 'Il pilota ha già un’operazione in corso.', true);
       return [];
     }
+    this.stopGovernedWake();
+    const generation = this.workflowWakeGeneration;
     const controller = new AbortController();
     this.workflowRun = controller;
+    let settleRun!: () => void;
+    this.workflowRunSettled = new Promise<void>((resolve) => {
+      settleRun = resolve;
+    });
     const promptContext: PromptContext = { id: uuidv4() };
     const request: ContextMessage = { id: promptContext.id, role: 'user', content: prompt, promptContext };
-    this.addUserMessage(request.id, prompt, promptContext);
-    this.addLogMessage('loading', 'Esecuzione del flusso governato…', false, promptContext);
     try {
+      if (!continuation) {
+        this.addUserMessage(request.id, prompt, promptContext);
+      }
+      this.addLogMessage('loading', 'Esecuzione del flusso governato…', false, promptContext);
       const profile = await this.getTaskAgentProfile();
       const providerModel = profile ? profile.provider + '/' + profile.model : '';
       const selectedEffort = this.task.metadata?.reasoningEffort;
@@ -1080,32 +1121,68 @@ export class Task {
         selectedEffort === 'low' || selectedEffort === 'medium' || selectedEffort === 'high' || selectedEffort === 'xhigh' ? selectedEffort : undefined;
       const title = this.task.name === 'Nuova chat' ? remoteWorkflowTitle(prompt) : undefined;
       const name = title || this.task.name || 'Pilota sviluppo governato';
-      await this.saveTask({ name, state: DefaultTaskState.InProgress, completedAt: undefined });
-      await this.addContextMessage(request);
+      const policy = workflowProjectFor(this.getProjectDir());
+      const command = parseProjectWorkflowCommand(prompt);
+      const tracked = policy && (command?.kind === 'start' || /^\/workflow (approve |resume$)/.test(prompt.trim()));
+      const approval = /^\/workflow approve ([a-f0-9]{64})$/.exec(prompt.trim());
+      const saved = tracked && !command ? await readRepositoryWorkflow(this.managedPilotStatePath()) : undefined;
+      const approvedRevision =
+        saved && 'revision' in saved && !saved.plan.questions.length && (approval ? saved.revision === approval[1] : saved.phase === 'approved')
+          ? saved.revision
+          : undefined;
+      const authorizedProfile = policy && profile?.provider === policy.provider && profile.model === policy.model;
+      const priorGoal = this.governedContinuation();
+      const expectedApproval = continuation ? (priorGoal?.approval ?? approvedRevision) : approvedRevision;
+      const goal =
+        tracked && authorizedProfile && (command || approvedRevision)
+          ? {
+              kind: command ? 'queue' : 'task',
+              state: 'active',
+              ...(command
+                ? {
+                    revision: continuation ? priorGoal?.revision : await repositoryContinuationRevision(policy, controller.signal),
+                    ...(continuation ? { observedHead: priorGoal?.observedHead, observedValidation: priorGoal?.observedValidation } : {}),
+                  }
+                : {}),
+              ...(!command ? { approval: expectedApproval } : {}),
+              ...(continuation && priorGoal?.retryCount ? { retryCount: priorGoal.retryCount } : {}),
+            }
+          : undefined;
+      await this.saveTask({
+        name,
+        state: DefaultTaskState.InProgress,
+        completedAt: undefined,
+        ...(goal
+          ? { metadata: { ...this.task.metadata, governedContinuation: goal } }
+          : priorGoal?.state === 'active' && !continuation && !command
+            ? { metadata: { ...this.task.metadata, governedContinuation: { ...priorGoal, state: 'waiting' } } }
+            : {}),
+      });
+      if (!continuation) {
+        await this.addContextMessage(request);
+      }
       const statePath = this.managedPilotStatePath();
       const generate = async (_phase: string, instructions: string, input: string) =>
         this.agent.generateText(providerModel, instructions, input, this.getProjectDir(), [], false, controller.signal, uuidv4(), true, reasoning);
-      const policy = workflowProjectFor(this.getProjectDir());
-      const command = parseProjectWorkflowCommand(prompt);
       if (policy && (!command || command.kind === 'start') && (!profile || profile.provider !== policy.provider || profile.model !== policy.model)) {
         throw new Error('Il task deve usare il provider e il modello autorizzati nel profilo del progetto.');
       }
       const startup = projectStartupFor(this.getProjectDir(), prompt);
       if (startup) {
-        const readDocuments = policy
-          ? async () => {
-              const sources = { ...policy, context: [], editable: [] };
-              return sources.branches
-                ? readDevelopmentFiles(sources, await readDevelopmentHead(sources))
-                : snapshotWorkflowFiles(sources);
+        let documents;
+        if (policy) {
+          const sources = { ...policy, context: [], editable: [] };
+          if (policy.branches) {
+            const head = await readDevelopmentHead(policy, controller.signal);
+            if (goal?.revision && (await projectContinuationRevision(policy, head, controller.signal)) !== goal.revision) {
+              throw new Error('Le fonti autorizzate sono cambiate prima di preparare l’ambiente.');
             }
-          : undefined;
-        await startProjectEnvironment(
-          startup,
-          controller.signal,
-          (message) => this.addLogMessage('loading', message, false, promptContext),
-          readDocuments,
-        );
+            documents = await readDevelopmentFiles(sources, head, controller.signal);
+          } else {
+            documents = await snapshotWorkflowFiles(sources);
+          }
+        }
+        await startProjectEnvironment(startup, controller.signal, (message) => this.addLogMessage('loading', message, false, promptContext), documents);
       }
       const result = policy
         ? await runRepositoryWorkflow({
@@ -1114,6 +1191,10 @@ export class Task {
             prompt,
             signal: controller.signal,
             generate,
+            continueRecovery: true,
+            ...(goal?.kind === 'queue' ? { expectedContinuationRevision: goal.revision } : {}),
+            ...(expectedApproval ? { expectedApprovedRevision: expectedApproval } : {}),
+            search: profile ? this.agent.createTechnicalSearch(this, profile, controller.signal) : undefined,
             skills: () => this.workflowSkillCatalog(),
             designCatalog: (items) => readShadcnReferences(items, controller.signal),
             onProgress: (message) => this.addLogMessage('loading', message, false, promptContext),
@@ -1129,10 +1210,28 @@ export class Task {
           });
       const state =
         result.phase === 'done' ? DefaultTaskState.Done : result.phase === 'plan' ? DefaultTaskState.ReadyForImplementation : DefaultTaskState.ReadyForReview;
+      const objectiveComplete = result.phase === 'done' || ('objectiveComplete' in result && result.objectiveComplete);
+      if (!objectiveComplete) {
+        controller.signal.throwIfAborted();
+      }
       await this.saveTask({
         name: this.task.name || 'Pilota sviluppo governato',
         state,
         completedAt: state === DefaultTaskState.Done ? new Date().toISOString() : undefined,
+        ...(goal
+          ? {
+              metadata: {
+                ...this.task.metadata,
+                governedContinuation: {
+                  ...goal,
+                  state: objectiveComplete ? 'complete' : 'waiting',
+                  ...('observedHead' in result && result.observedHead ? { observedHead: result.observedHead } : {}),
+                  ...('observedValidation' in result && result.observedValidation ? { observedValidation: result.observedValidation } : {}),
+                  ...(!objectiveComplete && 'retryable' in result && result.retryable ? governedRetry(priorGoal?.retryCount) : {}),
+                },
+              },
+            }
+          : {}),
       });
       const response: ContextMessage = {
         id: uuidv4(),
@@ -1146,11 +1245,35 @@ export class Task {
       if (result.phase === 'done') {
         await this.sendUpdatedFilesUpdated();
       }
+      if (goal && !objectiveComplete) {
+        controller.signal.throwIfAborted();
+      }
     } catch (error) {
-      await this.saveTask({ state: DefaultTaskState.Interrupted, completedAt: undefined });
+      const goal = this.governedContinuation();
+      await this.saveTask({
+        state: DefaultTaskState.Interrupted,
+        completedAt: undefined,
+        ...(goal && (goal.state === 'active' || (goal.state === 'waiting' && controller.signal.aborted))
+          ? {
+              metadata: {
+                ...this.task.metadata,
+                governedContinuation: {
+                  ...goal,
+                  state: controller.signal.aborted ? (controller.signal.reason === WORKFLOW_SHUTDOWN ? 'active' : 'paused') : 'waiting',
+                  ...(!controller.signal.aborted && workflowServiceRetryable(error) ? governedRetry(goal.retryCount) : {}),
+                },
+              },
+            }
+          : {}),
+      });
       this.addLogMessage('error', error instanceof Error ? error.message : 'Flusso del pilota interrotto.', true, promptContext);
     } finally {
       this.workflowRun = undefined;
+      this.workflowRunSettled = undefined;
+      settleRun();
+      if (generation === this.workflowWakeGeneration) {
+        this.scheduleGovernedWake();
+      }
       this.addLogMessage('loading', undefined, true, promptContext);
     }
     return [];
@@ -1508,6 +1631,13 @@ export class Task {
         this.sendAddMessage(message.role, message.content, false);
       });
     }
+    try {
+      await this.contextManager.save();
+    } catch (error) {
+      this.resolveAgentRunPromises();
+      await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString() });
+      throw error;
+    }
 
     void this.sendRequestContextInfo();
     void this.sendTaskGitStatusUpdated();
@@ -1706,6 +1836,7 @@ export class Task {
     systemPrompt?: string,
     abortController?: AbortController,
     promptContext?: PromptContext,
+    takeSteering?: () => string[],
   ): Promise<ContextMessage[]> {
     profile = {
       ...profile,
@@ -1760,6 +1891,9 @@ export class Task {
         systemPrompt,
         false,
         abortController?.signal,
+        undefined,
+        undefined,
+        takeSteering,
       );
       const subagentFinishedExtensionResult = await this.extensionManager.dispatchEvent(
         'onSubagentFinished',
@@ -3279,9 +3413,21 @@ export class Task {
     await this.contextManager.loadMessages(messages);
   }
 
-  public async interruptResponse(interruptId?: string) {
+  public async interruptResponse(interruptId?: string, preserveGovernedGoal = false) {
     if (this.workflowRun) {
-      this.workflowRun.abort();
+      if (preserveGovernedGoal) {
+        this.workflowRun.abort(WORKFLOW_SHUTDOWN);
+      } else {
+        this.workflowRun.abort();
+      }
+      return;
+    }
+    const goal = this.governedContinuation();
+    if (goal && !interruptId && workflowProjectFor(this.getProjectDir())) {
+      if (!preserveGovernedGoal && (goal.state === 'active' || goal.state === 'waiting')) {
+        this.stopGovernedWake();
+        await this.saveTask({ metadata: { ...this.task.metadata, governedContinuation: { ...goal, state: 'paused' } } });
+      }
       return;
     }
     const extensionResult = await this.extensionManager.dispatchEvent('onInterrupted', { interruptId }, this.project, this);
@@ -3643,11 +3789,43 @@ export class Task {
     }
   }
 
-  public async resumeTask() {
+  public async resumeTask(wakeGeneration?: number) {
     logger.info('Resuming task:', {
       baseDir: this.project.baseDir,
       taskId: this.taskId,
     });
+
+    const policy = workflowProjectFor(this.getProjectDir());
+    if (policy) {
+      const wakeCancelled = () =>
+        wakeGeneration !== undefined && (wakeGeneration !== this.workflowWakeGeneration || this.isPromptRunning() || this.hasQueuedPrompts());
+      const goal = this.governedContinuation();
+      const status = !goal || goal.approval ? await readRepositoryWorkflow(this.managedPilotStatePath()) : undefined;
+      const queueChanged = goal?.kind === 'queue' && (!goal.revision || (await repositoryContinuationRevision(policy)) !== goal.revision);
+      if (wakeCancelled()) {
+        return;
+      }
+      if (queueChanged) {
+        await this.saveTask({
+          metadata: { ...this.task.metadata, governedContinuation: { ...goal, state: 'waiting', observedHead: undefined, retryAt: undefined } },
+        });
+        return;
+      }
+      if ((goal?.approval && (!status || !('revision' in status) || status.revision !== goal.approval)) || (!goal && status?.phase === 'empty')) {
+        if (goal) {
+          await this.saveTask({ metadata: { ...this.task.metadata, governedContinuation: { ...goal, state: 'waiting', retryAt: undefined } } });
+        }
+        return;
+      }
+      const prompt =
+        goal?.kind === 'queue'
+          ? 'Riprendi il lavoro'
+          : goal?.approval && status?.phase === 'plan' && status.revision === goal.approval
+            ? '/workflow approve ' + goal.approval
+            : '/workflow resume';
+      await this.runManagedDesktopPrompt(prompt, true);
+      return;
+    }
 
     const mode = this.getCurrentMode();
     const contextMessages = await this.contextManager.getContextMessages();
@@ -3688,6 +3866,106 @@ export class Task {
         void this.runPrompt('Continue', mode, false);
       }
     }
+  }
+
+  private stopGovernedWake() {
+    this.workflowWakeGeneration++;
+    clearTimeout(this.workflowWakeTimer);
+    this.workflowWakeTimer = undefined;
+  }
+
+  public restoreGovernedContinuation() {
+    this.scheduleGovernedWake(0);
+  }
+
+  private scheduleGovernedWake(delay = 5000) {
+    const goal = this.governedContinuation();
+    if (
+      this.workflowWakeTimer ||
+      !goal ||
+      (goal.state !== 'active' && !(goal.state === 'waiting' && (goal.retryAt || (goal.kind === 'queue' && goal.observedHead))))
+    ) {
+      return;
+    }
+    const generation = this.workflowWakeGeneration;
+    this.workflowWakeTimer = setTimeout(() => {
+      this.workflowWakeTimer = undefined;
+      void this.wakeGovernedWork(generation).catch((error) => logger.warn('Ripresa del workflow non riuscita.', { error }));
+    }, delay);
+    this.workflowWakeTimer.unref();
+  }
+
+  private async wakeGovernedWork(generation: number) {
+    if (generation !== this.workflowWakeGeneration) {
+      return;
+    }
+    const policy = workflowProjectFor(this.getProjectDir());
+    if (!policy) {
+      return;
+    }
+    try {
+      const goal = this.governedContinuation();
+      if (!goal || this.isPromptRunning() || this.hasQueuedPrompts()) {
+        return;
+      }
+      const eligible =
+        goal.state === 'active' ||
+        (goal.state === 'waiting' && goal.retryAt !== undefined && Date.now() >= goal.retryAt) ||
+        (goal.kind === 'queue' &&
+          goal.state === 'waiting' &&
+          goal.observedHead &&
+          ((await readDevelopmentHead(policy)) !== goal.observedHead ||
+            (goal.observedValidation && (await readWorkflowValidationRevision(policy, this.managedPilotStatePath())) !== goal.observedValidation)));
+      if (eligible && generation === this.workflowWakeGeneration && !this.isPromptRunning() && !this.hasQueuedPrompts()) {
+        await this.resumeTask(generation);
+      }
+    } finally {
+      if (generation === this.workflowWakeGeneration) {
+        this.scheduleGovernedWake();
+      }
+    }
+  }
+
+  private governedContinuation():
+    | {
+        kind: 'queue' | 'task';
+        state: string;
+        approval?: string;
+        revision?: string;
+        observedHead?: string;
+        observedValidation?: string;
+        retryAt?: number;
+        retryCount?: number;
+      }
+    | undefined {
+    const goal = this.task.metadata?.governedContinuation;
+    if (
+      goal &&
+      typeof goal === 'object' &&
+      'kind' in goal &&
+      (goal.kind === 'queue' || goal.kind === 'task') &&
+      'state' in goal &&
+      typeof goal.state === 'string'
+    ) {
+      const approval = 'approval' in goal && typeof goal.approval === 'string' && /^[a-f0-9]{64}$/.test(goal.approval) ? goal.approval : undefined;
+      const revision = 'revision' in goal && typeof goal.revision === 'string' && /^[a-f0-9]{64}$/.test(goal.revision) ? goal.revision : undefined;
+      const observedHead =
+        'observedHead' in goal && typeof goal.observedHead === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(goal.observedHead)
+          ? goal.observedHead
+          : undefined;
+      const observedValidation =
+        'observedValidation' in goal && typeof goal.observedValidation === 'string' && /^[a-f0-9]{64}$/.test(goal.observedValidation)
+          ? goal.observedValidation
+          : undefined;
+      const retryAt =
+        'retryAt' in goal && typeof goal.retryAt === 'number' && Number.isSafeInteger(goal.retryAt) && goal.retryAt > 0 ? goal.retryAt : undefined;
+      const retryCount =
+        'retryCount' in goal && typeof goal.retryCount === 'number' && Number.isInteger(goal.retryCount) && goal.retryCount >= 0 && goal.retryCount <= 8
+          ? goal.retryCount
+          : undefined;
+      return { kind: goal.kind, state: goal.state, approval, revision, observedHead, observedValidation, retryAt, retryCount };
+    }
+    return undefined;
   }
 
   private tryCustomCommand(prompt: string, mode: Mode): boolean {
@@ -3866,6 +4144,7 @@ export class Task {
     abortSignal?: AbortSignal,
     waitForAgentCompletion = true,
     loadingMessage = 'Compacting conversation...',
+    retainInitialUserMessage = true,
   ): Promise<void> {
     // Get profile if not provided
     if (!profile) {
@@ -3930,7 +4209,9 @@ export class Task {
           const summaryMessage = agentMessages[agentMessages.length - 1];
           summaryMessage.content = extractSummary(extractTextContent(summaryMessage.content));
 
-          const finalMessages: ContextMessage[] = [userMessage, ...skillMessages, summaryMessage];
+          const finalMessages: ContextMessage[] = retainInitialUserMessage
+            ? [userMessage, ...skillMessages, summaryMessage]
+            : [{ ...userMessage, content: 'Continue the task described in the conversation summary.' }, ...skillMessages, summaryMessage];
 
           this.contextManager.setContextMessages(finalMessages);
 
@@ -4290,6 +4571,32 @@ export class Task {
 
   public async writeTodoFile(data: { initialUserPrompt: string; items: TodoItem[] }): Promise<void> {
     await atomicWriteJsonFile(this.getTodoFilePath(), data);
+  }
+
+  public async saveWorkerHistory(workerId: string, profileId: string, messages: ContextMessage[]): Promise<void> {
+    await atomicWriteJsonFile(this.workerHistoryPath(workerId), { profileId, messages });
+  }
+
+  public async readWorkerHistory(workerId: string): Promise<{ profileId: string; messages: ContextMessage[] } | undefined> {
+    try {
+      const history = JSON.parse(await fs.readFile(this.workerHistoryPath(workerId), 'utf8'));
+      if (typeof history?.profileId === 'string' && Array.isArray(history.messages)) {
+        return history;
+      }
+      throw new Error('Invalid subagent history.');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+      return undefined;
+    }
+  }
+
+  private workerHistoryPath(workerId: string): string {
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(workerId)) {
+      throw new Error('Invalid subagent ID.');
+    }
+    return path.join(path.dirname(this.taskDataPath), 'workers', `${workerId}.json`);
   }
 
   public async getTodos(): Promise<TodoItem[]> {

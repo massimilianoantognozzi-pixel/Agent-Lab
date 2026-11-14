@@ -41,7 +41,11 @@ const project = z.strictObject({
   context: z.array(file).max(64),
   editable: z.array(file).min(1).max(64),
   checks: z.array(check).min(1).max(20),
+  requiredChecks: z.array(identifier).max(20).optional(),
   workPlan: file.optional(),
+  researchAfterFailures: z.number().int().min(1).max(20).optional(),
+  evidenceExcludes: z.record(z.string().regex(/^[A-Z0-9]+(?:-[A-Z0-9]+)*$/), z.array(file)).optional(),
+  legacyReceipts: z.record(z.string().regex(/^[A-Z0-9]+(?:-[A-Z0-9]+)*$/), z.string().regex(/^[a-f0-9]{64}$/)).optional(),
   branches: z
     .strictObject({ main: branch, development: branch })
     .refine(({ main, development }) => main.toLowerCase() !== development.toLowerCase(), 'Indica due rami distinti.')
@@ -49,9 +53,18 @@ const project = z.strictObject({
 });
 const configuration = z.strictObject({ version: z.literal(1), projects: z.array(project).min(1).max(20) });
 
-export type WorkflowProject = z.infer<typeof project>;
+export type WorkflowProject = z.infer<typeof project> & { optionalInputs?: string[] };
 export type WorkflowCheck = z.infer<typeof check>;
 export type WorkflowFiles = Record<string, string | null>;
+
+export const requiredWorkflowChecks = (policy: WorkflowProject) => {
+  const ids = new Set(policy.requiredChecks ?? []);
+  const checks = policy.checks.filter(({ id }) => ids.has(id));
+  if (ids.size !== (policy.requiredChecks?.length ?? 0) || checks.length !== ids.size) {
+    throw new Error('I controlli obbligatori devono avere ID distinti e dichiarati nella configurazione.');
+  }
+  return checks;
+};
 
 const key = (value: string) => (process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value));
 const reserved = /^(?:\.git|\.aider-desk|\.agent-lab|node_modules|\.env(?:\..*)?|\.npmrc|\.netrc|credentials(?:\..*)?|.*\.(?:pem|pfx|key|p12))$/i;
@@ -112,6 +125,13 @@ export const listWorkflowProjects = (): WorkflowProject[] => {
     for (const entry of allFiles) {
       validateWorkflowPath(entry);
     }
+    for (const paths of Object.values(item.evidenceExcludes ?? {})) {
+      paths.forEach(validateWorkflowPath);
+    }
+    const receipts = Object.values(item.legacyReceipts ?? {});
+    if (new Set(receipts).size !== receipts.length) {
+      throw new Error('Una ricevuta precedente è associata a più task.');
+    }
     const uniqueFiles = [...new Set(allFiles)];
     if (new Set(uniqueFiles.map((value) => value.toLowerCase())).size !== uniqueFiles.length) {
       throw new Error('Percorsi equivalenti nel workflow.');
@@ -123,6 +143,7 @@ export const listWorkflowProjects = (): WorkflowProject[] => {
     if (new Set(item.checks.map((entry) => entry.id)).size !== item.checks.length) {
       throw new Error('Controllo workflow duplicato.');
     }
+    requiredWorkflowChecks(item);
     for (const entry of item.checks) {
       if ('file' in entry && !allFiles.includes(validateWorkflowPath(entry.file))) {
         throw new Error('Un controllo riferisce un file fuori scope.');
@@ -159,7 +180,15 @@ export const assertWorkflowText = (content: string) => {
 };
 
 export const workflowFileNames = (policy: WorkflowProject) =>
-  [...new Set([...policy.references.map((ref) => ref.path), ...(policy.workPlan ? [policy.workPlan] : []), ...policy.context, ...policy.editable])]
+  [
+    ...new Set([
+      ...policy.references.map((ref) => ref.path),
+      ...(policy.workPlan ? [policy.workPlan] : []),
+      ...policy.context,
+      ...policy.editable,
+      ...(policy.optionalInputs ?? []),
+    ]),
+  ]
     .sort()
     .map(validateWorkflowPath);
 

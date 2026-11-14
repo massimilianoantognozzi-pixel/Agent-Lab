@@ -1126,10 +1126,12 @@ export class ExtensionManager {
     return result;
   }
 
-  getTools(task: Task, mode: string, profile: AgentProfile): RegisteredTool[] {
+  getTools(task: Task, mode: string, profile: AgentProfile, globalExtensionId?: string): RegisteredTool[] {
     const collectedTools: RegisteredTool[] = [];
     const allExtensions = this.registry.getExtensions(task.getProjectDir());
-    const extensions = this.filterEnabledExtensions(allExtensions);
+    const extensions = this.filterEnabledExtensions(allExtensions).filter(
+      (extension) => !globalExtensionId || (!extension.projectDir && extension.initialized && extension.id === globalExtensionId),
+    );
     const disabledExtensionTools = profile.disabledExtensionTools ?? [];
 
     for (const loaded of extensions) {
@@ -1197,9 +1199,10 @@ export class ExtensionManager {
     allTools: ToolSet,
     approvalManager: ApprovalManager,
     abortSignal?: AbortSignal,
+    globalExtensionId?: string,
   ): ToolSet {
     const toolSet: ToolSet = {};
-    const registeredTools = this.getTools(task, mode, profile);
+    const registeredTools = this.getTools(task, mode, profile, globalExtensionId);
 
     for (const { extensionId, extensionName, tool } of registeredTools) {
       const toolId = tool.name;

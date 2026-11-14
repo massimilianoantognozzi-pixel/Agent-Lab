@@ -57,6 +57,7 @@ vi.mock('@/agent', () => ({
   Agent: class {
     run = vi.fn();
     dispose = vi.fn();
+    stopAndDrainCommands = vi.fn().mockResolvedValue(undefined);
   },
   McpManager: class {},
   AgentProfileManager: class {},
@@ -558,6 +559,46 @@ describe('Task - findSkillActivationMessages', () => {
   });
 
   describe('resumeTask', () => {
+    it.each(['development head advances', 'validation changes', 'prerequisites stay unchanged'])('wakes a waiting authorized queue when %s', async (event) => {
+      const workflow = await import('../workflow-policy');
+      const repository = await import('../repository-workflow');
+      const development = await import('../workflow-development');
+      const validations = await import('../workflow-project-run');
+      const revision = 'a'.repeat(64);
+      const observedHead = 'b'.repeat(40);
+      const observedValidation = 'c'.repeat(64);
+      const spies = [
+        vi.spyOn(workflow, 'workflowProjectFor').mockReturnValue({ id: 'fixture' } as never),
+        vi.spyOn(repository, 'repositoryContinuationRevision').mockResolvedValue(revision),
+        vi.spyOn(development, 'readDevelopmentHead').mockResolvedValue(event === 'development head advances' ? 'd'.repeat(40) : observedHead),
+        vi.spyOn(validations, 'readWorkflowValidationRevision').mockResolvedValue(event === 'validation changes' ? 'e'.repeat(64) : observedValidation),
+        vi.spyOn(task, 'init').mockResolvedValue(),
+        vi.spyOn(task, 'isPromptRunning').mockReturnValue(false),
+        vi.spyOn(task, 'getContextFiles').mockResolvedValue([]),
+        vi.spyOn(task, 'getTodos').mockResolvedValue([]),
+        vi.spyOn(task as unknown as { managedPilotStatePath(): string }, 'managedPilotStatePath').mockReturnValue('/workflow/chat.json'),
+      ];
+      const run = vi.spyOn(task, 'runManagedDesktopPrompt').mockResolvedValue([]);
+      task.task.metadata = { governedContinuation: { kind: 'queue', state: 'waiting', revision, observedHead, observedValidation } };
+      try {
+        await task.load(true);
+        expect(run).not.toHaveBeenCalled();
+        await task.load();
+        await vi.waitFor(() => expect(development.readDevelopmentHead).toHaveBeenCalledOnce());
+        if (event === 'prerequisites stay unchanged') {
+          expect(run).not.toHaveBeenCalled();
+        } else {
+          await vi.waitFor(() => expect(run).toHaveBeenCalledExactlyOnceWith('Riprendi il lavoro', true));
+        }
+      } finally {
+        await task.close();
+        for (const spy of spies) {
+          spy.mockRestore();
+        }
+        run.mockRestore();
+      }
+    });
+
     const getContextManager = () => {
       return task as unknown as {
         contextManager: {
@@ -566,6 +607,102 @@ describe('Task - findSkillActivationMessages', () => {
         };
       };
     };
+
+    it.each(['active', 'paused', 'waiting', 'complete'])('reopens only an active persisted governed queue when the task is loaded (%s)', async (state) => {
+      const workflow = await import('../workflow-policy');
+      const repository = await import('../repository-workflow');
+      const projectPolicy = vi.spyOn(workflow, 'workflowProjectFor').mockReturnValue({ id: 'fixture' } as never);
+      const revision = 'a'.repeat(64);
+      const planRevision = vi.spyOn(repository, 'repositoryContinuationRevision').mockResolvedValue(revision);
+      const run = vi.spyOn(task, 'runManagedDesktopPrompt').mockResolvedValue([]);
+      const init = vi.spyOn(task, 'init').mockResolvedValue();
+      vi.spyOn(task, 'isPromptRunning').mockReturnValue(false);
+      vi.spyOn(task, 'getContextFiles').mockResolvedValue([]);
+      vi.spyOn(task, 'getTodos').mockResolvedValue([]);
+      task.task.metadata = { governedContinuation: { kind: 'queue', state, revision } };
+      try {
+        await task.load(true);
+        expect(run).not.toHaveBeenCalled();
+        await task.load();
+        await vi.waitFor(() => {
+          if (state === 'active') {
+            expect(run).toHaveBeenCalledExactlyOnceWith('Riprendi il lavoro', true);
+          }
+        });
+        if (state === 'active') {
+          expect(run).toHaveBeenCalledExactlyOnceWith('Riprendi il lavoro', true);
+        } else {
+          expect(run).not.toHaveBeenCalled();
+        }
+      } finally {
+        init.mockRestore();
+        projectPolicy.mockRestore();
+        planRevision.mockRestore();
+      }
+    });
+
+    it('pauses a waiting governed queue on explicit interruption and preserves it on close', async () => {
+      const workflow = await import('../workflow-policy');
+      const policy = vi.spyOn(workflow, 'workflowProjectFor').mockReturnValue({ id: 'fixture' } as never);
+      const save = vi.spyOn(task, 'saveTask').mockImplementation(async (updates) => Object.assign(task.task, updates));
+      const queue = { kind: 'queue', state: 'waiting', revision: 'a'.repeat(64), observedHead: 'b'.repeat(40) };
+      task.task.metadata = { governedContinuation: queue };
+      try {
+        await task.interruptResponse(undefined, true);
+        expect(save).not.toHaveBeenCalled();
+        await task.interruptResponse();
+        expect(task.task.metadata.governedContinuation).toEqual({ ...queue, state: 'paused' });
+      } finally {
+        policy.mockRestore();
+        save.mockRestore();
+      }
+    });
+
+    it('reopens an approved task when the saved service retry becomes due', async () => {
+      const workflow = await import('../workflow-policy');
+      const repository = await import('../repository-workflow');
+      const approval = 'a'.repeat(64);
+      const spies = [
+        vi.spyOn(workflow, 'workflowProjectFor').mockReturnValue({ id: 'fixture' } as never),
+        vi.spyOn(repository, 'readRepositoryWorkflow').mockResolvedValue({ phase: 'approved', revision: approval } as never),
+        vi.spyOn(task as unknown as { managedPilotStatePath(): string }, 'managedPilotStatePath').mockReturnValue('/workflow/chat.json'),
+        vi.spyOn(task, 'init').mockResolvedValue(),
+        vi.spyOn(task, 'isPromptRunning').mockReturnValue(false),
+        vi.spyOn(task, 'getContextFiles').mockResolvedValue([]),
+        vi.spyOn(task, 'getTodos').mockResolvedValue([]),
+      ];
+      const run = vi.spyOn(task, 'runManagedDesktopPrompt').mockResolvedValue([]);
+      task.task.metadata = { governedContinuation: { kind: 'task', state: 'waiting', approval, retryAt: Date.now() - 1 } };
+      try {
+        await task.load();
+        await vi.waitFor(() => expect(run).toHaveBeenCalledExactlyOnceWith('/workflow resume', true));
+      } finally {
+        await task.close();
+        spies.forEach((spy) => spy.mockRestore());
+        run.mockRestore();
+      }
+    });
+
+    it('waits for a remote governed run to persist even before the task window has initialized', async () => {
+      const running = task as unknown as { workflowRunSettled: Promise<void>; workflowRun: AbortController };
+      const controller = new AbortController();
+      running.workflowRun = controller;
+      let settle!: () => void;
+      running.workflowRunSettled = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      const closed = vi.fn();
+      const closing = task.close().then(closed);
+      try {
+        expect(controller.signal.aborted).toBe(true);
+        await Promise.resolve();
+        expect(closed).not.toHaveBeenCalled();
+      } finally {
+        settle();
+        await closing;
+      }
+      expect(closed).toHaveBeenCalledOnce();
+    });
 
     it('executes a saved file-based custom command and removes the original prompt', async () => {
       mockCustomCommandManager.getCommand.mockReturnValue({ name: 'commit' });

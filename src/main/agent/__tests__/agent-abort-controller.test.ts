@@ -10,11 +10,19 @@
  * how many controllers were constructed by agent code.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { DefaultTaskState, type AgentProfile } from '@common/types';
+import { DefaultTaskState, ToolApprovalState, type AgentProfile } from '@common/types';
+import { TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
+import { z } from 'zod';
+import { APICallError } from 'ai';
 
 import type { Task } from '@/task';
 
 vi.mock('@/logger');
+const { generateTextMock } = vi.hoisted(() => ({ generateTextMock: vi.fn() }));
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: generateTextMock,
+}));
 
 const { Agent: AgentClass } = await import('../agent');
 type Agent = InstanceType<typeof AgentClass>;
@@ -43,7 +51,7 @@ const createAgent = (modelError?: Error) => {
 
   const agent = new AgentClass(
     ...([
-      { getSettings: vi.fn(() => ({})) },
+      { getSettings: vi.fn(() => ({})), getUserId: vi.fn(() => 'test-user') },
       { getProjectProfiles: vi.fn(() => ({})) },
       {},
       { getMergedServers: vi.fn(() => ({})) },
@@ -151,6 +159,112 @@ describe('Agent.runAgent abort controller registration', () => {
 });
 
 describe('Agent.runAgent error propagation', () => {
+  it.each([
+    ['maximum context length', undefined],
+    ['Bad Request', JSON.stringify({ error: { code: '1261', message: 'Prompt too long' } })],
+    ['Bad Request', JSON.stringify({ error: { code: '1261', message: 'Prompt exceeds max length' } })],
+  ])('compacts after provider context overflow (%s) and retries the failed step once', async (message, responseBody) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = createTask();
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    const compact = vi.fn(async () => true);
+    agent['compactMessagesIfNeeded'] = compact;
+    agent['processStep'] = vi.fn(async () => [{ id: 'done', role: 'assistant' as const, content: 'verified' }]);
+    generateTextMock.mockReset();
+    generateTextMock.mockRejectedValueOnce(new APICallError({ message, responseBody, url: 'https://example.invalid', requestBodyValues: {}, statusCode: 400 }));
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) => onStepEnd({ finishReason: 'stop' }));
+    try {
+      await expect(agent.runAgent(task, { ...profile, isSubagent: true, maxIterations: 1 }, 'prompt', 'subagent')).resolves.toBeDefined();
+      expect(generateTextMock).toHaveBeenCalledTimes(2);
+      expect(compact.mock.calls.map((args) => (args as unknown[]).at(-1))).toEqual([false, true]);
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+  it('bounds repeated tool-only stops and returns an incomplete outcome to the caller', async () => {
+    const { agent, extensionManager } = createAgent(new Error('model fixture'));
+    const task = createTask();
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    agent['processStep'] = vi.fn(async () => [{ id: 'tool-result', role: 'tool' as const, content: [] }]);
+    generateTextMock.mockClear();
+    generateTextMock.mockImplementation(async ({ onStepEnd }) => onStepEnd({ finishReason: 'stop' }));
+    try {
+      await expect(agent.runAgent(task, { ...profile, isSubagent: true, maxIterations: 6 }, 'prompt', 'subagent')).rejects.toThrow(
+        'Il modello si è fermato dopo l’esecuzione di uno strumento',
+      );
+      expect(generateTextMock).toHaveBeenCalledTimes(4);
+      expect(generateTextMock.mock.calls.slice(1).map(([call]) => call.instructions)).toEqual(
+        Array.from({ length: 3 }, () => expect.stringContaining('Usa il risultato dello strumento')),
+      );
+      expect(extensionManager.dispatchEvent).not.toHaveBeenCalledWith('onAgentFinished', expect.anything(), expect.anything(), expect.anything());
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it.each(['step', 'length', 'content-filter', 'iterations', 'abort'] as const)('reports %s termination accurately for a subagent', async (termination) => {
+    const error = new Error('step processing failed');
+    const { agent, extensionManager } = createAgent(new Error('model fixture'));
+    const task = createTask();
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    const controller = new AbortController();
+    agent['processStep'] = vi.fn(async () => {
+      if (termination === 'step') {
+        throw error;
+      }
+      return [];
+    });
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) => {
+      const finishReason = termination === 'iterations' ? 'tool-calls' : termination === 'step' || termination === 'abort' ? 'stop' : termination;
+      await onStepEnd({ finishReason });
+      if (termination === 'abort') {
+        controller.abort();
+      }
+    });
+
+    const run = agent.runAgent(
+      task,
+      { ...profile, isSubagent: true, maxIterations: 1 },
+      'prompt',
+      'subagent',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      controller.signal,
+    );
+    if (termination === 'abort') {
+      await expect(run).resolves.toBeDefined();
+      expect(extensionManager.dispatchEvent).toHaveBeenCalledWith(
+        'onAgentFinished',
+        expect.objectContaining({ aborted: true }),
+        expect.anything(),
+        expect.anything(),
+      );
+    } else {
+      const failures = {
+        step: 'step processing failed',
+        length: 'limite di output',
+        'content-filter': 'filtrato la risposta',
+        iterations: 'Limite di iterazioni',
+      };
+      await expect(run).rejects.toThrow(failures[termination]);
+      expect(extensionManager.dispatchEvent).not.toHaveBeenCalledWith('onAgentFinished', expect.anything(), expect.anything(), expect.anything());
+    }
+    expect(task.updateTask).not.toHaveBeenCalled();
+  });
   it('propagates subagent errors instead of returning incomplete messages', async () => {
     const error = new Error('model failure');
     const { agent } = createAgent(error);
@@ -169,4 +283,28 @@ describe('Agent.runAgent error propagation', () => {
     expect(task.updateTask).toHaveBeenCalledWith({ state: DefaultTaskState.Interrupted });
     expect(agent.isRunning()).toBe(false);
   });
+});
+
+it('uses the approved global search extension through the same adapter for different model providers', async () => {
+  const { agent } = createAgent();
+  const task = createTask();
+  const manager = agent['extensionManager'];
+  manager.isInitialized = vi.fn(() => true);
+  const execute = vi.fn(async () => '## Search Results: fixture');
+  manager.createExtensionToolset = vi.fn(() => ({ search: { inputSchema: z.object({ query: z.string() }), execute } }));
+  expect(agent.createTechnicalSearch(task, profile)).toBeUndefined();
+  const key = 'searxng-search' + TOOL_GROUP_NAME_SEPARATOR + 'search';
+  const approved = { ...profile, toolApprovals: { [key]: ToolApprovalState.Always } };
+  for (const provider of ['test-provider', 'local-model']) {
+    await expect(agent.createTechnicalSearch(task, { ...approved, provider })?.('TypeScript syntax diagnostics')).resolves.toContain('Search Results');
+  }
+  expect(manager.createExtensionToolset).toHaveBeenCalledWith(task, 'agent', expect.anything(), {}, expect.anything(), undefined, 'searxng-search');
+  expect(execute).toHaveBeenCalledTimes(2);
+  expect(agent.createTechnicalSearch(task, { ...approved, toolApprovals: { [key]: ToolApprovalState.Ask } })).toBeUndefined();
+  vi.stubEnv('AIDER_DESK_LAB_MODE', 'true');
+  try {
+    expect(agent.createTechnicalSearch(task, approved)).toBeUndefined();
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });

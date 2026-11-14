@@ -29,13 +29,15 @@ export class ProgressWindow {
     });
 
     this.window.on('ready-to-show', () => {
-      this.window.show();
+      if (!this.window.isDestroyed()) {
+        this.window.show();
+      }
       this.resolveReady();
     });
 
     this.window.webContents.on('did-finish-load', () => {
       if (options.splashImage) {
-        this.window.webContents.send('set-splash-image', options.splashImage);
+        this.send('set-splash-image', options.splashImage);
       }
     });
 
@@ -53,18 +55,30 @@ export class ProgressWindow {
   }
 
   setDetail(value: string): void {
-    this.window.webContents.send('set-detail', value);
+    this.send('set-detail', value);
   }
 
   setCompleted(): void {
-    this.window.webContents.send('set-completed');
+    this.send('set-completed');
   }
 
   addLog(message: string): void {
-    this.window.webContents.send('add-log', message);
+    this.send('add-log', message);
   }
 
   close(): void {
-    this.window.close();
+    if (!this.window.isDestroyed()) {
+      this.window.close();
+    }
+  }
+
+  private send(channel: string, ...args: string[]): void {
+    if (this.window.isDestroyed()) {
+      return;
+    }
+    const contents = this.window.webContents;
+    if (!contents.isDestroyed()) {
+      contents.send(channel, ...args);
+    }
   }
 }

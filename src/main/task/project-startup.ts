@@ -4,21 +4,16 @@ import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { assertLocalWorkflowDocker, ensureWorkflowDocker } from './workflow-docker';
+import { assertLocalWorkflowDocker, ensureWorkflowDocker, WorkflowServiceUnavailable } from './workflow-docker';
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
 
 type ProjectStartup = { root: string; node: string; script: string; agentLabScript: string };
-type ReadDocuments = () => Promise<Record<string, string | null>>;
 const run = promisify(execFile);
-const starts = new Map<string, Promise<void>>();
+const starts = new Map<string, { input: string | undefined; completion: Promise<void> }>();
 let agentLabStartup: Promise<void> | undefined;
 
 export const projectStartupFor = (directory: string, prompt: string): ProjectStartup | undefined => {
-  const {
-    AIDER_DESK_PROJECT_STARTUP_NODE: node,
-    AIDER_DESK_PROJECT_STARTUP_SCRIPT: script,
-    AIDER_DESK_AGENTLAB_STARTUP_SCRIPT: agentLabScript,
-  } = process.env;
+  const { AIDER_DESK_PROJECT_STARTUP_NODE: node, AIDER_DESK_PROJECT_STARTUP_SCRIPT: script, AIDER_DESK_AGENTLAB_STARTUP_SCRIPT: agentLabScript } = process.env;
   if (parseProjectWorkflowCommand(prompt)?.kind !== 'start' || !node || !script || !agentLabScript || ![node, script, agentLabScript].every(path.isAbsolute)) {
     return undefined;
   }
@@ -33,18 +28,26 @@ export const startProjectEnvironment = async (
   { root, node, script, agentLabScript }: ProjectStartup,
   signal: AbortSignal,
   onProgress: (message: string) => void,
-  readDocuments?: ReadDocuments,
+  documents?: Record<string, string | null>,
 ) => {
   await assertLocalWorkflowDocker(signal);
   await ensureWorkflowDocker(signal, onProgress);
   signal.throwIfAborted();
   const name = path.basename(root);
   onProgress(`Preparo Agent-Lab e verifico i container di ${name}…`);
-  let starting = starts.get(root);
+  const input = documents ? JSON.stringify(documents) : undefined;
+  const existing = starts.get(root);
+  if (existing && existing.input !== input) {
+    throw new WorkflowServiceUnavailable(`È in corso la preparazione di ${name} con documenti diversi.`);
+  }
+  let starting = existing?.completion;
   if (!starting) {
     agentLabStartup ??= run(node, [agentLabScript], { cwd: path.dirname(agentLabScript), windowsHide: true, timeout: 100_000 })
       .then(() => undefined)
-      .catch(() => {
+      .catch((error: { killed?: boolean; code?: string | number }) => {
+        if (error.killed || error.code === 75) {
+          throw new WorkflowServiceUnavailable('I container di Agent-Lab non sono ancora disponibili.');
+        }
         throw new Error('Impossibile avviare i container di Agent-Lab.');
       })
       .finally(() => {
@@ -53,20 +56,23 @@ export const startProjectEnvironment = async (
     starting = agentLabStartup
       .then(async () => {
         onProgress(`Leggo i documenti di ripresa di ${name} e preparo i suoi servizi…`);
-        const documents = await readDocuments?.();
-        const command = run(node, [script, ...(documents ? ['--read-documents'] : [])], { cwd: root, windowsHide: true, timeout: 410_000 });
-        if (documents) {
+        const command = run(node, [script, ...(input ? ['--read-documents'] : [])], { cwd: root, windowsHide: true, timeout: 410_000 });
+        if (input) {
           command.child.stdin?.on('error', () => undefined);
-          command.child.stdin?.end(JSON.stringify(documents));
+          command.child.stdin?.end(input);
         }
         try {
           await command;
-        } catch {
-          throw new Error(`Impossibile preparare i servizi di ${name}. Verifica i documenti di ripresa e lo stack locale.`);
+        } catch (error) {
+          const { killed, code } = error as { killed?: boolean; code?: string | number };
+          if (killed || code === 75) {
+            throw new WorkflowServiceUnavailable(`I servizi di ${name} non sono ancora disponibili.`);
+          }
+          throw new Error(`Impossibile preparare i servizi di ${name}.`);
         }
       })
       .finally(() => starts.delete(root));
-    starts.set(root, starting);
+    starts.set(root, { input, completion: starting });
   }
   let listener: Disposable | undefined;
   const cancelled = new Promise<never>((_, reject) => {

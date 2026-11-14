@@ -175,6 +175,10 @@ export const serveWorkflowPreview = async (project) => {
 };
 
 export const launchWorkflowPilot = async ({ full = false } = {}) => {
+  const packagedExecutable = full ? process.env.AIDER_DESK_PACKAGED_EXE : undefined;
+  if (packagedExecutable && !path.isAbsolute(packagedExecutable)) {
+    throw new Error("AIDER_DESK_PACKAGED_EXE deve indicare il percorso assoluto dell’eseguibile Windows.");
+  }
   const build = path.join(
     labRoot,
     "work",
@@ -182,7 +186,7 @@ export const launchWorkflowPilot = async ({ full = false } = {}) => {
     "main",
     "index.js",
   );
-  await fs.access(build);
+  await fs.access(packagedExecutable || build);
   const root = path.join(labRoot, "profile", "workflow-pilot");
   const data = path.join(root, "data");
   await fs.mkdir(data, { recursive: true });
@@ -204,9 +208,9 @@ export const launchWorkflowPilot = async ({ full = false } = {}) => {
       console.log("Richiesta di prova: " + pilotRequest);
     }
     const exitCode = await new Promise((resolve, reject) => {
-      const child = spawn(require("electron"), [build], {
+      const child = spawn(packagedExecutable || require("electron"), packagedExecutable ? [] : [build], {
         cwd: repoRoot,
-        env,
+        env: packagedExecutable ? { ...env, AIDER_DESK_RESOURCES_DIR: path.join(path.dirname(packagedExecutable), "resources") } : env,
         windowsHide: false,
         stdio: "inherit",
       });

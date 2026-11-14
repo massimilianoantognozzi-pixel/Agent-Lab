@@ -22,6 +22,8 @@ export type RunSubagentTaskParams = {
   abortSignal?: AbortSignal;
   contextMessages?: ContextMessage[];
   currentMessages?: ContextMessage[];
+  workerHistory?: ContextMessage[];
+  takeSteering?: () => string[];
   onStarted?: (promptContext: PromptContext) => void | Promise<void>;
 };
 
@@ -144,9 +146,8 @@ const getSubagentContextMessages = (
       const matchingParts = message.content.filter((part) => part.type === 'tool-result' && part.toolCallId === toolCallId && part.output.type === 'json');
 
       for (const part of matchingParts) {
-        // @ts-expect-error part.output.value is expected to be in the output
-        const messages = (part.output.value as { messages: ContextMessage[] }).messages;
-        if (messages.length > 0) {
+        const messages = (part.output.value as { messages?: ContextMessage[] } | undefined)?.messages;
+        if (Array.isArray(messages) && messages.length > 0) {
           acc.push(...messages);
         }
       }
@@ -220,6 +221,8 @@ export const runSubagentTask = async ({
   abortSignal,
   contextMessages = [],
   currentMessages = [],
+  workerHistory,
+  takeSteering,
   onStarted,
 }: RunSubagentTaskParams): Promise<RunSubagentTaskResult> => {
   const subagentId = getSubagentId(targetSubagent);
@@ -227,12 +230,13 @@ export const runSubagentTask = async ({
   const promptContext = createSubagentPromptContext(targetSubagent, description);
   const interruptId = promptContext.group!.interruptId!;
   const subagentAbortController = new AbortController();
+  const abortSubagent = () => subagentAbortController.abort(abortSignal?.reason);
 
   if (abortSignal) {
     if (abortSignal.aborted) {
-      subagentAbortController.abort();
+      abortSubagent();
     } else {
-      abortSignal.addEventListener('abort', () => subagentAbortController.abort());
+      abortSignal.addEventListener('abort', abortSubagent, { once: true });
     }
   }
 
@@ -240,9 +244,10 @@ export const runSubagentTask = async ({
     await onStarted?.(promptContext);
 
     const subagentContextMessages =
-      subagentProfile.subagent.contextMemory !== ContextMemoryMode.Off
+      workerHistory ??
+      (subagentProfile.subagent.contextMemory !== ContextMemoryMode.Off
         ? getSubagentContextMessages(subagentId, subagentProfile.subagent.contextMemory, contextMessages, currentMessages)
-        : [];
+        : []);
     const effectivePrompt =
       subagentContextMessages.length > 0
         ? `${prompt}
@@ -262,6 +267,7 @@ Make sure to reuse the previous conversation if possible.`
       subagentSystemPrompt,
       subagentAbortController,
       promptContext,
+      takeSteering,
     );
 
     if (subagentAbortController.signal.aborted) {
@@ -295,7 +301,7 @@ Make sure to reuse the previous conversation if possible.`
 
     return {
       status: 'success',
-      messages: subagentResultMessages,
+      messages: workerHistory ? [...workerHistory, { id: uuidv4(), role: 'user', content: prompt }, ...subagentResultMessages] : subagentResultMessages,
       promptContext,
     };
   } catch (error) {
@@ -337,5 +343,7 @@ Make sure to reuse the previous conversation if possible.`
       error: `Error running subagent '${targetSubagent.name}': ${errorMessage}`,
       promptContext,
     };
+  } finally {
+    abortSignal?.removeEventListener('abort', abortSubagent);
   }
 };

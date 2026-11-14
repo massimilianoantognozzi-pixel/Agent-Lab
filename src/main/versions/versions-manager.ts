@@ -1,4 +1,5 @@
 import path from 'path';
+import { existsSync } from 'node:fs';
 
 import { VersionsInfo } from '@common/types';
 
@@ -10,6 +11,8 @@ import { Store } from '@/store';
 import { EventManager } from '@/events';
 import { getElectronApp, isDev } from '@/app';
 import { isLabMode } from '@/lab-mode';
+
+const hasApplicationUpdateManifest = (): boolean => existsSync(path.join(process.resourcesPath, 'app-update.yml'));
 
 export class VersionsManager {
   private readonly checkInterval = 10 * 60 * 1000; // 10 minutes
@@ -65,6 +68,7 @@ export class VersionsManager {
     let releaseNotes: string | null = null;
     if (
       app.isPackaged &&
+      hasApplicationUpdateManifest() &&
       !aiderDeskCurrentVersion.endsWith('-dev') &&
       !this.versionsInfo?.aiderDeskNewVersionReady &&
       !this.versionsInfo?.aiderDeskDownloadProgress
@@ -126,6 +130,10 @@ export class VersionsManager {
     // A source checkout has no installer/update manifest. Preserve normal packaged updates.
     if (!app.isPackaged) {
       this.updateVersionsInfo({ aiderDeskCurrentVersion: app.getVersion() });
+      return;
+    }
+    if (!hasApplicationUpdateManifest()) {
+      await this.getVersions(true);
       return;
     }
 
@@ -207,6 +215,9 @@ export class VersionsManager {
     if (!app) {
       logger.info('Electron app not available, skipping AiderDesk update download.');
       return;
+    }
+    if (!hasApplicationUpdateManifest()) {
+      throw new Error('Aggiornamento dell’app non disponibile per questa build.');
     }
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
