@@ -9,8 +9,11 @@
  * signal. Runs are stopped early right after registration and assertions are made on
  * how many controllers were constructed by agent code.
  */
+import path from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
+
 import { describe, expect, it, vi } from 'vitest';
-import { DefaultTaskState, ToolApprovalState, type AgentProfile } from '@common/types';
+import { ContextCompactionType, DefaultTaskState, ToolApprovalState, type AgentProfile, type ContextMessage } from '@common/types';
 import { TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 import { z } from 'zod';
 import { APICallError } from 'ai';
@@ -18,14 +21,25 @@ import { APICallError } from 'ai';
 import type { Task } from '@/task';
 import type { AgentGoalTurn } from '@/task/agent-goal';
 
+import { AgentDesignReviewPending } from '@/task/agent-design-review';
+import { NATIVE_EMPTY_TEST_REPORT, NATIVE_VERIFICATION_RESEARCH_QUERY, verificationResearchQuery } from '@/task/goal-verification';
 import { workerToolFingerprint } from '@/agent/worker-checkpoint';
 
 vi.mock('@/logger');
-const { generateTextMock } = vi.hoisted(() => ({ generateTextMock: vi.fn() }));
-vi.mock('ai', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('ai')>()),
-  generateText: generateTextMock,
-}));
+vi.mock('node:timers/promises', async (importOriginal) => {
+  const timers = await importOriginal<typeof import('node:timers/promises')>();
+  return { ...timers, setTimeout: vi.fn(timers.setTimeout) };
+});
+const { generateTextMock, streamTextMock } = vi.hoisted(() => ({ generateTextMock: vi.fn(), streamTextMock: vi.fn() }));
+vi.mock('ai', async (importOriginal) => {
+  const original = await importOriginal<typeof import('ai')>();
+  return {
+    ...original,
+    generateText: generateTextMock,
+    streamText: (...args: Parameters<typeof original.streamText>) =>
+      streamTextMock.getMockImplementation() ? streamTextMock(...args) : original.streamText(...args),
+  };
+});
 
 const { Agent: AgentClass } = await import('../agent');
 type Agent = InstanceType<typeof AgentClass>;
@@ -280,6 +294,50 @@ describe('Agent.runAgent abort controller registration', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('does not launch a descendant tool if another worker exhausts the budget during middleware', async () => {
+    const { agent, extensionManager } = createAgent();
+    const task = Object.assign(createTask(), { addToolMessage: vi.fn(), getTaskDir: () => '/fixture' });
+    const execute = vi.fn(async () => ({ exitCode: 0 }));
+    let budgetAvailable = true;
+    extensionManager.dispatchEvent.mockImplementation(async (name, event) => {
+      if (name === 'onToolCalled') {
+        budgetAvailable = false;
+      }
+      return event;
+    });
+    const name = 'power---bash';
+    const args: Parameters<Agent['wrapToolsWithHooks']> = [task, profile, { [name]: { inputSchema: z.object({}), execute } }];
+    args[10] = { onUsage: async () => true, canSample: () => budgetAvailable };
+    const tools = agent['wrapToolsWithHooks'](...args);
+
+    await expect(tools[name].execute!({ command: 'node verify.cjs' }, { toolCallId: 'call' } as never)).resolves.toMatchObject({ error: expect.any(String) });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [false, { error: 'Command denied by local settings' }],
+    [true, { exitCode: 1 }],
+  ])('records native shell execution for budget wrap-up only with process evidence (%s)', async (expected, output) => {
+    const { agent } = createAgent();
+    const task = Object.assign(createTask(), { addToolMessage: vi.fn(), getTaskDir: () => '/fixture' });
+    const shell = { inputSchema: z.object({}), execute: vi.fn(async () => output) };
+    const goal = {
+      goal: { id: 'goal' },
+      canExecute: async () => true,
+      invalidateVerification: vi.fn(),
+      beginVerification: async () => undefined,
+    } as unknown as AgentGoalTurn;
+    const executed = new Set<string>();
+    const args: Parameters<Agent['wrapToolsWithHooks']> = [task, profile, { 'power---bash': shell }];
+    args[7] = () => goal;
+    args[8] = shell;
+    args[11] = executed;
+    const tools = agent['wrapToolsWithHooks'](...args);
+
+    await expect(tools['power---bash'].execute!({ command: 'node verify.cjs' }, { toolCallId: 'call' } as never)).resolves.toEqual(output);
+    expect(executed.has('call')).toBe(expected);
+  });
+
   it('records the final native verification receipt from polling a yielded command', async () => {
     const { agent } = createAgent();
     const task = Object.assign(createTask(), { addToolMessage: vi.fn(), getTaskDir: () => '/fixture' });
@@ -326,6 +384,7 @@ describe('Agent.runAgent abort controller registration', () => {
       verification,
       { exitCode: 0, stdout: 'verified' },
       expect.any(Function),
+      undefined,
     );
   });
 
@@ -365,6 +424,7 @@ describe('Agent.runAgent abort controller registration', () => {
         { ...verification, generation: 4 },
         { exitCode: 0, stdout: 'verified' },
         expect.any(Function),
+        undefined,
       );
     }
   });
@@ -398,6 +458,38 @@ describe('Agent.runAgent abort controller registration', () => {
     agent.stopGoalCommands('goal');
     expect(cancelGoalProcess).toHaveBeenCalledExactlyOnceWith();
     expect(cancelOtherProcess).not.toHaveBeenCalled();
+  });
+
+  it('uses the original native poll capability when extensions change tool definitions', async () => {
+    const { agent } = createAgent();
+    const task = Object.assign(createTask(), { addToolMessage: vi.fn(), getTaskDir: () => '/fixture' });
+    const originalExecute = vi.fn(async () => ({ exitCode: 0 }));
+    const nativePoll = { inputSchema: z.object({}), execute: originalExecute };
+    const replacement = { inputSchema: z.object({}), execute: vi.fn(async () => ({ exitCode: 99 })) };
+    const wrapPoll = (definition: typeof nativePoll) =>
+      agent['wrapToolsWithHooks'](
+        task,
+        profile,
+        { 'power---bash_poll': definition },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        nativePoll,
+        undefined,
+        undefined,
+        originalExecute,
+      )['power---bash_poll'];
+    const capability = (poll: object) => Object.getOwnPropertySymbols(poll).find(({ description }) => description === 'native-bash-poll-capability');
+    const originalWrapper = wrapPoll(nativePoll);
+    expect(capability(originalWrapper)).toBeDefined();
+    expect(capability(wrapPoll(replacement))).toBeUndefined();
+    nativePoll.execute = replacement.execute;
+    expect(capability(wrapPoll(nativePoll))).toBeUndefined();
+    await expect(originalWrapper.execute!({ processId: 'fixture' }, { toolCallId: 'poll' } as never)).resolves.toEqual({ exitCode: 0 });
+    expect(replacement.execute).not.toHaveBeenCalled();
   });
   it('does not start a model call whose preflight was pending at task shutdown', async () => {
     const { agent, extensionManager } = createAgent();
@@ -449,6 +541,258 @@ describe('Agent.runAgent abort controller registration', () => {
 });
 
 describe('Agent.runAgent error propagation', () => {
+  it('does not interrupt a read recovery when the provider does not force named tools', async () => {
+    const { generateText: sdkGenerateText } = await vi.importActual<typeof import('ai')>('ai');
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    const localModel = {
+      specificationVersion: 'v4',
+      provider: 'fixture',
+      modelId: 'fixture',
+      supportedUrls: {},
+      doGenerate: vi.fn(async () => ({
+        content: [{ type: 'text', text: 'A provider can respond without invoking a tool.' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
+        warnings: [],
+      })),
+    };
+    vi.mocked(models.createLlm).mockResolvedValue(localModel as unknown as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['getAvailableTools'] = vi.fn(async () => ({ 'power---file_read': { inputSchema: z.object({}), execute: vi.fn() } }));
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    agent['processStep'] = vi.fn(async () => [{ id: 'response', role: 'assistant' as const, content: 'Fixture result' }]);
+    generateTextMock.mockReset();
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) =>
+      onStepEnd({
+        finishReason: 'tool-calls',
+        toolResults: [{ toolName: 'power---file_edit', input: { filePath: 'filter.js' }, output: 'No edit applied: identical.' }],
+      }),
+    );
+    generateTextMock.mockImplementationOnce((options) => sdkGenerateText(options));
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) => onStepEnd({ finishReason: 'stop' }));
+    try {
+      await agent.runAgent(task, profile, 'Inspect the fixture', 'agent', { id: 'root' });
+      expect(localModel.doGenerate).toHaveBeenCalledTimes(1);
+      expect(generateTextMock).toHaveBeenCalledTimes(3);
+      expect(generateTextMock.mock.calls[2][0].activeTools).toBeUndefined();
+      expect(task.updateTask).not.toHaveBeenCalled();
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it.each([ToolApprovalState.Always, ToolApprovalState.Never])('recovers an unchanged edit through the existing read policy (%s)', async (policy) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    const fileEdit = 'power---file_edit';
+    const fileRead = 'power---file_read';
+    const file = { filePath: 'filter.js' };
+    const tools = {
+      [fileEdit]: { inputSchema: z.object({}), execute: vi.fn() },
+      [fileRead]: { inputSchema: z.object({}), execute: vi.fn() },
+    };
+    agent['getAvailableTools'] = vi.fn(async () => tools);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    agent['processStep'] = vi.fn(async () => [{ id: 'response', role: 'assistant' as const, content: 'Fixture result' }]);
+    generateTextMock.mockReset();
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) =>
+      onStepEnd({
+        finishReason: 'tool-calls',
+        toolResults: [{ toolName: fileEdit, input: file, output: 'No edit applied: the replacement is identical.' }],
+      }),
+    );
+    if (policy !== ToolApprovalState.Never) {
+      generateTextMock.mockImplementationOnce(async ({ onStepEnd }) =>
+        onStepEnd({
+          finishReason: 'tool-calls',
+          toolResults: [{ toolName: fileRead, input: { filePath: path.resolve(task.getTaskDir(), file.filePath) }, output: 'Actual contents from disk' }],
+        }),
+      );
+    }
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) => onStepEnd({ finishReason: 'stop' }));
+
+    try {
+      await agent.runAgent(task, { ...profile, toolApprovals: { [fileRead]: policy } }, 'Correct the filter', 'agent', { id: 'root' });
+      if (policy === ToolApprovalState.Never) {
+        expect(generateTextMock).toHaveBeenCalledTimes(2);
+        expect(generateTextMock.mock.calls[1][0].toolChoice).toBeUndefined();
+      } else {
+        expect(generateTextMock).toHaveBeenCalledTimes(3);
+        expect(generateTextMock.mock.calls[1][0]).toMatchObject({ activeTools: [fileRead], toolChoice: 'auto' });
+        expect(generateTextMock.mock.calls[2][0].toolChoice).toBeUndefined();
+        expect(generateTextMock.mock.calls[2][0].instructions).toContain('short, unique search fragment');
+      }
+      expect(tools[fileRead].execute).not.toHaveBeenCalled();
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it('requests one status summary with no tools after an executed tool exhausts the goal budget', async () => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project', setState: vi.fn() });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.getUsageReport = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['getAvailableTools'] = vi.fn(async (...args: Parameters<Agent['getAvailableTools']>) => ({
+      'power---bash': {
+        inputSchema: z.object({}),
+        execute: vi.fn(async () => {
+          args[16]?.add('verifier');
+          return { exitCode: 1 };
+        }),
+      },
+    }));
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    agent['processStep'] = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          id: 'tool-call',
+          role: 'assistant',
+          content: [{ type: 'tool-call', toolCallId: 'verifier', toolName: 'power---bash', input: { command: 'node verify.cjs' } }],
+        },
+        {
+          id: 'verified-tool',
+          role: 'tool',
+          content: [{ type: 'tool-result', toolCallId: 'verifier', toolName: 'power---bash', output: { type: 'json', value: { exitCode: 1 } } }],
+        },
+      ])
+      .mockResolvedValueOnce([{ id: 'status-summary', role: 'assistant', content: 'Remaining work after budget limit' }]);
+    const goalRecord = { id: 'goal', objective: 'Verify the result', tokenBudget: 10, status: 'active', tokensUsed: 0 };
+    const goal = {
+      goal: goalRecord,
+      signal: new AbortController().signal,
+      getAvailableVerification: () => [],
+      canExecute: async () => goalRecord.status === 'active',
+      readGoal: async () => goalRecord,
+      onUsage: async (tokens: number) => {
+        goalRecord.tokensUsed += tokens;
+        goalRecord.status = 'budget_limited';
+        return false;
+      },
+    } as unknown as AgentGoalTurn;
+    const args: RunAgentArgs = [task, profile, null, 'agent', { id: 'turn' }];
+    args[18] = goal;
+    const persist = vi.fn(async () => {});
+    args[13] = persist;
+    generateTextMock.mockReset();
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd, tools }) => {
+      await tools['power---bash'].execute();
+      await onStepEnd({ finishReason: 'tool-calls', usage: { totalTokens: 10 } });
+    });
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) => {
+      expect(persist).toHaveBeenCalledWith({ messages: expect.arrayContaining([expect.objectContaining({ id: 'verified-tool' })]) });
+      await onStepEnd({ finishReason: 'stop', usage: { totalTokens: 2 } });
+    });
+
+    try {
+      const messages = await agent.runAgent(...args);
+      expect(generateTextMock).toHaveBeenCalledTimes(2);
+      expect(generateTextMock.mock.calls[1][0]).toMatchObject({ tools: {}, activeTools: [], instructions: expect.stringContaining('token budget') });
+      expect(messages.map(({ id }) => id)).toEqual(['tool-call', 'verified-tool', 'status-summary']);
+      expect(goalRecord).toMatchObject({ status: 'budget_limited', tokensUsed: 12 });
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it.each(['root', 'descendant'] as const)('does not sample again after a %s compaction exhausts the shared goal budget', async (scope) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.getUsageReport = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    let remaining = 10;
+    const goal = {
+      goal: { id: 'active-goal', objective: 'Verify the result', tokenBudget: remaining },
+      signal: new AbortController().signal,
+      getAvailableVerification: () => [],
+      canExecute: async () => remaining > 0,
+      onUsage: async (tokens: number) => (remaining -= tokens) > 0,
+    } as unknown as AgentGoalTurn;
+    agent['compactMessagesIfNeeded'] = vi.fn(async (...args: Parameters<Agent['compactMessagesIfNeeded']>) => {
+      await args[12]?.onUsage(10, false);
+      return true;
+    });
+    agent['processStep'] = vi.fn(async () => [{ id: 'unexpected', role: 'assistant' as const, content: 'Should not have sampled' }]);
+    generateTextMock.mockReset();
+    generateTextMock.mockImplementation(async ({ onStepEnd }) => onStepEnd({ finishReason: 'stop', usage: { totalTokens: 1 } }));
+    const args: RunAgentArgs = [task, profile, null, 'agent', { id: 'turn' }];
+    if (scope === 'root') {
+      args[18] = goal;
+    } else {
+      args[19] = { onUsage: goal.onUsage, canSample: goal.canExecute };
+    }
+    try {
+      await agent.runAgent(...args);
+      expect(remaining).toBe(0);
+      expect(generateTextMock).not.toHaveBeenCalled();
+      expect(task.updateTask).not.toHaveBeenCalled();
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it.each([
+    { scope: 'root', output: undefined },
+    { scope: 'worker', output: undefined },
+    { scope: 'worker', output: 'Preface\n### **Conversation Summary**\n' },
+  ])('preserves the $scope working history when compaction produces no summary ($output)', async ({ scope, output }) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const user: ContextMessage = { id: 'user', role: 'user', content: 'Preserve the exact original request' };
+    const evidence: ContextMessage = { id: 'evidence', role: 'assistant', content: 'Preserve the already observed tool outcome' };
+    const contextMessages = [user];
+    const resultMessages = [evidence];
+    const messages = [user, evidence];
+    const task = Object.assign(createTask(), {
+      task: { id: 'test-task', contextCompactingThresholdTokens: 1 },
+      getTaskDir: () => '/test/project',
+      getContextMessages: vi.fn(async () => [user]),
+      compactConversation: vi.fn(async () => false),
+      sendTaskMessageRemoved: vi.fn(),
+      reloadGroupMessages: vi.fn(),
+    });
+    const models = agent['modelManager'];
+    const [provider] = models.getProviders();
+    models.getModelSettings = vi.fn();
+    vi.mocked(agent['store'].getSettings).mockReturnValue({ taskSettings: { contextCompactingThreshold: { percentage: 95, tokens: 100 } } } as never);
+    agent['promptsManager'].getCompactConversationPrompt = vi.fn(async () => 'Compact the existing conversation');
+    agent.generateText = vi.fn(async () => output);
+    agent['prepareMessages'] = vi.fn(async () => []);
+
+    await expect(
+      agent['compactMessagesIfNeeded'](
+        task,
+        { ...profile, isSubagent: scope === 'worker', autoCompactionType: ContextCompactionType.Compact },
+        provider,
+        'test-model',
+        user,
+        contextMessages,
+        [],
+        messages as never,
+        resultMessages,
+      ),
+    ).resolves.toBe(true);
+
+    expect(contextMessages).toEqual([user]);
+    expect(resultMessages).toEqual([evidence]);
+    expect(messages).toEqual([user, evidence]);
+    expect(agent['prepareMessages']).not.toHaveBeenCalled();
+    expect(task.reloadGroupMessages).not.toHaveBeenCalled();
+  });
+
   it.each(['connection reset', 'provider unavailable'] as const)('retries a %s without streaming on the same turn', async (kind) => {
     const { agent } = createAgent(new Error('fixture'));
     const task = Object.assign(createTask(), { getTaskDir: () => '/test/project', setState: vi.fn() });
@@ -524,9 +868,182 @@ describe('Agent.runAgent error propagation', () => {
       expect(generateTextMock.mock.calls.every(([options]) => options.maxRetries === 0)).toBe(true);
       expect(reportUsageLimit).toHaveBeenCalledTimes(kind === 'quota exhausted' ? 1 : 0);
       expect(reportTerminalError).toHaveBeenCalledTimes(kind === 'adapter veto' ? 1 : 0);
+      if (kind === 'quota exhausted') {
+        expect(task.updateTask).not.toHaveBeenCalled();
+      }
       if (kind === 'retry after') {
         expect(performance.now() - started).toBeGreaterThanOrEqual(18);
         expect(task.updateTask).not.toHaveBeenCalled();
+      }
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it.each(['ordinary', 'metered'] as const)('keeps a %s root turn alive beyond finite connection retries', async (kind) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    models.isRetryable = vi.fn(() => true);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    agent['processStep'] = vi.fn(async () => [{ id: 'reconnected', role: 'assistant' as const, content: 'Connected' }]);
+    const cause = new AggregateError([
+      Object.assign(new Error('Connection refused'), { code: 'ECONNREFUSED', syscall: 'connect' }),
+      Object.assign(new Error('Connection timed out'), { code: 'ETIMEDOUT', syscall: 'connect' }),
+    ]);
+    const error =
+      kind === 'metered'
+        ? cause
+        : new APICallError({ message: 'Cannot connect to API', cause, isRetryable: true, url: 'http://127.0.0.1', requestBodyValues: {} });
+    generateTextMock.mockReset();
+    for (let attempt = 0; attempt < 6; attempt++) {
+      generateTextMock.mockRejectedValueOnce(error);
+    }
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) => onStepEnd({ finishReason: 'stop' }));
+    const onUsage = vi.fn<(tokens?: number) => Promise<boolean>>(async () => true);
+    const args: RunAgentArgs = [task, { ...profile, maxIterations: 1 }, 'Finish after reconnection', 'agent', { id: 'root' }];
+    if (kind === 'metered') {
+      args[18] = {
+        goal: { id: 'goal', objective: 'Finish after reconnection', tokenBudget: 50 },
+        signal: new AbortController().signal,
+        getAvailableVerification: () => [],
+        canExecute: async () => true,
+        onUsage,
+      } as unknown as AgentGoalTurn;
+    }
+    vi.mocked(wait).mockClear();
+    try {
+      await vi.mocked(wait).withImplementation(
+        async () => undefined,
+        async () => {
+          const messages = await agent.runAgent(...args);
+          expect(generateTextMock).toHaveBeenCalledTimes(7);
+          expect(vi.mocked(wait).mock.calls.map(([delay]) => delay)).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
+          expect(messages.at(-1)).toMatchObject({ id: 'reconnected' });
+          expect(task.updateTask).not.toHaveBeenCalled();
+          if (kind === 'metered') {
+            expect(onUsage.mock.calls.slice(0, 6)).toEqual([[0], [0], [0], [0], [0], [0]]);
+          }
+        },
+      );
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it.each(['HTTP unavailable', 'connection reset', 'mixed connection errors', 'Bedrock connection refused'] as const)(
+    'retains finite retries for %s',
+    async (kind) => {
+      const { agent } = createAgent(new Error('fixture'));
+      const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+      const models = agent['modelManager'];
+      vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+      if (kind === 'Bedrock connection refused') {
+        const [provider] = models.getProviders();
+        vi.mocked(models.getProviders).mockReturnValue([{ ...provider, provider: { ...provider.provider, name: 'bedrock' } } as typeof provider]);
+      }
+      models.getModelSettings = vi.fn();
+      models.isStreamingDisabled = vi.fn(() => true);
+      models.isRetryable = vi.fn(() => true);
+      agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+      const cause =
+        kind === 'mixed connection errors'
+          ? Object.assign(new AggregateError([Object.assign(new Error('Socket reset'), { code: 'ECONNRESET' })]), { code: 'ECONNREFUSED' })
+          : Object.assign(new Error(kind), { code: kind === 'connection reset' ? 'ECONNRESET' : 'ECONNREFUSED' });
+      const error = new APICallError({
+        message: kind,
+        statusCode: kind === 'HTTP unavailable' ? 503 : undefined,
+        cause,
+        isRetryable: true,
+        url: 'http://127.0.0.1',
+        requestBodyValues: {},
+      });
+      generateTextMock.mockReset();
+      // Let the test report an extra retry without leaving an unbounded mocked run.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        generateTextMock.mockRejectedValueOnce(error);
+      }
+      try {
+        await vi.mocked(wait).withImplementation(
+          async () => undefined,
+          async () => {
+            await agent.runAgent(task, { ...profile, maxIterations: 1 }, 'Finish after recovery', 'agent', { id: 'root' });
+            expect(generateTextMock).toHaveBeenCalledTimes(4);
+            expect(task.updateTask).toHaveBeenCalledWith({ state: DefaultTaskState.Interrupted });
+          },
+        );
+      } finally {
+        generateTextMock.mockReset();
+      }
+    },
+  );
+
+  it('interrupts an outstanding provider reconnection wait when the root turn is stopped', async () => {
+    const { agent, extensionManager } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    const controller = new AbortController();
+    generateTextMock.mockReset();
+    generateTextMock.mockRejectedValue(Object.assign(new Error('Provider connection refused'), { code: 'ECONNREFUSED' }));
+    const args: RunAgentArgs = [task, profile, 'Finish after recovery', 'agent', { id: 'root' }];
+    args[9] = controller.signal;
+    const run = agent.runAgent(...args);
+    try {
+      await vi.waitFor(() => expect(task.addLogMessage).toHaveBeenCalledWith('loading', 'Riconnessione al provider in attesa della rete…', false, args[4]));
+      controller.abort();
+      await run;
+      expect(generateTextMock).toHaveBeenCalledTimes(1);
+      expect(extensionManager.dispatchEvent).toHaveBeenCalledWith('onAgentFinished', expect.objectContaining({ aborted: true }), task.project, task);
+    } finally {
+      controller.abort();
+      await run;
+      generateTextMock.mockReset();
+    }
+  });
+
+  it.each([true, false])('keeps the native tool result when a turn reaches its iteration limit (active goal: %s)', async (activeGoal) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    const evidence: ContextMessage = {
+      id: 'failed-check',
+      role: 'tool',
+      content: [{ type: 'tool-result', toolCallId: 'check', toolName: 'power---bash', output: { type: 'text', value: 'Observed failure' } }],
+    };
+    agent['processStep'] = vi.fn(async () => [evidence]);
+    const reportTerminalError = vi.fn(async () => {});
+    const goal = {
+      goal: { id: 'active-goal', objective: 'Resolve the regression' },
+      signal: new AbortController().signal,
+      getAvailableVerification: () => [],
+      onUsage: vi.fn(async () => true),
+      reportTerminalError,
+    } as unknown as AgentGoalTurn;
+    const args: RunAgentArgs = [task, { ...profile, maxIterations: 1 }, 'Resolve the regression', 'agent', { id: 'turn' }];
+    args[18] = activeGoal ? goal : undefined;
+    generateTextMock.mockReset();
+    generateTextMock.mockImplementationOnce(async ({ onStepEnd }) => onStepEnd({ finishReason: 'tool-calls' }));
+
+    try {
+      const messages = await agent.runAgent(...args);
+      expect(generateTextMock).toHaveBeenCalledOnce();
+      expect(messages).toContain(evidence);
+      expect(reportTerminalError).not.toHaveBeenCalled();
+      if (activeGoal) {
+        expect(task.updateTask).not.toHaveBeenCalledWith({ state: DefaultTaskState.Interrupted });
+      } else {
+        expect(task.updateTask).toHaveBeenCalledWith({ state: DefaultTaskState.Interrupted });
       }
     } finally {
       generateTextMock.mockReset();
@@ -621,6 +1138,52 @@ describe('Agent.runAgent error propagation', () => {
     }
   });
 
+  it.each([false, true])('keeps a goal active when Designer requests a correction or is pending (%s)', async (pending) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    agent['processStep'] = vi.fn(async () => [{ id: 'sample', role: 'assistant' as const, content: 'Completion requested.' }]);
+    const invalidateVerification = vi.fn();
+    const reportTerminalError = vi.fn(async () => {});
+    const goal = {
+      goal: { id: 'active-goal', objective: 'Correct the view' },
+      signal: new AbortController().signal,
+      getAvailableVerification: () => [],
+      canExecute: vi.fn(async () => true),
+      onUsage: vi.fn(async () => true).mockResolvedValueOnce(false),
+      invalidateVerification,
+      reportTerminalError,
+    } as unknown as AgentGoalTurn;
+    const args: RunAgentArgs = [task, profile, 'Correct the view', 'agent', { id: 'turn' }];
+    args[18] = goal;
+    const review = vi.fn(async () => undefined as string | undefined);
+    if (pending) {
+      review.mockRejectedValueOnce(new AgentDesignReviewPending('Pending Designer evidence'));
+    } else {
+      review.mockResolvedValueOnce('Correct the stale visible label.');
+    }
+    args[23] = review;
+    generateTextMock.mockReset();
+    generateTextMock.mockImplementation(async ({ onStepEnd }) => onStepEnd({ finishReason: 'stop' }));
+
+    try {
+      await agent.runAgent(...args);
+      expect(reportTerminalError).not.toHaveBeenCalled();
+      expect(generateTextMock).toHaveBeenCalledTimes(pending ? 1 : 2);
+      expect(review).toHaveBeenCalledTimes(pending ? 1 : 2);
+      expect(invalidateVerification).toHaveBeenCalledTimes(pending ? 0 : 1);
+      if (pending) {
+        expect(task.updateTask).toHaveBeenCalledWith({ state: DefaultTaskState.Interrupted });
+      }
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
   it.each([
     ['maximum context length', undefined],
     ['Bad Request', JSON.stringify({ error: { code: '1261', message: 'Prompt too long' } })],
@@ -641,7 +1204,7 @@ describe('Agent.runAgent error propagation', () => {
     try {
       await expect(agent.runAgent(task, { ...profile, isSubagent: true, maxIterations: 1 }, 'prompt', 'subagent')).resolves.toBeDefined();
       expect(generateTextMock).toHaveBeenCalledTimes(2);
-      expect(compact.mock.calls.map((args) => (args as unknown[]).at(-2))).toEqual([false, true]);
+      expect(compact.mock.calls.map((args) => (args as unknown[])[11])).toEqual([false, true]);
     } finally {
       generateTextMock.mockReset();
     }
@@ -666,6 +1229,125 @@ describe('Agent.runAgent error propagation', () => {
         Array.from({ length: 3 }, () => expect.stringContaining('Usa il risultato dello strumento')),
       );
       expect(extensionManager.dispatchEvent).not.toHaveBeenCalledWith('onAgentFinished', expect.anything(), expect.anything(), expect.anything());
+    } finally {
+      generateTextMock.mockReset();
+    }
+  });
+
+  it('records the completed tool and provider usage after a late reset at the iteration limit', async () => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project', addToolMessage: vi.fn(), sendTaskMessageRemoved: vi.fn() });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.getUsageReport = vi.fn(() => ({ sentTokens: 12, receivedTokens: 8 }) as never);
+    models.isStreamingDisabled = vi.fn(() => false);
+    models.isToolCallStreamingDisabled = vi.fn(() => false);
+    models.isRetryable = vi.fn(() => true);
+    agent['getAvailableTools'] = vi.fn(async () => ({ 'power---bash': { inputSchema: z.object({}) } }));
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    const onUsage = vi.fn(async () => true);
+    const goal = {
+      goal: { id: 'goal', objective: 'Keep verified results', tokenBudget: 200 },
+      signal: new AbortController().signal,
+      canExecute: async () => true,
+      getAvailableVerification: () => [],
+      onUsage,
+    } as unknown as AgentGoalTurn;
+    const reset = new APICallError({ message: 'Fixture stream reset', url: 'http://127.0.0.1', requestBodyValues: {}, isRetryable: true, statusCode: 200 });
+    const callId = 'sample';
+    const call = { type: 'tool-call', toolCallId: 'completed-native', toolName: 'power---bash', input: { command: 'node --test' } };
+    const result = { ...call, type: 'tool-result', output: { exitCode: 0, stdout: 'recorded native output' } };
+    streamTextMock.mockImplementation(({ onLanguageModelCallEnd, onToolExecutionStart, onToolExecutionEnd }) => ({
+      stream: (async function* () {
+        onLanguageModelCallEnd({ callId, finishReason: 'tool-calls', content: [call], usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 } });
+        onToolExecutionStart({ callId, toolCall: call });
+        onToolExecutionEnd({ callId, toolCall: call, toolOutput: result });
+        yield call;
+        yield result;
+        throw reset;
+      })(),
+    }));
+    const args: RunAgentArgs = [task, { ...profile, maxIterations: 1 }, 'Keep the test result', 'agent', { id: 'root' }];
+    args[18] = goal;
+    try {
+      const messages = await agent.runAgent(...args);
+      expect(onUsage).toHaveBeenCalledExactlyOnceWith(20);
+      expect(streamTextMock).toHaveBeenCalledTimes(1);
+      expect(messages).toEqual(
+        expect.arrayContaining([expect.objectContaining({ role: 'tool', content: [expect.objectContaining({ toolCallId: call.toolCallId })] })]),
+      );
+      expect(task.updateTask).toHaveBeenCalledWith({ state: DefaultTaskState.Interrupted });
+    } finally {
+      streamTextMock.mockReset();
+    }
+  });
+
+  it.each([
+    {
+      scenario: 'Node failures',
+      command: 'node --test "C:/isolated/private-test-name.cjs"',
+      query: 'Node.js test runner failure diagnostics official documentation',
+    },
+    {
+      scenario: 'typecheck failures',
+      command: 'npm run typecheck -- "C:/isolated/private-test-name.ts"',
+      query: 'npm typecheck script compiler diagnostics official documentation',
+    },
+    { scenario: 'exhausted iterations', command: 'node --test', maxIterations: 2 },
+    { scenario: 'empty Node reports', command: 'node --test', query: 'Node.js test runner failure diagnostics official documentation', emptyReport: true },
+    { scenario: 'polled Node failures', command: 'node --test', query: 'Node.js test runner failure diagnostics official documentation', polled: true },
+  ])('uses targeted verification recovery for $scenario', async ({ command, query, maxIterations = 6, emptyReport, polled }) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project' });
+    const models = agent['modelManager'];
+    vi.mocked(models.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof models.createLlm>>);
+    models.getModelSettings = vi.fn();
+    models.isStreamingDisabled = vi.fn(() => true);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    const search = vi.fn(async () => '## Search Results: official diagnostic fixture');
+    vi.spyOn(agent, 'createTechnicalSearch').mockReturnValue(search);
+    agent['processStep'] = vi.fn(async (_id, step) =>
+      step.finishReason === 'stop'
+        ? [{ id: 'done', role: 'assistant' as const, content: 'The final check passed.' }]
+        : [{ id: 'tool-result', role: 'tool' as const, content: [] }],
+    );
+
+    let attempts = 0;
+    generateTextMock.mockReset();
+    generateTextMock.mockImplementation(async ({ onStepEnd }) => {
+      attempts++;
+      if (attempts === 5) {
+        await onStepEnd({ finishReason: 'stop' });
+        return;
+      }
+      const ranTests = attempts === 4;
+      const output = { exitCode: ranTests || emptyReport ? 0 : 1, stderr: 'private-fixture-output' };
+      Object.defineProperty(output, NATIVE_EMPTY_TEST_REPORT, { value: Boolean(emptyReport && !ranTests) });
+      Object.defineProperty(output, NATIVE_VERIFICATION_RESEARCH_QUERY, { value: verificationResearchQuery(command) });
+      await onStepEnd({
+        finishReason: 'tool-calls',
+        toolResults: [
+          polled ? { toolName: 'power---bash_poll', input: { processId: 'fixture' }, output } : { toolName: 'power---bash', input: { command }, output },
+        ],
+      });
+    });
+
+    try {
+      await agent.runAgent(task, { ...profile, maxIterations }, 'Fix and verify the fixture', 'agent');
+      if (!query) {
+        expect(search).not.toHaveBeenCalled();
+        expect(generateTextMock).toHaveBeenCalledTimes(maxIterations);
+        return;
+      }
+      expect(search).toHaveBeenCalledExactlyOnceWith(query);
+      expect(generateTextMock).toHaveBeenCalledTimes(5);
+      expect(generateTextMock.mock.calls[2][0].instructions).toContain('change the diagnostic strategy');
+      expect(generateTextMock.mock.calls[2][0].messages).toEqual(
+        expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('untrustedTechnicalReferences') })]),
+      );
+      expect(generateTextMock.mock.calls[4][0].instructions).not.toContain('change the diagnostic strategy');
+      expect(search.mock.calls.flat().join(' ')).not.toContain('private-');
     } finally {
       generateTextMock.mockReset();
     }

@@ -4,7 +4,6 @@ import * as path from 'path';
 import { FSWatcher, watch } from 'chokidar';
 import { debounce } from 'lodash';
 import { DEFAULT_AGENT_PROFILE, DEFAULT_AGENT_PROFILES } from '@common/agent';
-import { fileExists } from '@common/utils';
 import { v4 as uuidv4 } from 'uuid';
 
 import type { AgentProfile, SettingsData } from '@common/types';
@@ -26,8 +25,7 @@ const getAgentsDirForProfile = (profile: AgentProfile): string => (profile.proje
 // Helper methods for rule file discovery
 const getAgentRulesDir = (agentsDir: string, agentDirName: string): string => path.join(agentsDir, agentDirName, AIDER_DESK_RULES_DIR);
 
-const getRuleFilesForAgent = async (agentDirName: string, agentsDir: string): Promise<string[]> => {
-  const rulesDir = getAgentRulesDir(agentsDir, agentDirName);
+const getRuleFilesInDirectory = async (rulesDir: string, requireAvailable = false): Promise<string[]> => {
   const ruleFiles: string[] = [];
 
   try {
@@ -39,25 +37,31 @@ const getRuleFilesForAgent = async (agentDirName: string, agentsDir: string): Pr
         ruleFiles.push(path.join(rulesDir, entry.name));
       }
     }
-  } catch {
+  } catch (error) {
+    if (requireAvailable && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
     // Rules directory doesn't exist or can't be read
   }
 
   return ruleFiles;
 };
 
-const getAllRuleFilesForProfile = async (profile: AgentProfile, dirName: string): Promise<string[]> => {
+const getRuleFilesForAgent = (agentDirName: string, agentsDir: string, requireAvailable: boolean): Promise<string[]> =>
+  getRuleFilesInDirectory(getAgentRulesDir(agentsDir, agentDirName), requireAvailable);
+
+const getAllRuleFilesForProfile = async (profile: AgentProfile, dirName: string, requireAvailable: boolean): Promise<string[]> => {
   const ruleFiles: string[] = [];
 
   // Get rule files from the profile's own directory
   const agentsDir = getAgentsDirForProfile(profile);
-  const profileRuleFiles = await getRuleFilesForAgent(dirName, agentsDir);
+  const profileRuleFiles = await getRuleFilesForAgent(dirName, agentsDir, requireAvailable);
   ruleFiles.push(...profileRuleFiles);
 
   // If this is a project-level profile, also check for global profile with same ID
   if (profile.projectDir) {
     const globalAgentsDir = getGlobalAgentsDir();
-    const globalRuleFiles = await getRuleFilesForAgent(dirName, globalAgentsDir);
+    const globalRuleFiles = await getRuleFilesForAgent(dirName, globalAgentsDir, requireAvailable);
     ruleFiles.push(...globalRuleFiles);
   }
 
@@ -73,6 +77,8 @@ interface AgentProfileContext {
 export class AgentProfileManager {
   // Single profiles map - the core simplification
   private profiles: Map<string, AgentProfileContext> = new Map();
+  // Tasks can retain a shallow copy after the managed profile is reloaded.
+  private readonly managedRuleSources = new WeakMap<string[], { profileId: string; dirName: string }>();
 
   // Directory watching (one watcher per directory)
   private directoryWatchers: Map<string, FSWatcher> = new Map(); // agentsDir → watcher
@@ -286,19 +292,7 @@ export class AgentProfileManager {
 
   private async reloadProfiles(agentsDir: string): Promise<void> {
     logger.debug(`Reloading agent profiles from ${agentsDir}`);
-
-    // Clear existing profiles from this directory
-    const profilesToRemove: string[] = [];
-    for (const [profileId, context] of this.profiles.entries()) {
-      if (getAgentsDirForProfile(context.agentProfile) === agentsDir) {
-        profilesToRemove.push(profileId);
-      }
-    }
-
-    profilesToRemove.forEach((profileId) => this.profiles.delete(profileId));
-
-    // Reload profiles from directory
-    await this.loadProfilesFromDirectory(agentsDir);
+    await this.loadProfilesFromDirectory(agentsDir, true);
 
     // Notify listeners
     this.sendAgentProfilesUpdated();
@@ -339,13 +333,22 @@ export class AgentProfileManager {
     }
   }
 
-  private async loadProfilesFromDirectory(agentsDir: string): Promise<void> {
-    const dirExists = await fs
-      .access(agentsDir)
-      .then(() => true)
-      .catch(() => false);
-    if (!dirExists) {
-      logger.debug(`Agents directory does not exist, skipping: ${agentsDir}`);
+  private removeProfilesFromDirectory(agentsDir: string): void {
+    for (const [profileId, context] of this.profiles) {
+      if (!path.relative(getAgentsDirForProfile(context.agentProfile), agentsDir)) {
+        this.profiles.delete(profileId);
+      }
+    }
+  }
+
+  private async loadProfilesFromDirectory(agentsDir: string, replace = false): Promise<void> {
+    try {
+      await fs.access(agentsDir);
+    } catch (error) {
+      if (replace && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.removeProfilesFromDirectory(agentsDir);
+      }
+      logger.debug(`Agents directory unavailable: ${agentsDir}`);
       return;
     }
 
@@ -356,11 +359,22 @@ export class AgentProfileManager {
     const profilesMap = new Map<string, AgentProfileContext>();
 
     try {
-      const entries = await fs.readdir(agentsDir, { withFileTypes: true });
+      const entries = await fs.readdir(agentsDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') {
+          return undefined;
+        }
+        throw error;
+      });
+      if (!entries) {
+        if (replace) {
+          this.removeProfilesFromDirectory(agentsDir);
+        }
+        return;
+      }
       for (const entry of entries) {
         if (entry.isDirectory()) {
           const configPath = path.join(agentsDir, entry.name, 'config.json');
-          const profile = await this.loadProfileFile(configPath, entry.name);
+          const profile = await this.loadProfileFile(configPath, entry.name, replace);
 
           if (profile) {
             const profileContext: AgentProfileContext = {
@@ -369,12 +383,6 @@ export class AgentProfileManager {
               agentProfile: profile,
             };
             profilesMap.set(profile.id, profileContext);
-          } else {
-            // If no config.json exists, check if this is a project-level directory
-            // and if there's a corresponding global profile, merge project-level rule files
-            if (agentsDir.includes('.aider-desk/agents')) {
-              await this.mergeProjectRuleFilesIntoGlobalProfile(entry.name, agentsDir);
-            }
           }
         }
       }
@@ -387,7 +395,10 @@ export class AgentProfileManager {
         await this.createDefaultOrderFromProfiles(orderedProfiles, agentsDir);
       }
 
-      // Add profiles to the main profiles map
+      // Keep the current registry visible until the replacement is available.
+      if (replace) {
+        this.removeProfilesFromDirectory(agentsDir);
+      }
       for (const [profileId, context] of orderedProfiles.entries()) {
         this.profiles.set(profileId, context);
       }
@@ -421,31 +432,45 @@ export class AgentProfileManager {
     };
   }
 
-  private async loadProfileFile(filePath: string, dirName: string): Promise<AgentProfile | null> {
+  private async loadProfileFile(filePath: string, dirName: string, requireAvailable = false): Promise<AgentProfile | null> {
     try {
-      if (!(await fileExists(filePath))) {
+      const content = await fs.readFile(filePath, 'utf-8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') {
+          return undefined;
+        }
+        throw error;
+      });
+      if (content === undefined) {
         return null;
       }
 
       logger.debug(`Loading agent profile from ${filePath}`);
 
-      const content = await fs.readFile(filePath, 'utf-8');
-      const loadedProfile: AgentProfile = JSON.parse(content);
-
-      // Sanitize profile with defaults
-      const profile = this.sanitizeAgentProfile(loadedProfile, dirName);
+      let loadedProfile: AgentProfile;
+      let profile: AgentProfile;
+      try {
+        loadedProfile = JSON.parse(content);
+        profile = this.sanitizeAgentProfile(loadedProfile, dirName);
+      } catch (error) {
+        logger.error(`Failed to parse agent profile file ${filePath}: ${error}`);
+        return null;
+      }
       if (JSON.stringify(profile) !== JSON.stringify(loadedProfile)) {
         logger.debug(`Saving sanitized agent profile to ${filePath}`);
         await this.saveProfileToFile(profile, filePath);
       }
 
       // Discover and load rule files for this profile
-      profile.ruleFiles = await getAllRuleFilesForProfile(profile, dirName);
+      profile.ruleFiles = await getAllRuleFilesForProfile(profile, dirName, requireAvailable);
+      this.managedRuleSources.set(profile.ruleFiles, { profileId: profile.id, dirName });
 
       logger.info(`Loaded agent profile: ${profile.name} with ${profile.ruleFiles.length} rule files`);
       return profile;
     } catch (err) {
-      logger.error(`Failed to parse agent profile file ${filePath}: ${err}`);
+      if (requireAvailable) {
+        throw err;
+      }
+      logger.error(`Failed to load agent profile file ${filePath}: ${err}`);
       return null;
     }
   }
@@ -615,6 +640,43 @@ export class AgentProfileManager {
     return this.profiles.get(profileId)?.agentProfile;
   }
 
+  public async getRuleFilesForProjectProfile(profile: AgentProfile, project: Project): Promise<string[]> {
+    const ruleFiles = profile.ruleFiles ?? [];
+    if (profile.projectDir) {
+      return path.relative(profile.projectDir, project.baseDir) ? [] : ruleFiles;
+    }
+    const context = this.profiles.get(profile.id);
+    const source = profile.ruleFiles && this.managedRuleSources.get(profile.ruleFiles);
+    if (!context || context.agentProfile.projectDir || !source || source.profileId !== profile.id || source.dirName !== context.dirName) {
+      return ruleFiles;
+    }
+
+    const projectRoot = await fs.realpath(project.baseDir).catch(() => undefined);
+    if (!projectRoot) {
+      return ruleFiles;
+    }
+    const isWithinProject = (candidate: string): boolean => {
+      const relative = path.relative(projectRoot, candidate);
+      return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
+    const localProfile = await fs.realpath(path.join(getProjectAgentsDir(projectRoot), context.dirName)).catch(() => undefined);
+    if (!localProfile || !isWithinProject(localProfile)) {
+      return ruleFiles;
+    }
+    const hasLocalConfig = await fs.stat(path.join(localProfile, 'config.json')).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => error.code !== 'ENOENT',
+    );
+    if (hasLocalConfig) {
+      return ruleFiles;
+    }
+    const localRules = await fs.realpath(path.join(localProfile, AIDER_DESK_RULES_DIR)).catch(() => undefined);
+    if (!localRules || !isWithinProject(localRules)) {
+      return ruleFiles;
+    }
+    return [...new Set([...ruleFiles, ...(await getRuleFilesInDirectory(localRules))])];
+  }
+
   public resolveAgentProfile(id: string): AgentProfile | null {
     const lowerId = id.toLowerCase();
 
@@ -749,45 +811,6 @@ export class AgentProfileManager {
 
     // Notify listeners
     this.sendAgentProfilesUpdated();
-  }
-
-  private async mergeProjectRuleFilesIntoGlobalProfile(agentDirName: string, projectAgentsDir: string): Promise<void> {
-    // Check if there are project-level rule files
-    const projectRuleFiles = await getRuleFilesForAgent(agentDirName, projectAgentsDir);
-
-    if (projectRuleFiles.length === 0) {
-      return; // No project-level rule files to merge
-    }
-
-    // Find the corresponding global profile by directory name
-    let globalProfileEntry: [string, AgentProfileContext] | null = null;
-    for (const [profileId, context] of this.profiles.entries()) {
-      if (context.dirName === agentDirName && !context.agentProfile.projectDir) {
-        globalProfileEntry = [profileId, context];
-        break;
-      }
-    }
-
-    if (!globalProfileEntry) {
-      return; // No global profile found with matching directory name
-    }
-
-    const [profileId, globalProfileContext] = globalProfileEntry;
-
-    // Create a new profile object with merged rule files
-    const updatedProfile = {
-      ...globalProfileContext.agentProfile,
-      ruleFiles: [...(globalProfileContext.agentProfile.ruleFiles || []), ...projectRuleFiles],
-    };
-
-    // Update the profile context
-    const updatedContext: AgentProfileContext = {
-      ...globalProfileContext,
-      agentProfile: updatedProfile,
-    };
-
-    this.profiles.set(profileId, updatedContext);
-    logger.debug(`Merged ${projectRuleFiles.length} project-level rule files into global profile: ${agentDirName}`);
   }
 
   async dispose(): Promise<void> {

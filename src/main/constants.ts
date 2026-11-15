@@ -28,6 +28,7 @@ export const AIDER_DESK_TODOS_FILE = 'todos.json';
 export const AIDER_DESK_RULES_DIR = 'rules';
 export const AIDER_DESK_PROJECT_RULES_DIR = path.join(AIDER_DESK_DIR, AIDER_DESK_RULES_DIR);
 export const AIDER_DESK_GLOBAL_RULES_DIR = path.join(AIDER_DESK_HOME_DIR, AIDER_DESK_RULES_DIR);
+export const TASK_AGENTS_RULE_FILES = ['AGENTS.override.md', 'AGENTS.md'] as const;
 export const AIDER_DESK_COMMANDS_DIR = path.join(AIDER_DESK_DIR, 'commands');
 export const AIDER_DESK_EXTENSIONS_DIR = path.join(AIDER_DESK_DIR, 'extensions');
 export const AIDER_DESK_GLOBAL_EXTENSIONS_DIR = path.join(AIDER_DESK_HOME_DIR, 'extensions');

@@ -242,18 +242,21 @@ describe('FileWatcherManager', () => {
   it('keeps active watchers unchanged and reads the latest mode when creating a new watcher', async () => {
     const { FileWatchMode } = await import('@common/types');
     const { shouldUsePolling } = await import('@/utils/file-watch');
+    const { resolve } = await vi.importActual<typeof import('path')>('path');
+    const requestedDirectory = '/dir/test';
+    const directory = resolve(requestedDirectory);
     const settings = { fileWatchMode: FileWatchMode.Native };
     manager = new FileWatcherManager({ getSettings: () => settings } as never);
-    const first = await manager.watch('/dir/test', vi.fn());
+    const first = await manager.watch(requestedDirectory, vi.fn());
     settings.fileWatchMode = FileWatchMode.Polling;
-    const second = await manager.watch('/dir/test', vi.fn());
+    const second = await manager.watch(requestedDirectory, vi.fn());
     expect(watchers).toHaveLength(1);
     expect(shouldUsePolling).toHaveBeenCalledTimes(1);
-    expect(shouldUsePolling).toHaveBeenLastCalledWith('/dir/test', FileWatchMode.Native);
+    expect(shouldUsePolling).toHaveBeenLastCalledWith(directory, FileWatchMode.Native);
     first.unwatch();
     second.unwatch();
-    await manager.watch('/dir/test', vi.fn());
-    expect(shouldUsePolling).toHaveBeenLastCalledWith('/dir/test', FileWatchMode.Polling);
+    await manager.watch(requestedDirectory, vi.fn());
+    expect(shouldUsePolling).toHaveBeenLastCalledWith(directory, FileWatchMode.Polling);
   });
 
   it('serializes concurrent setup for the same key and releases every subscription', async () => {

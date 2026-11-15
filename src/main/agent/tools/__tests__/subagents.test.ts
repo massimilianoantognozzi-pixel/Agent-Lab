@@ -176,6 +176,202 @@ describe('subagent tool sessions', () => {
     await expect(wait({ workerId: handles[0].workerId, timeoutMs: 1000 }, {} as never)).resolves.toMatchObject({ error: 'The task context has been cleared.' });
   });
 
+  it('returns the first finished worker from a batch and leaves the other worker available', async () => {
+    const profiles = ['fast', 'slow'].map((name) => ({ id: name, name, subagent: { invocationMode: 'on-demand', description: name } }));
+    const finish = new Map<string, () => void>();
+    const gates = new Map(profiles.map(({ name }) => [name, new Promise<void>((resolve) => finish.set(name, resolve))]));
+    const task = {
+      project: {},
+      getTaskDir: () => '/fixture',
+      saveWorkerHistory: vi.fn(),
+      trackWorkerRun: vi.fn(),
+      claimWorkerTurn: vi.fn(() => true),
+      releaseWorkerTurn: vi.fn(),
+    };
+    vi.mocked(runSubagentTask).mockImplementation(async ({ targetSubagent, turnId }) => {
+      await gates.get(targetSubagent.name);
+      return {
+        status: 'success',
+        messages: [{ id: targetSubagent.name, role: 'assistant', content: targetSubagent.name }],
+        promptContext: { id: turnId! },
+      };
+    });
+    const tools = await createSubagentsToolset({} as never, task as never, { getProjectProfiles: () => profiles } as never, {} as never);
+    const waitTool = tools['subagents---wait_task'];
+    const run = tools['subagents---run_task'].execute!;
+    const wait = waitTool.execute!;
+    try {
+      const [fast, slow] = (await Promise.all(profiles.map(({ name }) => run({ subagentId: name, prompt: 'inspect', background: true }, {} as never)))) as {
+        workerId: string;
+      }[];
+      const request = { workerIds: [slow.workerId, fast.workerId], timeoutMs: 1 };
+      expect((waitTool.inputSchema as { safeParse: (value: unknown) => { success: boolean } }).safeParse(request).success).toBe(true);
+      await expect(wait(request, {} as never)).resolves.toEqual({ status: {}, timedOut: true });
+
+      const batch = wait({ ...request, timeoutMs: 1000 }, {} as never);
+      finish.get('fast')!();
+      const first = (await batch) as { status: Record<string, unknown>; timedOut: boolean };
+      expect(first).toMatchObject({
+        status: { [fast.workerId]: { workerId: fast.workerId, status: 'success', messages: [{ content: 'fast' }] } },
+        timedOut: false,
+      });
+      expect(Object.keys(first.status)).toEqual([fast.workerId]);
+      expect(task.releaseWorkerTurn).toHaveBeenCalledTimes(1);
+      await expect(tools['subagents---send_message'].execute!({ workerId: slow.workerId, message: 'keep working' }, {} as never)).resolves.toEqual({
+        workerId: slow.workerId,
+        status: 'queued',
+      });
+
+      finish.get('slow')!();
+      await expect(wait({ workerId: slow.workerId, timeoutMs: 1000 }, {} as never)).resolves.toMatchObject({
+        workerId: slow.workerId,
+        status: 'success',
+        messages: [{ content: 'slow' }],
+      });
+    } finally {
+      for (const release of finish.values()) {
+        release();
+      }
+    }
+  });
+
+  it('returns all already terminal workers without relaunching any of them', async () => {
+    const ids = ['723449a0-83ec-4676-9f85-d77461069b8e', '70860f16-66c2-4c91-801d-246c11014321', '6dca1565-da83-44f3-8e0f-7a8e80fd1179'];
+    const profile = { id: 'alpha', name: 'alpha', subagent: { invocationMode: 'on-demand', description: 'alpha' } };
+    const messages = [{ id: 'complete', role: 'assistant', content: 'old result' }];
+    const task = {
+      project: {},
+      getTaskDir: () => '/fixture',
+      readWorkerHistory: vi.fn(async (id: string) => ({
+        profileId: profile.id,
+        directory: id === ids[2] ? '/another-checkout' : '/fixture',
+        state: id === ids[1] ? 'running' : 'success',
+        messages,
+      })),
+    };
+    vi.mocked(runSubagentTask).mockClear();
+    const tools = await createSubagentsToolset({} as never, task as never, { getProjectProfiles: () => [profile] } as never, {} as never);
+    const wait = tools['subagents---wait_task'].execute!;
+    await expect(wait({ workerIds: [...ids, ids[0]], timeoutMs: 1 }, {} as never)).resolves.toMatchObject({
+      status: {
+        [ids[0]]: { status: 'success', messages },
+        [ids[1]]: { status: 'interrupted', messages },
+        [ids[2]]: { status: 'not_found' },
+      },
+      timedOut: false,
+    });
+    expect(task.readWorkerHistory).toHaveBeenCalledTimes(3);
+    expect(runSubagentTask).not.toHaveBeenCalled();
+  });
+
+  it.each(['single', 'batch'] as const)('cancels a pending %s wait without collecting the worker', async (mode) => {
+    const profile = { id: 'alpha', name: 'alpha', subagent: { invocationMode: 'on-demand', description: 'alpha' } };
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const task = {
+      project: {},
+      getTaskDir: () => '/fixture',
+      saveWorkerHistory: vi.fn(),
+      trackWorkerRun: vi.fn(),
+      claimWorkerTurn: vi.fn(() => true),
+      releaseWorkerTurn: vi.fn(),
+    };
+    vi.mocked(runSubagentTask).mockImplementation(async () => {
+      await gate;
+      return { status: 'success', messages: [], promptContext: { id: 'finished' } };
+    });
+    const tools = await createSubagentsToolset({} as never, task as never, { getProjectProfiles: () => [profile] } as never, {} as never);
+    const { workerId } = (await tools['subagents---run_task'].execute!({ subagentId: profile.name, prompt: 'inspect', background: true }, {} as never)) as {
+      workerId: string;
+    };
+    const wait = tools['subagents---wait_task'].execute!;
+    const controller = new AbortController();
+    const pending = wait({ ...(mode === 'single' ? { workerId } : { workerIds: [workerId] }), timeoutMs: 1000 }, { abortSignal: controller.signal } as never);
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    try {
+      await Promise.resolve();
+      controller.abort();
+      await rejected;
+      expect(task.releaseWorkerTurn).not.toHaveBeenCalled();
+      finish();
+      await expect(wait({ workerId }, {} as never)).resolves.toMatchObject({ workerId, status: 'success' });
+    } finally {
+      finish();
+    }
+  });
+
+  it('returns a saved result alongside the error from a worker whose final write failed', async () => {
+    const profiles = ['saved', 'failed'].map((name) => ({ id: name, name, subagent: { invocationMode: 'on-demand', description: name } }));
+    const task = {
+      project: {},
+      getTaskDir: () => '/fixture',
+      saveWorkerHistory: vi.fn(async (...[, record]: [string, WorkerRecord]) => {
+        if (record.profileId === 'failed' && record.state === 'success') {
+          throw new Error('fixture cannot save completed output');
+        }
+      }),
+      trackWorkerRun: vi.fn<(promise: Promise<unknown>) => void>(),
+      claimWorkerTurn: vi.fn(() => true),
+      releaseWorkerTurn: vi.fn(),
+    };
+    vi.mocked(runSubagentTask).mockResolvedValue({ status: 'success', messages: [], promptContext: { id: 'finished' } });
+    const tools = await createSubagentsToolset({} as never, task as never, { getProjectProfiles: () => profiles } as never, {} as never);
+    const run = tools['subagents---run_task'].execute!;
+    const [saved, failed] = (await Promise.all(profiles.map(({ name }) => run({ subagentId: name, prompt: 'inspect', background: true }, {} as never)))) as {
+      workerId: string;
+    }[];
+    await Promise.allSettled(task.trackWorkerRun.mock.calls.map(([promise]) => promise));
+    await expect(tools['subagents---wait_task'].execute!({ workerIds: [saved.workerId, failed.workerId] }, {} as never)).resolves.toMatchObject({
+      status: {
+        [saved.workerId]: { status: 'success' },
+        [failed.workerId]: { status: 'error', error: 'fixture cannot save completed output' },
+      },
+      timedOut: false,
+    });
+  });
+
+  it('waits for a worker resumed while its stored result is being read', async () => {
+    const workerId = '723449a0-83ec-4676-9f85-d77461069b8e';
+    const profile = { id: 'alpha', name: 'alpha', subagent: { invocationMode: 'on-demand', description: 'alpha' } };
+    const record: WorkerRecord = { profileId: profile.id, directory: '/fixture', state: 'running', turnId: 'original', messages: [] };
+    let releaseRead!: (record: WorkerRecord) => void;
+    let finish!: () => void;
+    const firstRead = new Promise<WorkerRecord>((resolve) => {
+      releaseRead = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const task = {
+      project: {},
+      getTaskDir: () => '/fixture',
+      readWorkerHistory: vi.fn(async () => record).mockReturnValueOnce(firstRead),
+      saveWorkerHistory: vi.fn(),
+      trackWorkerRun: vi.fn(),
+      claimWorkerTurn: vi.fn(() => true),
+      releaseWorkerTurn: vi.fn(),
+    };
+    vi.mocked(runSubagentTask).mockImplementation(async () => {
+      await gate;
+      return { status: 'success', messages: [], promptContext: { id: 'original' } };
+    });
+    const tools = await createSubagentsToolset({} as never, task as never, { getProjectProfiles: () => [profile] } as never, {} as never);
+    const wait = tools['subagents---wait_task'].execute!;
+    const pending = wait({ workerIds: [workerId], timeoutMs: 1 }, {} as never);
+    try {
+      await expect(tools['subagents---resume_task'].execute!({ workerId }, {} as never)).resolves.toMatchObject({ workerId, status: 'running' });
+      releaseRead(record);
+      await expect(pending).resolves.toEqual({ status: {}, timedOut: true });
+      finish();
+      await expect(wait({ workerId }, {} as never)).resolves.toMatchObject({ workerId, status: 'success' });
+    } finally {
+      releaseRead(record);
+      finish();
+    }
+  });
+
   it('resumes only a worker whose successful result belongs to the current task history', async () => {
     const workerId = '723449a0-83ec-4676-9f85-d77461069b8e';
     const alpha = { name: 'alpha', subagent: { invocationMode: 'on-demand', description: 'alpha' } };

@@ -282,6 +282,31 @@ export class ContextManager {
     }
   }
 
+  async applyCompaction(messages: ContextMessage[], abortSignal?: AbortSignal): Promise<void> {
+    if (!this.loaded) {
+      await this.load();
+    }
+    abortSignal?.throwIfAborted();
+
+    const previousMessages = this.messages;
+    const previousUndo = this.undoSnapshot;
+    try {
+      await this.task.clearContext(false, false, true, false, () => {
+        abortSignal?.throwIfAborted();
+        this.messages = messages;
+      });
+      this.sendLoadedMessages();
+      if (previousMessages.length) {
+        this.undoSnapshot = [...previousMessages];
+      }
+      this.autosave();
+    } catch (error) {
+      this.messages = previousMessages;
+      this.undoSnapshot = previousUndo;
+      throw error;
+    }
+  }
+
   async getContextMessages(): Promise<ContextMessage[]> {
     if (!this.loaded) {
       await this.load();
@@ -938,9 +963,12 @@ export class ContextManager {
     await this.task.clearContext(false, false, updateTaskState, false);
 
     this.messages = messages;
+    this.sendLoadedMessages();
+  }
 
+  private sendLoadedMessages(): void {
     // Get the messages data and send them to the UI
-    const messagesData = this.getContextMessagesData(messages);
+    const messagesData = this.getContextMessagesData();
 
     for (const messageData of messagesData) {
       if (messageData.type === 'user') {

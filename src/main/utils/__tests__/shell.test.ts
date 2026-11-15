@@ -11,13 +11,20 @@
  *   1. Setting process.env.SHELL to a known shell path
  *   2. Mocking fs.existsSync to return true for that path
  *   3. Resetting the module cache so the static cache is cleared
- *   4. Setting process.platform to a non-win32 value
+ *   4. Simulating the relevant platform for each shell
  */
 
 import * as os from 'os';
 import * as path from 'path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.unmock('path');
+
+vi.mock('os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('os')>()),
+  homedir: () => '/home/fixture',
+}));
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
@@ -47,21 +54,18 @@ const importShellModule = async () => {
 };
 
 const setupShell = async (shellName: 'bash' | 'zsh' | 'fish' | 'cmd' | 'pwsh' | 'powershell') => {
-  // Use platform-specific shell paths
-  const isWindows = process.platform === 'win32';
-  let shellPath: string;
-  if (shellName === 'cmd') {
-    shellPath = isWindows ? path.join(process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe') : '/usr/bin/cmd';
-  } else if (shellName === 'pwsh') {
-    shellPath = isWindows ? 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' : '/usr/local/bin/pwsh';
-  } else if (shellName === 'powershell') {
-    shellPath = isWindows ? 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' : '/usr/local/bin/powershell';
-  } else {
-    const dir = isWindows ? 'C:\\Program Files\\Git\\bin' : '/usr/local/bin';
-    shellPath = path.join(dir, shellName);
+  const isWindows = shellName === 'cmd' || shellName === 'pwsh' || shellName === 'powershell';
+  Object.defineProperty(process, 'platform', { configurable: true, value: isWindows ? 'win32' : 'linux' });
+  const bin = path.resolve('shell-fixture', 'bin');
+  const systemRoot = path.resolve('shell-fixture', 'Windows');
+  let shellPath = path.posix.join('/usr/local/bin', shellName);
+  if (isWindows) {
+    vi.stubEnv('SYSTEMROOT', systemRoot);
+    vi.stubEnv('PATH', bin);
+    shellPath = shellName === 'cmd' ? path.join(systemRoot, 'System32', 'cmd.exe') : path.join(bin, `${shellName}.exe`);
   }
 
-  process.env.SHELL = shellPath;
+  vi.stubEnv('SHELL', isWindows ? undefined : shellPath);
 
   // Mock existsSync to return true for the configured shell path so the
   // ShellDetector accepts it. Return false for everything else to avoid
@@ -69,10 +73,11 @@ const setupShell = async (shellName: 'bash' | 'zsh' | 'fish' | 'cmd' | 'pwsh' | 
   vi.mocked((await import('fs')).existsSync).mockImplementation(((p: string) => {
     return String(p) === shellPath;
   }) as any);
+  return shellPath;
 };
 
 describe('getShellInitCommand', () => {
-  const originalShell = process.env.SHELL;
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
   const homeDir = os.homedir();
 
   beforeEach(() => {
@@ -80,11 +85,8 @@ describe('getShellInitCommand', () => {
   });
 
   afterEach(() => {
-    if (originalShell === undefined) {
-      delete process.env.SHELL;
-    } else {
-      process.env.SHELL = originalShell;
-    }
+    Object.defineProperty(process, 'platform', originalPlatform);
+    vi.unstubAllEnvs();
     vi.resetModules();
   });
 
@@ -193,23 +195,14 @@ describe('getShellInitCommand', () => {
     });
   });
 
-  describe('unsupported shells (cmd, pwsh, powershell)', () => {
-    it('returns empty string for cmd shell', async () => {
-      await setupShell('cmd');
-      const { getShellInitCommand } = await importShellModule();
-      expect(getShellInitCommand()).toBe('');
-    });
-
-    it('returns empty string for pwsh shell', async () => {
-      await setupShell('pwsh');
-      const { getShellInitCommand } = await importShellModule();
-      expect(getShellInitCommand()).toBe('');
-    });
-
-    it('returns empty string for powershell shell', async () => {
-      await setupShell('powershell');
-      const { getShellInitCommand } = await importShellModule();
-      expect(getShellInitCommand()).toBe('');
-    });
+  it.each([
+    ['cmd', '/c'],
+    ['pwsh', '-Command'],
+    ['powershell', '-Command'],
+  ] as const)('does not use a Unix init prefix for Windows %s', async (shellName, option) => {
+    const shell = await setupShell(shellName);
+    const { getShellInitCommand, getShellCommandArgs } = await importShellModule();
+    expect(getShellCommandArgs('echo fixture')).toEqual({ shell, args: [option, 'echo fixture'] });
+    expect(getShellInitCommand()).toBe('');
   });
 });

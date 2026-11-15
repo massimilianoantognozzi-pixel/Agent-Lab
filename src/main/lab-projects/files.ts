@@ -9,6 +9,8 @@ import { digest, projectControl, readProjectState, safeProjectPath, sourceFiles 
 
 import type { UpdatedFile } from '@common/types';
 
+import { renameWithWindowsRetry } from '@/utils/atomic-write';
+
 type Revision = {
   id: string;
   file: string;
@@ -59,7 +61,7 @@ const durable = async (file: string, bytes: string | Buffer, exclusive = true): 
 const atomicJson = async (file: string, value: unknown): Promise<void> => {
   const temporary = file + '-' + randomUUID() + '.tmp';
   await durable(temporary, JSON.stringify(value));
-  await fs.rename(temporary, file);
+  await renameWithWindowsRetry(temporary, file);
 };
 
 export const writeProjectFile = async (

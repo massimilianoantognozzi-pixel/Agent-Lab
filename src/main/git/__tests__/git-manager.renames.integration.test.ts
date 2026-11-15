@@ -12,6 +12,7 @@ vi.unmock('fs');
 vi.unmock('path');
 
 const originalContent = 'first line\nsecond line\nthird line\nfourth line\nfifth line\n';
+const unusualNames = process.platform === 'win32' ? ['café (copy).txt', 'quote$(literal).txt'] : ['tab\tand\nnewline.txt', 'quote"and$(literal).txt'];
 
 describe('Updated Files renames', () => {
   let projectPath: string;
@@ -26,6 +27,7 @@ describe('Updated Files renames', () => {
     await git.addConfig('user.name', 'Test');
     await git.addConfig('user.email', 'test@example.invalid');
     await git.addConfig('diff.renames', 'false');
+    await git.addConfig('core.autocrlf', 'false');
     await git.checkoutLocalBranch('main');
     await writeFile(join(projectPath, 'original.txt'), originalContent);
     await git.add('original.txt');
@@ -67,7 +69,7 @@ describe('Updated Files renames', () => {
     expect((await simpleGit(projectPath).status()).files).toEqual([]);
   });
 
-  it.each(['renamed file.txt', 'tab\tand\nnewline.txt', 'quote"and$(literal).txt'])('preserves unusual paths and edits: %j', async (newPath) => {
+  it.each(['renamed file.txt', ...unusualNames])('preserves unusual paths and edits: %j', async (newPath) => {
     const git = simpleGit(projectPath);
     await git.mv('original.txt', newPath);
     await writeFile(join(projectPath, newPath), `${originalContent}added line\n`);
@@ -123,7 +125,7 @@ describe('Updated Files renames', () => {
 
   it('preserves unusual source paths and binary rename records', async () => {
     const git = simpleGit(projectPath);
-    const oldPath = 'old\tname\n.bin';
+    const oldPath = process.platform === 'win32' ? 'old café (copy).bin' : 'old\tname\n.bin';
     await writeFile(join(projectPath, oldPath), Buffer.from([0, 1, 2, 3]));
     await git.add(oldPath);
     await git.commit('binary file');
@@ -131,6 +133,19 @@ describe('Updated Files renames', () => {
 
     expect(await manager.getUpdatedFiles(projectPath)).toEqual([{ path: 'new.bin', previousPath: oldPath, additions: 0, deletions: 0, diff: '' }]);
     await manager.restoreFile(projectPath, 'new.bin', oldPath);
+    expect(await readFile(join(projectPath, oldPath))).toEqual(Buffer.from([0, 1, 2, 3]));
+    expect((await git.status()).files).toEqual([]);
+  });
+
+  it('restores a renamed text file with the configured CRLF checkout conversion', async () => {
+    const git = simpleGit(projectPath);
+    await git.addConfig('core.autocrlf', 'true');
+    await git.mv('original.txt', 'renamed file.txt');
+
+    await manager.restoreFile(projectPath, 'renamed file.txt', 'original.txt');
+
+    expect(await readFile(join(projectPath, 'original.txt'), 'utf8')).toBe(originalContent.replace(/\n/g, '\r\n'));
+    await expect(readFile(join(projectPath, 'renamed file.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await git.status()).files).toEqual([]);
   });
 

@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
@@ -37,7 +37,32 @@ export type AgentGoal = z.infer<typeof goalSchema>;
 
 export type CreateGoalInTurn = (objective: string, userAuthorization: string, tokenBudget?: number) => Promise<AgentGoalTurn>;
 
-export type GoalVerification = { command: string; revision: string | undefined; generation: number };
+export type GoalVerification = {
+  command: string;
+  revision: string;
+  generation: number;
+  scope: import('./goal-verification').GoalVerificationScope;
+};
+
+const goalVerificationReceiptSchema = z.object({
+  toolCallId: z.string().min(1),
+  command: z.string().min(1),
+  revision: z.string().regex(/^[a-f0-9]{64}$/),
+  root: z.string().min(1),
+  npmScriptIdentified: z.literal(true).optional(),
+});
+export const goalVerificationCheckpointSchema = z.object({
+  binding: z.string(),
+  receipts: z.array(goalVerificationReceiptSchema),
+});
+export type GoalVerificationReceipt = z.infer<typeof goalVerificationReceiptSchema>;
+export type GoalVerificationCheckpoint = z.infer<typeof goalVerificationCheckpointSchema>;
+export type GoalVerificationUpdate = { goalId: string; binding: string; command: string; receipt?: GoalVerificationReceipt; isCurrent: () => boolean };
+
+export const goalVerificationBinding = (goal: AgentGoal): string =>
+  createHash('sha256')
+    .update(JSON.stringify([goal.id, goal.objective, goal.verifier ?? null]))
+    .digest('hex');
 
 export type AgentGoalTurn = {
   goal: AgentGoal;
@@ -51,10 +76,21 @@ export type AgentGoalTurn = {
   canExecute: () => Promise<boolean>;
   beginVerification: (input: Record<string, unknown> | undefined) => Promise<GoalVerification | undefined>;
   continueVerification: (verification: GoalVerification) => GoalVerification;
-  acceptToolResult: (id: string, verification: GoalVerification | undefined, output: unknown, stillCurrent?: () => boolean) => Promise<void>;
+  acceptToolResult: (
+    id: string,
+    verification: GoalVerification | undefined,
+    output: unknown,
+    stillCurrent?: () => boolean,
+    persist?: (update: GoalVerificationUpdate) => Promise<boolean>,
+  ) => Promise<void>;
   reportUsageLimit: () => Promise<void>;
   reportTerminalError: () => Promise<void>;
-  invalidateVerification: () => void;
+  invalidateVerification: (clearReceipts?: boolean) => void;
+};
+
+export type AgentGoalUsage = {
+  onUsage: AgentGoalTurn['onUsage'];
+  canSample: () => boolean | Promise<boolean>;
 };
 
 export const agentGoalCommandPattern = /^\/goal(?:\s+([\s\S]*))?$/;
@@ -64,21 +100,29 @@ export const uncachedGoalTokens = (
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
-    inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number };
+    inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
   },
   normalized?: { sentTokens: number; receivedTokens: number },
 ): number | undefined => {
   const count = (value: number | undefined) => (value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
-  const cached = count(usage?.inputTokenDetails?.cacheReadTokens) ?? 0;
+  const cached = count(usage?.inputTokenDetails?.cacheReadTokens);
   const input = count(usage?.inputTokens);
   const output = count(usage?.outputTokens);
   const total = count(usage?.totalTokens);
   const explicitUncached = count(usage?.inputTokenDetails?.noCacheTokens);
   if (output !== undefined && (explicitUncached !== undefined || input !== undefined)) {
-    const uncached = explicitUncached ?? count(normalized?.sentTokens) ?? Math.max(0, input! - cached);
-    return count(uncached + output);
+    if (input !== undefined && cached !== undefined && cached <= input) {
+      return count(input - cached + output);
+    }
+    if (explicitUncached !== undefined) {
+      return count(explicitUncached + (count(usage?.inputTokenDetails?.cacheWriteTokens) ?? 0) + output);
+    }
+    if (input !== undefined && cached === undefined) {
+      return count((count(normalized?.sentTokens) ?? input) + output);
+    }
+    return undefined;
   }
-  return total === undefined ? undefined : Math.max(0, total - cached);
+  return total === undefined ? undefined : count(total - (cached ?? 0));
 };
 
 export const newAgentGoal = (objective: string, tokenBudget?: number, verifier?: string): AgentGoal =>

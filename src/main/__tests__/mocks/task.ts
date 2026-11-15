@@ -13,6 +13,7 @@ export const createMockTask = (overrides: Partial<TaskData> = {}) => {
     getTaskDir: vi.fn((): string => '/test/project'),
     task: { autonomyMode: 'guided' } as TaskData,
     getRuleFilesAsContextFiles: vi.fn((): Promise<ContextFile[]> => Promise.resolve([])),
+    getRuleContext: vi.fn(async () => ({ files: [], instructionDirectory: '/test/project', projectDirectory: '/test/project' })),
     project: {
       baseDir: '/test/project',
     },

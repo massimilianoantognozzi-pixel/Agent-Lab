@@ -13,6 +13,7 @@ vi.mock('@/utils', () => ({
   deriveDirName: vi.fn((name: string) => name.toLowerCase().replace(/\s+/g, '-')),
 }));
 vi.mock('fs/promises');
+vi.unmock('path');
 
 import * as fs from 'fs/promises';
 import path from 'path';
@@ -23,8 +24,9 @@ import { AgentProfile } from '@common/types';
 import { AgentProfileManager } from '../agent-profile-manager';
 
 import type { ExtensionManager } from '@/extensions/extension-manager';
+import type { Project } from '@/project';
 
-import { AIDER_DESK_HOME_DIR } from '@/constants';
+import { AIDER_DESK_AGENTS_DIR, AIDER_DESK_HOME_DIR, AIDER_DESK_RULES_DIR } from '@/constants';
 import { createMockAgentProfile } from '@/__tests__/mocks';
 
 describe('AgentProfileManager', () => {
@@ -332,6 +334,118 @@ describe('AgentProfileManager', () => {
 
       // reloadProfiles should call notifyListeners
       expect(mockEventManager.sendAgentProfilesUpdated).toHaveBeenCalled();
+    });
+  });
+
+  describe('project overlays on shared profiles', () => {
+    const alpha = { baseDir: path.resolve('fixture-alpha') } as Project;
+    const beta = { baseDir: path.resolve('fixture-beta') } as Project;
+    const dirName = 'shared-profile';
+    const rulesDir = (project: Project) => path.join(project.baseDir, AIDER_DESK_AGENTS_DIR, dirName, AIDER_DESK_RULES_DIR);
+    const globalRule = path.join(globalAgentsDir, dirName, AIDER_DESK_RULES_DIR, 'global.md');
+    let shared: AgentProfile;
+
+    beforeEach(() => {
+      shared = createMockAgentProfile({ id: 'shared', ruleFiles: [globalRule] });
+      (agentProfileManager as any).profiles.set(shared.id, { dirName, order: 0, agentProfile: shared });
+      Reflect.get(agentProfileManager, 'managedRuleSources').set(shared.ruleFiles, { profileId: shared.id, dirName });
+      (fs.realpath as any).mockImplementation(async (file: string) => file);
+      (fs.stat as any).mockRejectedValue(Object.assign(new Error('fixture file is missing'), { code: 'ENOENT' }));
+      (fs.readdir as any).mockImplementation(async (dir: string) => {
+        const name = dir === rulesDir(alpha) ? 'alpha.md' : 'beta.md';
+        return [{ name, isFile: () => true }];
+      });
+    });
+
+    it('keeps each overlay out of the shared profile and picks up local deletion on the next read', async () => {
+      const modelOverride = { ...shared, model: 'another-model' };
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(modelOverride, alpha)).toEqual([globalRule, path.join(rulesDir(alpha), 'alpha.md')]);
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(modelOverride, beta)).toEqual([globalRule, path.join(rulesDir(beta), 'beta.md')]);
+      expect(agentProfileManager.getProfile(shared.id)?.ruleFiles).toEqual([globalRule]);
+      (fs.readdir as any).mockResolvedValueOnce([]);
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(modelOverride, alpha)).toEqual([globalRule]);
+    });
+
+    it('keeps a configured local profile separate and skips a directory resolved outside the project', async () => {
+      (fs.stat as any).mockResolvedValueOnce({});
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(shared, alpha)).toEqual([globalRule]);
+      (fs.realpath as any).mockImplementation(async (file: string) => (file === rulesDir(alpha) ? rulesDir(beta) : file));
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(shared, alpha)).toEqual([globalRule]);
+      expect(fs.readdir).not.toHaveBeenCalled();
+    });
+
+    it('preserves extension rules and omits a project-bound profile from a different project prompt', async () => {
+      const extensionProfile = { ...shared, ruleFiles: [...(shared.ruleFiles ?? [])] };
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(extensionProfile, alpha)).toEqual([globalRule]);
+      const projectProfile = { ...shared, projectDir: alpha.baseDir, ruleFiles: [path.join(rulesDir(alpha), 'alpha.md'), globalRule] };
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(projectProfile, alpha)).toEqual(projectProfile.ruleFiles);
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(projectProfile, beta)).toEqual([]);
+      expect(fs.readdir).not.toHaveBeenCalled();
+    });
+
+    it('applies a local overlay to the selected managed profile despite a context-dependent extension using the same ID', async () => {
+      const extensionProfile = { ...shared, ruleFiles: [...(shared.ruleFiles ?? [])] };
+      vi.mocked(mockExtensionManager.getAgentById).mockReturnValueOnce({ agent: extensionProfile, extensionId: 'fixture', extensionName: 'Fixture' });
+      expect(await agentProfileManager.getRuleFilesForProjectProfile({ ...shared, model: 'override' }, alpha)).toEqual([
+        globalRule,
+        path.join(rulesDir(alpha), 'alpha.md'),
+      ]);
+    });
+
+    it('keeps the selected profile scoped if the manager reloads it before prompt assembly', async () => {
+      const selected = { ...shared, model: 'override' };
+      const reloaded = { ...shared, ruleFiles: [...(shared.ruleFiles ?? [])] };
+      (agentProfileManager as any).profiles.set(shared.id, { dirName, order: 0, agentProfile: reloaded });
+      Reflect.get(agentProfileManager, 'managedRuleSources').set(reloaded.ruleFiles, { profileId: shared.id, dirName });
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(selected, alpha)).toEqual([globalRule, path.join(rulesDir(alpha), 'alpha.md')]);
+    });
+
+    it('retains the current scoped profile while a directory reload is still reading from disk', async () => {
+      const selected = { ...shared, model: 'override' };
+      let reading!: () => void;
+      let finishRead!: (entries: unknown[]) => void;
+      const started = new Promise<void>((resolve) => {
+        reading = resolve;
+      });
+      const pending = new Promise<unknown[]>((resolve) => {
+        finishRead = resolve;
+      });
+      (fs.readdir as any).mockImplementationOnce(async () => {
+        reading();
+        return pending;
+      });
+      const reload = Reflect.get(agentProfileManager, 'reloadProfiles').call(agentProfileManager, globalAgentsDir);
+      await started;
+      try {
+        expect(await agentProfileManager.getRuleFilesForProjectProfile(selected, alpha)).toEqual([globalRule, path.join(rulesDir(alpha), 'alpha.md')]);
+      } finally {
+        finishRead([]);
+        await reload;
+      }
+      expect(await agentProfileManager.getRuleFilesForProjectProfile(selected, alpha)).toEqual([globalRule]);
+    });
+
+    it('retains the available directory snapshot when an existing profile is temporarily unreadable', async () => {
+      (fs.readdir as any).mockResolvedValueOnce([{ name: dirName, isDirectory: () => true }]);
+      (fs.stat as any).mockResolvedValueOnce({});
+      (fs.readFile as any).mockResolvedValueOnce('{}').mockRejectedValueOnce(Object.assign(new Error('fixture file is busy'), { code: 'EBUSY' }));
+      await Reflect.get(agentProfileManager, 'reloadProfiles').call(agentProfileManager, globalAgentsDir);
+      expect(agentProfileManager.getProfile(shared.id)).toBe(shared);
+    });
+
+    it('skips a malformed profile without withholding a valid profile update in the same directory', async () => {
+      (fs.readdir as any).mockResolvedValueOnce([
+        { name: 'malformed', isDirectory: () => true },
+        { name: dirName, isDirectory: () => true },
+      ]);
+      (fs.readFile as any)
+        .mockResolvedValueOnce('{}')
+        .mockResolvedValueOnce('{')
+        .mockResolvedValueOnce(JSON.stringify({ ...shared, name: 'Updated shared profile' }));
+
+      await Reflect.get(agentProfileManager, 'reloadProfiles').call(agentProfileManager, globalAgentsDir);
+
+      expect(agentProfileManager.getAllProfiles().map(({ name }) => name)).toEqual(['Updated shared profile']);
     });
   });
 });

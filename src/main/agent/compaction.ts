@@ -6,14 +6,21 @@ import type { Task } from '@/task';
 export { CompactionLevel, smartCompactMessages } from './smart-compaction';
 export type { SmartCompactionPass, SmartCompactionPassSelection } from './smart-compaction';
 
-export const extractSummary = (content: string): string => {
+export const extractUsableSummary = (content: string | undefined): string | undefined => {
+  if (!content?.trim()) {
+    return undefined;
+  }
   const lines = content.split('\n');
   const summaryMarker = '### **Conversation Summary**';
   const markerIndex = lines.findIndex((line) => line.trim() === summaryMarker);
-  if (markerIndex !== -1) {
-    return lines.slice(markerIndex).join('\n');
+  if (markerIndex === -1) {
+    return content;
   }
-  return content;
+  const body = lines
+    .slice(markerIndex + 1)
+    .join('\n')
+    .trim();
+  return body ? lines.slice(markerIndex).join('\n') : undefined;
 };
 
 export const getSubagentOldResultIds = (resultMessages: ContextMessage[], userRequestMessageId: string): string[] =>
@@ -21,16 +28,12 @@ export const getSubagentOldResultIds = (resultMessages: ContextMessage[], userRe
 
 export const getReloadableMessages = (messages: ContextMessage[]): ContextMessage[] => messages.filter((m) => m.role !== 'user');
 
-export const buildCompactSummaryMessages = (
-  userMessage: ContextMessage,
-  summaryContent: string | undefined,
-  promptContext?: PromptContext,
-): ContextMessage[] => [
+export const buildCompactSummaryMessages = (userMessage: ContextMessage, summaryContent: string, promptContext?: PromptContext): ContextMessage[] => [
   userMessage,
   {
     id: uuidv4(),
     role: 'assistant',
-    content: summaryContent ? extractSummary(summaryContent) : 'Failed to generate summary.',
+    content: summaryContent,
     promptContext,
     timestamp: Date.now(),
   },
@@ -54,7 +57,7 @@ export const generateCompactedSummary = async (
     abortSignal?: AbortSignal,
     sessionId?: string,
   ) => Promise<string | undefined> = async () => undefined,
-): Promise<ContextMessage[]> => {
+): Promise<ContextMessage[] | undefined> => {
   const compactPrompt = await getCompactConversationPrompt(task, undefined);
   const summaryText = await generateText(
     `${profile.provider}/${profile.model}`,
@@ -66,5 +69,6 @@ export const generateCompactedSummary = async (
     abortSignal,
     task.task.id,
   );
-  return buildCompactSummaryMessages(userMessage, summaryText, promptContext);
+  const summary = extractUsableSummary(summaryText);
+  return summary ? buildCompactSummaryMessages(userMessage, summary, promptContext) : undefined;
 };

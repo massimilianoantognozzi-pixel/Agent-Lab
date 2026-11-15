@@ -1,5 +1,5 @@
 /* eslint-disable import/order */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock dependencies BEFORE importing
 vi.mock('@/logger', () => ({
@@ -118,8 +118,15 @@ vi.mock('uuid', () => ({
 import { SKILLS_TOOL_ACTIVATE_SKILL, SKILLS_TOOL_GROUP_NAME, TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
 import { Task } from '../task';
-import { newAgentGoal, type AgentGoal } from '../agent-goal';
-import { describeInterruptedTools, reconcileTurnProgress, rememberCompletedShell, type RootTurnRecord } from '@/agent/worker-checkpoint';
+import { goalVerificationBinding, newAgentGoal, type AgentGoal, type GoalVerificationUpdate } from '../agent-goal';
+import * as goalVerification from '../goal-verification';
+import {
+  describeInterruptedTools,
+  reconcileTurnProgress,
+  rememberCompletedShell,
+  rememberGoalVerification,
+  type RootTurnRecord,
+} from '@/agent/worker-checkpoint';
 
 import type { ContextMessage, ToolCallPart, ToolResultPart } from '@common/types';
 import { DefaultTaskState, MessageRole } from '@common/types';
@@ -321,6 +328,12 @@ describe('Task - findSkillActivationMessages', () => {
   });
 
   describe('ordinary Agent goals', () => {
+    afterEach(() => vi.restoreAllMocks());
+    const bindVerification = (revision?: string) => {
+      vi.spyOn(goalVerification, 'resolveGoalVerificationScope').mockResolvedValue({ root: baseDir, directory: baseDir });
+      return vi.spyOn(goalVerification, 'goalWorktreeRevision').mockResolvedValue(revision);
+    };
+
     const bindGoal = (initial: AgentGoal) => {
       let goal: AgentGoal | null = initial;
       const store = {
@@ -416,6 +429,7 @@ describe('Task - findSkillActivationMessages', () => {
     });
 
     it('requires the native verifier and commits only after an admitted completion is persisted', async () => {
+      bindVerification('verified-revision');
       const goal = newAgentGoal('Make the regression pass', 50, 'node verify.cjs');
       const store = bindGoal(goal);
       vi.spyOn(task, 'addLogMessage').mockImplementation(() => {});
@@ -447,7 +461,273 @@ describe('Task - findSkillActivationMessages', () => {
       await expect(second.canExecute()).resolves.toBe(false);
     });
 
+    it('does not certify a named verifier when the checkout revision is unavailable', async () => {
+      bindVerification();
+      const goal = newAgentGoal('Verify the actual outcome', undefined, 'node verify.cjs');
+      bindGoal(goal);
+      const createTurn = Reflect.get(task, 'createAgentGoalTurn').bind(task);
+      const turn = createTurn(goal, 'first');
+      await turn.acceptToolResult('native-exit-zero', await turn.beginVerification({ command: 'node verify.cjs' }), { exitCode: 0 });
+
+      expect(turn.getAvailableVerification()).toEqual([]);
+      await expect(turn.proposeCompletion('Unbound verifier', ['native-exit-zero'])).rejects.toThrow('successful verification');
+    });
+
+    it('does not accept exit zero when the native Node runner executed no tests', async () => {
+      bindVerification('known-digest');
+      const goal = newAgentGoal('Run the project tests', undefined, 'node --test');
+      bindGoal(goal);
+      const turn = Reflect.get(task, 'createAgentGoalTurn').call(task, goal, 'first');
+      const verifier = await turn.beginVerification({ command: 'node --test' });
+      await turn.acceptToolResult('empty-run', verifier, { exitCode: 0, stdout: 'ℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ skipped 0\n' });
+
+      expect(turn.getAvailableVerification()).toEqual([]);
+      await expect(turn.proposeCompletion('No tests actually ran', ['empty-run'])).rejects.toThrow('successful verification');
+    });
+
+    it('rejects an unattributed npm result but admits the same test with its own lifecycle report', async () => {
+      bindVerification('a'.repeat(64));
+      const goal = newAgentGoal('Run the project tests');
+      bindGoal(goal);
+      const turn = Reflect.get(task, 'createAgentGoalTurn').call(task, goal, 'first');
+      const report = '# tests 1\n# suites 0\n# pass 1\n';
+      const quiet = await turn.beginVerification({ command: 'npm test --silent' });
+      await turn.acceptToolResult('quiet', quiet, { exitCode: 0, stdout: report });
+      expect(turn.getAvailableVerification()).toEqual([]);
+      await expect(turn.proposeCompletion('The hook passed', ['quiet'])).rejects.toThrow('npm lifecycle');
+
+      const visible = await turn.beginVerification({ command: 'npm test' });
+      await turn.acceptToolResult('test', visible, { exitCode: 0, stdout: '> fixture@1.0.0 test\n> node --test\n' + report });
+      expect(turn.getAvailableVerification()).toEqual([{ toolCallId: 'test', command: 'npm test' }]);
+    });
+
+    it.each([
+      { hasBanner: false, marker: undefined, restoredCount: 0 },
+      { hasBanner: true, marker: undefined, restoredCount: 1 },
+      { hasBanner: false, marker: true as const, restoredCount: 1 },
+    ])('rechecks npm receipts without a stored attribution ($hasBanner, $marker)', async ({ hasBanner, marker, restoredCount }) => {
+      const revision = 'a'.repeat(64);
+      bindVerification(revision);
+      const command = 'npm test';
+      const goal = newAgentGoal('Run the project tests', undefined, command);
+      bindGoal(goal);
+      const record: RootTurnRecord = {
+        turnId: 'same-turn',
+        directory: baseDir,
+        goalId: goal.id,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        messages: [],
+        unmergedReceipts: [
+          {
+            id: 'native-test',
+            name: 'power---bash',
+            fingerprint: 'native-test',
+            input: JSON.stringify({ command }),
+            output: JSON.stringify({ exitCode: 0, stdout: (hasBanner ? '> fixture@1.0.0 test\n> node --test\n' : '') + '# tests 1\n# suites 0\n# pass 1\n' }),
+          },
+        ],
+      };
+      expect(
+        rememberGoalVerification(record, {
+          goalId: goal.id,
+          binding: goalVerificationBinding(goal),
+          command,
+          isCurrent: () => true,
+          receipt: { toolCallId: 'native-test', command, revision, root: baseDir, npmScriptIdentified: marker },
+        }),
+      ).toBe(true);
+
+      const restored = await Reflect.get(task, 'recoverGoalVerification').call(task, goal, record);
+      expect(restored).toHaveLength(restoredCount);
+    });
+
+    it.each([
+      { command: 'jest --listTests --runInBand', stdout: 'suite.test.js\n', stderr: '', count: 0 },
+      { command: 'jest --runInBand', stdout: '', stderr: 'Tests: 1 skipped, 1 total\n', count: 0 },
+      { command: 'jest --runInBand', stdout: '', stderr: 'Tests: 1 failed, 1 passed, 2 total\n', count: 0 },
+      {
+        command: 'python -m unittest',
+        stdout: '',
+        stderr: 'x\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK (expected failures=1)\n',
+        count: 0,
+      },
+      { command: 'npm test', stdout: '> fixture@1.0.0 test\n> jest --runInBand\n', stderr: 'Tests: 1 skipped, 1 total\n', count: 0 },
+      { command: 'jest --runInBand', stdout: '', stderr: 'Tests: 1 passed, 1 total\n', count: 1 },
+    ])('rechecks the recovered $command result with $count valid receipt', async ({ command, stdout, stderr, count }) => {
+      const revision = 'a'.repeat(64);
+      bindVerification(revision);
+      const goal = newAgentGoal('Run the project tests', undefined, command);
+      bindGoal(goal);
+      const record: RootTurnRecord = {
+        turnId: 'same-turn',
+        directory: baseDir,
+        goalId: goal.id,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        messages: [],
+        unmergedReceipts: [
+          {
+            id: 'native-test',
+            name: 'power---bash',
+            fingerprint: 'native-test',
+            input: JSON.stringify({ command }),
+            output: JSON.stringify({ exitCode: 0, stdout, stderr }),
+          },
+        ],
+      };
+      expect(
+        rememberGoalVerification(record, {
+          goalId: goal.id,
+          binding: goalVerificationBinding(goal),
+          command,
+          isCurrent: () => true,
+          receipt: { toolCallId: 'native-test', command, revision, root: baseDir, npmScriptIdentified: command === 'npm test' ? true : undefined },
+        }),
+      ).toBe(true);
+
+      const restored = await Reflect.get(task, 'recoverGoalVerification').call(task, goal, record);
+      expect(restored).toHaveLength(count);
+    });
+
+    it.each([
+      'unchanged',
+      'different checkout',
+      'changed revision',
+      'different goal',
+      'later failure',
+      'unfinished tool',
+      'pending steering',
+      'superseded write',
+      'steering while saving',
+      'missing admission',
+      'missing output',
+    ])('only restores a proven native result after resuming the same turn (%s)', async (scenario) => {
+      const revision = 'a'.repeat(64);
+      const command = 'node --test';
+      const getRevision = bindVerification(revision);
+      const goal = newAgentGoal('Verify the completed project tests', undefined, command);
+      const store = bindGoal(goal);
+      vi.spyOn(task, 'addLogMessage').mockImplementation(() => {});
+      const record: RootTurnRecord = {
+        turnId: 'same-turn',
+        directory: baseDir,
+        goalId: goal.id,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        messages: [],
+      };
+      const createTurn = Reflect.get(task, 'createAgentGoalTurn').bind(task);
+      const turn = createTurn(goal, record.turnId);
+      const saveVerification = async (update: GoalVerificationUpdate) => {
+        expect(turn.getAvailableVerification()).toEqual([]);
+        if (scenario === 'superseded write') {
+          turn.invalidateVerification();
+        }
+        if (scenario === 'steering while saving') {
+          record.pendingSteering = [{ id: 'new-steering', role: 'user', content: 'Recheck the goal criteria', promptContext: { id: record.turnId } }];
+        }
+        const admitted = rememberGoalVerification(record, update);
+        reconcileTurnProgress(record, {
+          receipt: {
+            id: update.receipt?.toolCallId ?? 'native-failure',
+            name: 'power---bash',
+            fingerprint: 'native-verifier-fingerprint',
+            input: JSON.stringify({ command }),
+            output: JSON.stringify({ exitCode: update.receipt ? 0 : 1 }),
+          },
+        });
+        return admitted;
+      };
+      await turn.acceptToolResult('native-pass', await turn.beginVerification({ command }), { exitCode: 0 }, undefined, saveVerification);
+      const shouldPublish = scenario !== 'superseded write' && scenario !== 'steering while saving';
+      expect(turn.getAvailableVerification()).toEqual(shouldPublish ? [{ toolCallId: 'native-pass', command }] : []);
+      expect(record.unmergedReceipts?.map(({ id }) => id)).toEqual(['native-pass']);
+
+      let current = goal;
+      if (scenario === 'different checkout') {
+        vi.mocked(goalVerification.resolveGoalVerificationScope).mockResolvedValue({ root: '/another/project', directory: '/another/project' });
+      } else if (scenario === 'changed revision') {
+        getRevision.mockResolvedValue('b'.repeat(64));
+      } else if (scenario === 'different goal') {
+        current = { ...goal, objective: 'Check a different scope' };
+        await store.mutate(() => current);
+      } else if (scenario === 'later failure') {
+        await turn.acceptToolResult('native-failure', await turn.beginVerification({ command }), { exitCode: 1 }, undefined, saveVerification);
+        expect(record.unmergedReceipts?.map(({ id }) => id)).toEqual(['native-pass', 'native-failure']);
+      } else if (scenario === 'unfinished tool') {
+        record.pendingTools = [{ id: 'pending', name: 'power---bash' }];
+      } else if (scenario === 'pending steering') {
+        record.pendingSteering = [{ id: 'steer', role: 'user', content: 'Change what this turn should verify', promptContext: { id: record.turnId } }];
+      } else if (scenario === 'missing admission') {
+        delete record.goalVerification;
+      } else if (scenario === 'missing output') {
+        record.unmergedReceipts = [];
+      }
+
+      const restored = await Reflect.get(task, 'recoverGoalVerification').call(task, current, record);
+      const resumed = createTurn(current, record.turnId, restored);
+      if (scenario === 'unchanged') {
+        expect(resumed.getAvailableVerification()).toEqual([{ toolCallId: 'native-pass', command }]);
+        await resumed.proposeCompletion('Use the original confirmed verification', ['native-pass']);
+        await expect(resumed.commitCompletion()).resolves.toBe(true);
+      } else {
+        expect(resumed.getAvailableVerification()).toEqual([]);
+        await expect(resumed.proposeCompletion('Old verification', ['native-pass'])).rejects.toThrow('successful verification');
+      }
+    });
+
+    it('does not re-admit an older receipt after the same command fails and then passes', async () => {
+      const command = 'node --test';
+      bindVerification('verified-revision');
+      const goal = newAgentGoal('Verify only the actual tests', undefined, command);
+      bindGoal(goal);
+      const turn = Reflect.get(task, 'createAgentGoalTurn').call(task, goal, 'turn');
+      await turn.acceptToolResult('old-pass', await turn.beginVerification({ command }), { exitCode: 0 });
+      await turn.proposeCompletion('First result', ['old-pass']);
+      await turn.acceptToolResult('later-failure', await turn.beginVerification({ command }), { exitCode: 1 });
+      await turn.acceptToolResult('new-pass', await turn.beginVerification({ command }), { exitCode: 0 });
+      expect(turn.getAvailableVerification()).toEqual([{ toolCallId: 'new-pass', command }]);
+      await expect(turn.commitCompletion()).resolves.toBe(false);
+      await expect(turn.proposeCompletion('Revoked result', ['old-pass'])).rejects.toThrow('successful verification');
+    });
+
+    it('uses the native report when the displayed Node output contains an earlier empty report', async () => {
+      bindVerification('known-digest');
+      const goal = newAgentGoal('Run the project tests', undefined, 'node --test');
+      bindGoal(goal);
+      const turn = Reflect.get(task, 'createAgentGoalTurn').call(task, goal, 'first');
+      const verifier = await turn.beginVerification({ command: 'node --test' });
+      await turn.acceptToolResult('passed-run', verifier, {
+        exitCode: 0,
+        stdout: 'ℹ tests 0\nℹ suites 0\nℹ pass 0\n',
+        [goalVerification.NATIVE_EMPTY_TEST_REPORT]: false,
+      });
+
+      await expect(turn.proposeCompletion('The actual test passed', ['passed-run'])).resolves.toContain('Verification received');
+    });
+
+    it('does not publish completion for a different checkout with the same digest', async () => {
+      bindVerification('same-digest');
+      const goal = newAgentGoal('Verify the actual outcome', undefined, 'node verify.cjs');
+      const store = bindGoal(goal);
+      const turn = Reflect.get(task, 'createAgentGoalTurn').call(task, goal, 'first');
+      await turn.acceptToolResult('original-check', await turn.beginVerification({ command: 'node verify.cjs' }), { exitCode: 0 });
+      await turn.proposeCompletion('Verified in original checkout', ['original-check']);
+      vi.mocked(goalVerification.resolveGoalVerificationScope).mockResolvedValue({ root: '/another/project', directory: '/another/project' });
+
+      await expect(turn.commitCompletion()).resolves.toBe(false);
+      await expect(store.read()).resolves.toMatchObject({ status: 'active' });
+    });
+
     it('rejects shell success without a check and revokes a staged completion when a later tool can mutate files', async () => {
+      bindVerification('verified-revision');
       const first = newAgentGoal('Make the regression pass');
       const store = bindGoal(first);
       const createTurn = Reflect.get(task, 'createAgentGoalTurn').bind(task);
@@ -463,6 +743,19 @@ describe('Task - findSkillActivationMessages', () => {
       bound.invalidateVerification();
       await expect(bound.commitCompletion()).resolves.toBe(false);
       await expect(store.read()).resolves.toMatchObject({ status: 'active' });
+    });
+    it('rejects a Python verification with only skipped tests when native report metadata is absent', async () => {
+      const command = 'python -m unittest discover';
+      bindVerification('known-digest');
+      const goal = newAgentGoal('Run the project tests', undefined, command);
+      bindGoal(goal);
+      const turn = Reflect.get(task, 'createAgentGoalTurn').call(task, goal, 'first');
+      await turn.acceptToolResult('skipped-run', await turn.beginVerification({ command }), {
+        exitCode: 0,
+        stderr: 'ss\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK (skipped=2)\n',
+      });
+
+      await expect(turn.proposeCompletion('The suite ran', ['skipped-run'])).rejects.toThrow('successful verification');
     });
   });
 
@@ -1023,6 +1316,190 @@ describe('Task - findSkillActivationMessages', () => {
       expect(runAgent).toHaveBeenCalledTimes(1);
       expect(task.task.state).toBe(DefaultTaskState.ReadyForReview);
       expect(restored.map(({ id }) => id)).toEqual([initial.id]);
+    });
+
+    it('records a budget-limited goal turn without an assistant response as settled', async () => {
+      const goal = newAgentGoal('Verify changes', 10);
+      const limited = { ...goal, status: 'budget_limited', tokensUsed: 10 } as const;
+      const goalTurn = {
+        goal,
+        signal: new AbortController().signal,
+        readGoal: vi.fn(async () => limited),
+        commitCompletion: vi.fn(async () => false),
+      } as unknown as Parameters<Task['runPromptInAgent']>[12];
+      const checkpoints: RootTurnRecord[] = [];
+      Object.assign(task, {
+        agent: { runAgent: vi.fn(async () => []) },
+        saveRootTurn: async (record: RootTurnRecord) => {
+          checkpoints.push(structuredClone(record));
+        },
+        sendRequestContextInfo: vi.fn(),
+        sendTaskGitStatusUpdated: vi.fn(),
+        sendUpdatedFilesUpdated: vi.fn(),
+        sendSkillsUpdated: vi.fn(),
+      });
+      task.task.name = 'Fixture';
+      mockStore.getSettings.mockReturnValue({ taskSettings: {} });
+      vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      const manager = (task as unknown as { contextManager: { save: () => Promise<void> } }).contextManager;
+      vi.spyOn(manager, 'save').mockResolvedValue(undefined);
+      const profile = { id: 'profile', provider: 'provider', model: 'model' } as never;
+
+      await task.runPromptInAgent(profile, 'agent', null, { id: 'limited' }, [], [], undefined, false, false, undefined, undefined, undefined, goalTurn);
+
+      expect(checkpoints.at(-1)).toMatchObject({ state: 'success', turnId: 'limited' });
+      expect(task.task.state).toBe(DefaultTaskState.ReadyForReview);
+      expect(await goalTurn?.readGoal()).toMatchObject({ status: 'budget_limited' });
+    });
+
+    it.each([
+      { mode: 'agent' as const, output: '' },
+      { mode: 'agent' as const, output: 'Preface\n### **Conversation Summary**\n' },
+      { mode: 'ask' as const, output: '### **Conversation Summary**\n' },
+    ])('preserves working history when internal $mode compaction makes no summary ($output)', async ({ mode, output }) => {
+      const history: ContextMessage[] = [
+        { id: 'original', role: 'user', content: 'Retain the original request' },
+        { id: 'result', role: 'assistant', content: 'Independent working evidence' },
+      ];
+      const summaryPrompt: ContextMessage = { id: 'compaction', role: 'user', content: 'Summarize this conversation' };
+      const applyCompaction = vi.fn();
+      const runNextQueuedPrompt = vi.fn();
+      Object.assign(task, {
+        agent: { runAgent: vi.fn(async () => (output ? [summaryPrompt, { id: 'candidate', role: 'assistant', content: output }] : [summaryPrompt])) },
+        sendPromptToAider: vi.fn(async () => [{ messageId: 'candidate', content: output }]),
+        contextManager: { applyCompaction, getContextMessages: async () => history },
+        runNextQueuedPrompt,
+        updateContextInfo: vi.fn(),
+      });
+      mockPromptsManager.getCompactConversationPrompt = vi.fn(async () => summaryPrompt.content);
+      vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      vi.spyOn(task, 'addLogMessage').mockImplementation(() => {});
+      const profile = { id: 'profile', provider: 'provider', model: 'model' } as never;
+
+      await expect(task.compactConversation(mode, undefined, profile, history, undefined, undefined, false)).resolves.toBe(false);
+
+      expect(applyCompaction).not.toHaveBeenCalled();
+      expect(runNextQueuedPrompt).not.toHaveBeenCalled();
+      expect(history.map(({ id }) => id)).toEqual(['original', 'result']);
+    });
+
+    it('preserves the conversation and prior undo when loading the proposed summary fails', async () => {
+      const history: ContextMessage[] = [
+        { id: 'original', role: 'user', content: 'Original request' },
+        { id: 'result', role: 'assistant', content: 'Observed evidence' },
+      ];
+      const previousUndo: ContextMessage[] = [{ id: 'undo', role: 'user', content: 'Older original history' }];
+      const manager = task['contextManager'];
+      const projectionFailure = vi.fn(() => {
+        throw new Error('Cannot display compacted context');
+      });
+      Object.assign(task, {
+        agent: { runAgent: vi.fn(async () => [{ id: 'summary', role: 'assistant', content: 'Valid summary' }]) },
+        sendUserMessage: vi.fn(),
+        sendResponseCompleted: projectionFailure,
+        sendContextInfoUpdated: vi.fn(),
+        sendSkillsUpdated: vi.fn(),
+      });
+      mockEventManager.sendClearTask = vi.fn();
+      await manager.getContextMessages();
+      manager.setContextMessages(previousUndo, false);
+      manager.setContextMessages(history, false);
+      mockPromptsManager.getCompactConversationPrompt = vi.fn(async () => 'Summarize');
+      vi.spyOn(task, 'runCommand').mockImplementation(async () => {});
+      vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      vi.spyOn(task, 'updateTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      vi.spyOn(task, 'addLogMessage').mockImplementation(() => {});
+
+      await expect(
+        task.compactConversation('agent', undefined, { id: 'profile', provider: 'provider', model: 'model' } as never, history, undefined, undefined, false),
+      ).resolves.toBe(false);
+      expect(projectionFailure).toHaveBeenCalledOnce();
+      expect(await manager.getContextMessages()).toEqual(history);
+      expect(manager.undoContextChange()).toEqual(previousUndo);
+    });
+
+    it('does not apply an accumulated summary after Stop during manual compaction', async () => {
+      const history: ContextMessage[] = [
+        { id: 'original', role: 'user', content: 'Original request' },
+        { id: 'result', role: 'assistant', content: 'Observed evidence' },
+      ];
+      const applyCompaction = vi.fn();
+      const interrupted = vi.fn();
+      Object.assign(task, {
+        agent: {
+          runAgent: vi.fn(async () => {
+            await task.interruptResponse(undefined, true);
+            return [{ id: 'summary', role: 'assistant', content: 'Accumulated summary' }];
+          }),
+          interrupt: interrupted,
+        },
+        contextManager: { applyCompaction, getContextMessages: async () => history },
+        extensionManager: { dispatchEvent: async (_eventName: string, event: unknown) => event },
+        findMessageConnectors: vi.fn(() => []),
+        promptFinished: vi.fn(),
+        cleanupChunkBuffers: vi.fn(),
+        waitForCurrentAgentToFinish: vi.fn(async () => {}),
+        resolveAgentRunPromises: vi.fn(),
+        runNextQueuedPrompt: vi.fn(async () => {}),
+        sendSkillsUpdated: vi.fn(),
+      });
+      mockPromptsManager.getCompactConversationPrompt = vi.fn(async () => 'Summarize');
+      vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      vi.spyOn(task, 'addLogMessage').mockImplementation(() => {});
+      const profile = { id: 'profile', provider: 'provider', model: 'model' } as never;
+
+      await expect(task.compactConversation('agent', undefined, profile, history)).resolves.toBe(false);
+      expect(interrupted).toHaveBeenCalledOnce();
+      expect(applyCompaction).not.toHaveBeenCalled();
+    });
+
+    it.each([true, false])('keeps working history while the async clear command runs (Stop: %s)', async (stop) => {
+      const history: ContextMessage[] = [
+        { id: 'original', role: 'user', content: 'Original request' },
+        { id: 'result', role: 'assistant', content: 'Observed evidence' },
+      ];
+      const summary: ContextMessage = { id: 'summary', role: 'assistant', content: 'Valid summary' };
+      const olderHistory: ContextMessage[] = [{ id: 'undo', role: 'user', content: 'An earlier conversation' }];
+      const manager = task['contextManager'];
+      let historyDuringClear: ContextMessage[] | undefined;
+      Object.assign(task, {
+        agent: { runAgent: vi.fn(async () => [summary]), interrupt: vi.fn() },
+        extensionManager: { dispatchEvent: async (_eventName: string, event: unknown) => event },
+        findMessageConnectors: vi.fn(() => []),
+        promptFinished: vi.fn(),
+        cleanupChunkBuffers: vi.fn(),
+        waitForCurrentAgentToFinish: vi.fn(async () => {}),
+        resolveAgentRunPromises: vi.fn(),
+        runNextQueuedPrompt: vi.fn(async () => {}),
+        updateContextInfo: vi.fn(),
+        sendContextInfoUpdated: vi.fn(),
+        sendUserMessage: vi.fn(),
+        sendResponseCompleted: vi.fn(),
+        sendAddMessage: vi.fn(),
+      });
+      mockEventManager.sendClearTask = vi.fn();
+      mockPromptsManager.getCompactConversationPrompt = vi.fn(async () => 'Summarize');
+      vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      vi.spyOn(task, 'updateTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      vi.spyOn(task, 'addLogMessage').mockImplementation(() => {});
+      vi.spyOn(task, 'runCommand').mockImplementation(async () => {
+        historyDuringClear = await manager.getContextMessages();
+        if (stop) {
+          await task.interruptResponse(undefined, true);
+        }
+      });
+      await manager.getContextMessages();
+      manager.setContextMessages(olderHistory, false);
+      manager.setContextMessages(history, false);
+      const profile = { id: 'profile', provider: 'provider', model: 'model' } as never;
+
+      await expect(task.compactConversation('agent', undefined, profile, history)).resolves.toBe(!stop);
+
+      expect(historyDuringClear).toEqual(history);
+      expect(mockEventManager.sendClearTask).toHaveBeenCalledTimes(stop ? 0 : 1);
+      expect(task.sendResponseCompleted).toHaveBeenCalledTimes(stop ? 0 : 1);
+      expect(await manager.getContextMessages()).toEqual(stop ? history : [history[0], summary]);
+      expect(manager.undoContextChange()).toEqual(stop ? olderHistory : history);
     });
 
     it('reconciles a durable terminal root turn without starting the model again', async () => {

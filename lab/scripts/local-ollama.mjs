@@ -11,8 +11,8 @@ const runtime = path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Ollama'
 const baseURL = 'http://127.0.0.1:11435';
 const model = 'devstral-small-2:24b-instruct-2512-q4_K_M';
 const expectedModelDigest = '24277f07f62db8f9cb68e9dfc679ea1818a7fbac47a50eff0a701d3f645b63c8';
-// Runtime provenance verified 2026-11-10: Ollama 0.40.15, Valid Authenticode publisher Ollama Inc.
-const expectedRuntimeDigest = '544216ca2082b8bc19b4ba94b513f0098fa06774b232f3c140090e3449e322a5';
+// Ollama 0.40.16: official Windows x64 release member and valid Authenticode signature verified 2026-11-15.
+const expectedRuntimeDigest = '4ccefcbfecc50fb6526471adabbc20869dd614e29e351120b15083cb174b0b8a';
 const home = path.join(labRoot, 'profile', 'ollama-local-home');
 const modelDir = path.join(labRoot, 'profile', 'local-models');
 const artifactRoot = path.join(labRoot, 'artifacts', 'local-devstral');

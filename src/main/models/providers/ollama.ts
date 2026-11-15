@@ -105,7 +105,29 @@ export const createOllamaLlm = (profile: ProviderProfile, model: Model, settings
   });
   return wrapLanguageModel({
     model: ollamaInstance(model.id),
-    middleware: simulateStreamingMiddleware(),
+    middleware: [
+      simulateStreamingMiddleware(),
+      {
+        specificationVersion: 'v4',
+        wrapGenerate: async ({ doGenerate }) => {
+          const result = await doGenerate();
+          const body = result.response?.body as { prompt_eval_count?: number; eval_count?: number } | undefined;
+          const reported = (count: number | undefined) => count !== undefined && Number.isSafeInteger(count) && count >= 0;
+          if (reported(body?.prompt_eval_count) && reported(body?.eval_count)) {
+            return result;
+          }
+          // The adapter's zeros are defaults. Preserve unknown usage for goal accounting.
+          return {
+            ...result,
+            usage: {
+              ...result.usage,
+              inputTokens: { ...result.usage.inputTokens, total: undefined },
+              outputTokens: { ...result.usage.outputTokens, total: undefined },
+            },
+          };
+        },
+      },
+    ],
   });
 };
 

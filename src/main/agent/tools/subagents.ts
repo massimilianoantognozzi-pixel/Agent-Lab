@@ -8,12 +8,52 @@ import { getSubagentId } from '@common/agent';
 import { SUBAGENTS_TOOL_GROUP_NAME, SUBAGENTS_TOOL_RUN_TASK, TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
 import type { WorkerProgress, WorkerRecord, WorkerToolReceipt } from '@/agent/worker-checkpoint';
-import type { AgentGoalTurn } from '@/task/agent-goal';
+import type { AgentGoalUsage } from '@/task/agent-goal';
 
 import { describeInterruptedTools, recoveredTurnHistory, reconcileTurnProgress, WORKER_STOP } from '@/agent/worker-checkpoint';
 import { AgentProfileManager } from '@/agent/agent-profile-manager';
 import { findEnabledSubagent, getEnabledSubagents, runSubagentTask, type RunSubagentTaskResult } from '@/agent/subagent';
 import { Task } from '@/task';
+
+type BackgroundWorker = {
+  subagentId: string;
+  controller: AbortController;
+  completion: Promise<RunSubagentTaskResult>;
+  mailbox: string[];
+  settled: boolean;
+  waiters: Set<() => void>;
+};
+
+const waitTaskInput = z.object({
+  workerId: z.string().uuid().optional().describe('Use for a single worker result.'),
+  workerIds: z.array(z.string().uuid()).min(1).max(8).optional().describe('Use to collect the first available results across multiple workers.'),
+  timeoutMs: z.number().int().min(1).max(60000).optional(),
+});
+
+const waitForWorkerSettlement = async (workers: readonly BackgroundWorker[], timeoutMs: number, signal: AbortSignal): Promise<boolean> => {
+  signal.throwIfAborted();
+  let cleanup = () => {};
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const wake = () => resolve(true);
+      const onAbort = () => reject(signal.reason);
+      const timer = setWaitTimer(() => resolve(false), timeoutMs);
+      signal.addEventListener('abort', onAbort, { once: true });
+      for (const worker of workers) {
+        worker.waiters.add(wake);
+      }
+      cleanup = () => {
+        clearWaitTimer(timer);
+        signal.removeEventListener('abort', onAbort);
+        for (const worker of workers) {
+          worker.waiters.delete(wake);
+        }
+      };
+    });
+  } finally {
+    cleanup();
+  }
+};
 
 export const createSubagentsToolset = async (
   _settings: SettingsData,
@@ -23,22 +63,13 @@ export const createSubagentsToolset = async (
   abortSignal?: AbortSignal,
   contextMessages: ContextMessage[] = [],
   currentMessages: ContextMessage[] = [],
-  onGoalUsage?: AgentGoalTurn['onUsage'],
+  onGoalUsage?: AgentGoalUsage,
 ): Promise<ToolSet> => {
   const allProfiles = agentProfileManager.getProjectProfiles(task.project);
   const enabledSubagents = getEnabledSubagents(allProfiles, mainAgentProfile);
   const epoch = task.workerEpoch?.();
   const hasCurrentContext = () => task.workerEpoch?.() === epoch;
-  const workers = new Map<
-    string,
-    {
-      subagentId: string;
-      controller: AbortController;
-      completion: Promise<RunSubagentTaskResult>;
-      mailbox: string[];
-      settled: boolean;
-    }
-  >();
+  const workers = new Map<string, BackgroundWorker>();
   const waitToolName = `${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}wait_task`;
   const startBackground = async (
     workerId: string,
@@ -107,11 +138,15 @@ export const createSubagentsToolset = async (
       await task.saveWorkerHistory(workerId, record);
       return result;
     });
-    const worker = { subagentId: getSubagentId(targetSubagent), controller, completion, mailbox, settled: false };
+    const worker: BackgroundWorker = { subagentId: getSubagentId(targetSubagent), controller, completion, mailbox, settled: false, waiters: new Set() };
     workers.set(workerId, worker);
     const settled = () => {
       worker.settled = true;
       task.releaseWorkerTurn(workerId);
+      for (const wake of worker.waiters) {
+        wake();
+      }
+      worker.waiters.clear();
     };
     void completion.then(settled, settled);
     task.trackWorkerRun(completion);
@@ -227,55 +262,97 @@ export const createSubagentsToolset = async (
   });
 
   const toolSet: ToolSet = {};
+  const readStoredWorkerResult = async (workerId: string) => {
+    const saved = await task.readWorkerHistory(workerId);
+    const profile = enabledSubagents.find(({ id }) => id === saved?.profileId);
+    if (!saved || !profile || (saved.directory && saved.directory !== task.getTaskDir())) {
+      return { workerId, status: 'not_found' as const, error: 'Worker unavailable in this agent run.' };
+    }
+    return {
+      workerId,
+      subagentId: getSubagentId(profile),
+      status: saved.state === 'running' ? ('interrupted' as const) : (saved.state ?? 'success'),
+      messages: saved.messages,
+      turnId: saved.turnId,
+      pendingTools: saved.pendingTools,
+      unmergedReceipts: saved.unmergedReceipts,
+    };
+  };
 
   if (
     enabledSubagents.length > 0 &&
     mainAgentProfile.toolApprovals?.[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${SUBAGENTS_TOOL_RUN_TASK}`] !== ToolApprovalState.Never
   ) {
     toolSet[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${SUBAGENTS_TOOL_RUN_TASK}`] = runTaskTool;
-    toolSet[waitToolName] = tool({
-      description: 'Collect the result of a background subagent. A running result means it has not finished yet.',
-      inputSchema: z.object({ workerId: z.string().uuid(), timeoutMs: z.number().int().min(1).max(60000).default(10000) }),
-      execute: async ({ workerId, timeoutMs }) => {
+    toolSet[waitToolName] = tool<z.infer<typeof waitTaskInput>, unknown, Record<string, unknown>>({
+      description:
+        'Collect one background worker with workerId, or wait for the first final result from workerIds. A batch returns the results already available by worker ID, or an empty status on timeout. Workers that are still running remain available.',
+      inputSchema: waitTaskInput,
+      execute: async ({ workerId, workerIds, timeoutMs }, options) => {
         if (!hasCurrentContext()) {
           return { error: 'The task context has been cleared.' };
         }
-        const worker = workers.get(workerId);
-        if (!worker) {
-          const saved = await task.readWorkerHistory(workerId);
-          const profile = enabledSubagents.find(({ id }) => id === saved?.profileId);
-          if (!saved || !profile || (saved.directory && saved.directory !== task.getTaskDir())) {
-            return { error: 'Worker unavailable in this agent run.' };
-          }
-          return {
-            workerId,
-            subagentId: getSubagentId(profile),
-            status: saved.state === 'running' ? 'interrupted' : (saved.state ?? 'success'),
-            messages: saved.messages,
-            turnId: saved.turnId,
-            pendingTools: saved.pendingTools,
-            unmergedReceipts: saved.unmergedReceipts,
-          };
+        const ids = workerId ? [workerId] : workerIds;
+        if (!ids?.length || (workerId && workerIds !== undefined)) {
+          return { error: 'Supply workerId or a non-empty workerIds list.' };
         }
-        let timer: NodeJS.Timeout | number | undefined;
-        try {
-          const result = await Promise.race([
-            worker.completion,
-            new Promise<undefined>((resolve) => {
-              timer = setWaitTimer(resolve, timeoutMs);
-            }),
-          ]);
-          if (!result) {
-            return { workerId, status: 'running' };
-          }
-          workers.delete(workerId);
+        const signals = [abortSignal, options?.abortSignal].filter((signal): signal is AbortSignal => signal !== undefined);
+        const signal = AbortSignal.any(signals);
+        signal.throwIfAborted();
+        const selected = [...new Set(ids)].map((id) => ({ id, worker: workers.get(id) }));
+        const savedSnapshots = await Promise.all(selected.filter(({ worker }) => !worker).map(({ id }) => readStoredWorkerResult(id)));
+        signal.throwIfAborted();
+        if (!hasCurrentContext()) {
+          return { error: 'The task context has been cleared.' };
+        }
+        const active = selected.flatMap(({ id, worker }) => {
+          const observedWorker = worker ?? workers.get(id);
+          return observedWorker ? [{ id, worker: observedWorker }] : [];
+        });
+        const activeIds = new Set(active.map(({ id }) => id));
+        const saved = savedSnapshots.filter((result) => !activeIds.has(result.workerId));
+        if (!saved.length && !active.some(({ worker }) => worker.settled)) {
+          const settled = await waitForWorkerSettlement(
+            active.map(({ worker }) => worker),
+            timeoutMs ?? (workerId ? 10000 : 30000),
+            signal,
+          );
+          signal.throwIfAborted();
           if (!hasCurrentContext()) {
             return { error: 'The task context has been cleared.' };
           }
-          return { workerId, subagentId: worker.subagentId, ...result };
-        } finally {
-          clearWaitTimer(timer);
+          if (!settled) {
+            return workerId ? { workerId, status: 'running' } : { status: {}, timedOut: true };
+          }
         }
+        const completed = active.filter(({ worker }) => worker.settled);
+        const liveResults = await Promise.all(
+          completed.map(async ({ id, worker }) => {
+            try {
+              return { workerId: id, subagentId: worker.subagentId, ...(await worker.completion) };
+            } catch (error) {
+              if (workerId) {
+                throw error;
+              }
+              return { workerId: id, subagentId: worker.subagentId, status: 'error' as const, error: error instanceof Error ? error.message : String(error) };
+            }
+          }),
+        );
+        signal.throwIfAborted();
+        if (!hasCurrentContext()) {
+          return { error: 'The task context has been cleared.' };
+        }
+        for (const { id, worker } of completed) {
+          if (workers.get(id) === worker) {
+            workers.delete(id);
+          }
+        }
+        const results = [...saved, ...liveResults];
+        if (workerId) {
+          const result = results[0];
+          return result.status === 'not_found' ? { error: result.error } : result;
+        }
+        return { status: Object.fromEntries(results.map((result) => [result.workerId, result])), timedOut: false };
       },
     });
     toolSet[`${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}list_workers`] = tool({

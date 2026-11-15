@@ -13,6 +13,12 @@ import { getEffectiveEnvironmentVariable } from '@/utils';
 import { Task } from '@/task/task';
 import { calculateCost } from '@/models/providers/default';
 
+const geminiApiBase = (configuredBase?: string): string => {
+  const url = new URL(configuredBase || 'https://generativelanguage.googleapis.com');
+  const prefix = url.pathname.replace(/\/+$/, '') || '/v1beta';
+  return url.origin + prefix;
+};
+
 const loadGeminiModels = async (profile: ProviderProfile, settings: SettingsData): Promise<LoadModelsResponse> => {
   if (!isGeminiProvider(profile.provider)) {
     return { models: [], success: false };
@@ -20,20 +26,18 @@ const loadGeminiModels = async (profile: ProviderProfile, settings: SettingsData
 
   const provider = profile.provider as GeminiProvider;
   const apiKey = provider.apiKey || '';
-  const baseUrl = provider.customBaseUrl || 'https://generativelanguage.googleapis.com';
-
   const apiKeyEnv = getEffectiveEnvironmentVariable('GEMINI_API_KEY', settings);
   const baseUrlEnv = getEffectiveEnvironmentVariable('GEMINI_API_BASE_URL', settings);
 
   const effectiveApiKey = apiKey || apiKeyEnv?.value || '';
-  const effectiveBaseUrl = baseUrl || baseUrlEnv?.value || 'https://generativelanguage.googleapis.com';
+  const effectiveBaseUrl = provider.customBaseUrl || baseUrlEnv?.value;
 
   if (!effectiveApiKey) {
     return { models: [], success: false };
   }
 
   try {
-    const url = `${effectiveBaseUrl}/v1beta/models?key=${effectiveApiKey}`;
+    const url = `${geminiApiBase(effectiveBaseUrl)}/models?${new URLSearchParams({ key: effectiveApiKey })}`;
     const response = await fetch(url);
     if (!response.ok) {
       const errorMsg = `Gemini models API response failed: ${response.status} ${response.statusText} ${await response.text()}`;
@@ -115,7 +119,7 @@ const createGeminiLlm = (profile: ProviderProfile, model: Model, settings: Setti
 
   const googleProvider = createGoogle({
     apiKey,
-    baseURL: baseUrl || undefined,
+    baseURL: geminiApiBase(baseUrl),
     headers: profile.headers,
   });
   return googleProvider(model.id);

@@ -11,6 +11,10 @@ import { SkillManager } from '../skill-manager';
 
 import type { Project } from '@/project';
 
+import { AIDER_DESK_HOME_DIR } from '@/constants';
+
+vi.unmock('path');
+
 vi.mock('uuid', () => ({
   v4: vi.fn(() => 'test-uuid'),
 }));
@@ -33,7 +37,8 @@ type MockEntry = { type: 'dir' } | { type: 'file'; content: string };
 
 const files = new Map<string, MockEntry>();
 
-const addSkill = (dirPath: string, frontmatter: string) => {
+const addSkill = (name: string, frontmatter: string) => {
+  const dirPath = path.join(AIDER_DESK_HOME_DIR, 'skills', name);
   files.set(dirPath, { type: 'dir' });
   files.set(path.join(dirPath, 'SKILL.md'), {
     type: 'file',
@@ -91,7 +96,7 @@ describe('SkillManager', () => {
 
   describe('frontmatter parsing', () => {
     it('defaults disableModelInvocation to false and userInvocable to true', async () => {
-      addSkill('/home/.aider-desk/skills/basic', 'name: basic\ndescription: A basic skill');
+      addSkill('basic', 'name: basic\ndescription: A basic skill');
 
       const skills = await loadGlobalSkills();
 
@@ -101,8 +106,8 @@ describe('SkillManager', () => {
     });
 
     it('parses boolean frontmatter values', async () => {
-      addSkill('/home/.aider-desk/skills/manual', 'name: manual\ndescription: Manual only skill\ndisable-model-invocation: true');
-      addSkill('/home/.aider-desk/skills/agent-only', 'name: agent-only\ndescription: Agent only skill\nuser-invocable: false');
+      addSkill('manual', 'name: manual\ndescription: Manual only skill\ndisable-model-invocation: true');
+      addSkill('agent-only', 'name: agent-only\ndescription: Agent only skill\nuser-invocable: false');
 
       const skills = await loadGlobalSkills();
       const byName = new Map(skills.map((skill) => [skill.name, skill]));
@@ -123,7 +128,7 @@ describe('SkillManager', () => {
       ['off', false],
       ['0', false],
     ])('coerces disable-model-invocation: %s to %s', async (value, expected) => {
-      addSkill('/home/.aider-desk/skills/coerced', `name: coerced\ndescription: Coercion skill\ndisable-model-invocation: ${value}`);
+      addSkill('coerced', `name: coerced\ndescription: Coercion skill\ndisable-model-invocation: ${value}`);
 
       const skills = await loadGlobalSkills();
 
@@ -131,7 +136,7 @@ describe('SkillManager', () => {
     });
 
     it.each([['invalid'], [''], ['2']])('falls back to default for invalid user-invocable: "%s"', async (value) => {
-      addSkill('/home/.aider-desk/skills/invalid', `name: invalid\ndescription: Invalid value skill\nuser-invocable: ${value}`);
+      addSkill('invalid', `name: invalid\ndescription: Invalid value skill\nuser-invocable: ${value}`);
 
       const skills = await loadGlobalSkills();
 
@@ -139,9 +144,9 @@ describe('SkillManager', () => {
     });
 
     it('skips skills without name or description', async () => {
-      addSkill('/home/.aider-desk/skills/no-name', 'description: Missing name');
-      addSkill('/home/.aider-desk/skills/no-description', 'name: no-description');
-      addSkill('/home/.aider-desk/skills/valid', 'name: valid\ndescription: Valid skill');
+      addSkill('no-name', 'description: Missing name');
+      addSkill('no-description', 'name: no-description');
+      addSkill('valid', 'name: valid\ndescription: Valid skill');
 
       const skills = await loadGlobalSkills();
 

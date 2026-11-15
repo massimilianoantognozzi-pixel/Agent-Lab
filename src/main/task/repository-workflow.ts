@@ -20,12 +20,14 @@ import {
   readDevelopmentHead,
 } from './workflow-development';
 import { ensureWorkflowDocker, WorkflowServiceUnavailable, workflowServiceRetryable } from './workflow-docker';
+import { hasVisualWorkflowImpact } from './workflow-evidence';
 import { assertWorkflowText, snapshotWorkflowFiles, validateWorkflowPath, type WorkflowFiles, type WorkflowProject } from './workflow-policy';
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
 import {
   projectAttestationRevision,
   projectContinuationRevision,
   runProjectWorkflow,
+  workflowDesignSurface,
   workflowInvestigation,
   type ProjectTaskContext,
 } from './workflow-project-run';
@@ -37,7 +39,7 @@ import { atomicWriteJsonFile } from '@/utils/atomic-write';
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
 const line = z.string().trim().min(1).max(1500);
-const surface = z.enum(['none', 'ui', 'mobile', 'ui-and-mobile']);
+const surface = z.enum(['none', ...workflowDesignSurface.options]);
 const designSchema = z.strictObject({
   sharedLogic: line,
   ui: line.nullable(),
@@ -71,6 +73,7 @@ const changeSchema = z.strictObject({
     .max(40),
 });
 const reviewSchema = z.strictObject({ verdict: z.enum(['pass', 'fail']), findings: z.array(line).max(20) });
+const reviewContract = 'Schema: verdict (pass o fail) e findings (lista). Un pass richiede findings vuoto.';
 const lessonSchema = z.strictObject({ context: line, symptom: line, cause: line, rule: line, destination: line });
 const checkResult = z.object({ id: z.string(), passed: z.boolean(), detail: z.string() });
 const recoveryAttempt = z.strictObject({
@@ -165,6 +168,14 @@ const run = promisify(execFile);
 
 class InvalidModelResponse extends Error {}
 class WorkflowModelFailure extends Error {}
+class PreparedDesignRejection extends Error {
+  constructor(
+    readonly changes: z.infer<typeof changeSchema>['changes'],
+    readonly findings: string[],
+  ) {
+    super('Revisione UI/UX negativa sul commit preparato.');
+  }
+}
 
 const parse = <T>(schema: z.ZodType<T>, raw: string | undefined): T => {
   if (!raw || raw.length > 400_000) {
@@ -649,8 +660,44 @@ const runWorkflowTask = async (args: {
     if (digest(await readDevelopmentFiles(policy, commit, signal)) !== digest(candidate)) {
       throw new Error('Il commit preparato differisce dalla versione verificata.');
     }
-    if ((await fileSnapshot(policy, statePath, signal)).hash !== state.baseline) {
+    const snapshot = await fileSnapshot(policy, statePath, signal);
+    if (snapshot.hash !== state.baseline) {
       throw new Error('Il ramo di sviluppo o le fonti sono cambiati prima dell’integrazione.');
+    }
+    if (!pending.designReviewed) {
+      const changes = Object.entries(candidate).flatMap(([path, content]) =>
+        snapshot.files[path] === content ? [] : [{ path, content, before: snapshot.files[path] }],
+      );
+      if (
+        hasVisualWorkflowImpact(
+          snapshot.files,
+          candidate,
+          changes.map(({ path }) => path),
+        )
+      ) {
+        const review = await generate(state.kind, 'design-review', reviewSchema, reviewContract, {
+          plan: state.plan,
+          changes,
+          checks: pending.checks,
+          baselineChecks: pending.baselineChecks,
+          checkDefinitions: policy.checks,
+          sources: approvedContext(policy, snapshot.files),
+          context: Object.fromEntries([...policy.context, ...(policy.optionalInputs ?? [])].map((name) => [name, snapshot.files[name]])),
+          projectTask: args.projectTask,
+          skills: await approvedSkills(state.plan),
+        });
+        if ((await fileSnapshot(policy, statePath, signal)).hash !== state.baseline) {
+          throw new Error('Il ramo di sviluppo o le fonti sono cambiati prima dell’integrazione.');
+        }
+        if (review.verdict !== 'pass' || review.findings.length) {
+          throw new PreparedDesignRejection(
+            changes.map(({ path, content }) => ({ path, content })),
+            review.findings.length ? review.findings : ['Revisione UI/UX negativa sul candidato preparato.'],
+          );
+        }
+        pending = { ...pending, designReviewed: true };
+        await save({ ...state, pendingIntegration: pending });
+      }
     }
     await publishDevelopmentCommit(policy, base, commit, jobs(statePath), signal);
     const integrated = settlePublishedReceipt(state, pending);
@@ -779,7 +826,27 @@ const runWorkflowTask = async (args: {
       throw new Error('Il piano di lavoro è cambiato prima di avviare il task.');
     }
     if (state?.pendingIntegration && (resume || approval?.[1] === state.revision)) {
-      return { phase: 'done', message: renderDelivery(await finishIntegration(state, state.pendingIntegration), statePath) };
+      try {
+        return { phase: 'done', message: renderDelivery(await finishIntegration(state, state.pendingIntegration), statePath) };
+      } catch (error) {
+        if (!(error instanceof PreparedDesignRejection)) {
+          throw error;
+        }
+        const recovery = state.recovery;
+        const candidateHash = digest([...error.changes].sort((a, b) => a.path.localeCompare(b.path)));
+        state = {
+          ...state,
+          pendingIntegration: undefined,
+          recovery: {
+            ...recovery,
+            attempts: [...(recovery?.attempts ?? []), { feedback: error.findings }],
+            rejected: [...new Set([...(recovery?.rejected ?? []), candidateHash])],
+            changes: error.changes,
+            verifyPending: undefined,
+          },
+        };
+        await save(state);
+      }
     }
     if (state?.pendingIntegration) {
       const pending = state.pendingIntegration;
@@ -803,6 +870,9 @@ const runWorkflowTask = async (args: {
       }
       if (state.plan.questions.length || state.baseline !== snapshot.hash) {
         throw new Error('Il piano ha domande aperte oppure le fonti sono cambiate.');
+      }
+      if (args.projectTask?.designSurface && (state.plan.surface !== args.projectTask.designSurface || !state.plan.design)) {
+        throw new Error('Il piano deve includere il lavoro del Designer per la superficie dichiarata dal task.');
       }
       const skills = await approvedSkills(state.plan);
       state = { ...state, approved: true };
@@ -1003,12 +1073,12 @@ const runWorkflowTask = async (args: {
             projectTask: args.projectTask,
             skills,
           };
+          const requiresDesignerReview = Boolean(state.plan.design) || hasVisualWorkflowImpact(snapshot.files, candidate, names);
           let reviews: z.infer<typeof reviewSchema>[];
           try {
-            const contract = 'Schema: verdict (pass o fail) e findings (lista). Un pass richiede findings vuoto.';
-            reviews = [await generate(state.kind, 'review', reviewSchema, contract, reviewInput)];
-            if (state.plan.design && reviews[0].verdict === 'pass' && !reviews[0].findings.length) {
-              reviews.push(await generate(state.kind, 'design-review', reviewSchema, contract, reviewInput));
+            reviews = [await generate(state.kind, 'review', reviewSchema, reviewContract, reviewInput)];
+            if (requiresDesignerReview && reviews[0].verdict === 'pass' && !reviews[0].findings.length) {
+              reviews.push(await generate(state.kind, 'design-review', reviewSchema, reviewContract, reviewInput));
             }
           } catch (error) {
             if (error instanceof WorkflowModelFailure) {
@@ -1070,7 +1140,7 @@ const runWorkflowTask = async (args: {
             checks,
             ...(baselineChecks && { baselineChecks }),
             files: names,
-            ...(state.plan.design && { designReviewed: true }),
+            ...(requiresDesignerReview && { designReviewed: true }),
           };
           if (snapshot.commit) {
             const base = snapshot.commit;
@@ -1163,10 +1233,13 @@ const runWorkflowTask = async (args: {
         projectTask: args.projectTask,
       },
     );
-    const plan: State['plan'] = proposedPlan;
+    const plan: State['plan'] = {
+      ...proposedPlan,
+      files: [...new Set(proposedPlan.files)],
+      surface: args.projectTask?.designSurface ?? proposedPlan.surface,
+    };
     const checks = new Set(policy.checks.map((check) => check.id));
     if (
-      new Set(plan.files).size !== plan.files.length ||
       plan.files.some((name) => !has(snapshot.files, name) || !policy.editable.includes(name)) ||
       plan.criteria.some((item) => !checks.has(item.check)) ||
       (kind === 'bug' && (!plan.reproduction || !checks.has(plan.reproduction)))
@@ -1177,7 +1250,7 @@ const runWorkflowTask = async (args: {
     if (selectedSkills.length) {
       plan.skills = selectedSkills.map(({ name, text }) => ({ name, hash: digest(text) }));
     }
-    if (proposedPlan.surface !== 'none' && !plan.questions.length) {
+    if (plan.surface !== 'none' && !plan.questions.length) {
       const ui = plan.surface !== 'mobile';
       const mobile = plan.surface !== 'ui';
       const componentReferences = components?.length ? await args.designCatalog?.([...new Set(components)]) : undefined;

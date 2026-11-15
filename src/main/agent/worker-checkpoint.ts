@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { ContextMessage, ContextUserMessage, Mode, PromptContext, ProposedPlan, Reasoning } from '@common/types';
+import type { GoalVerificationCheckpoint, GoalVerificationUpdate } from '@/task/agent-goal';
+import type { AgentDesignReview } from '@/task/agent-design-review';
+
+import { goalVerificationCheckpointSchema } from '@/task/agent-goal';
 
 export const WORKER_STOP = Symbol('explicit worker cancellation');
 
@@ -35,6 +39,7 @@ export type WorkerProgress = {
   messages?: ContextMessage[];
   tool?: { id: string; name: string; processId?: string; fingerprint?: string };
   receipt?: WorkerToolReceipt;
+  goalVerification?: GoalVerificationUpdate & { onSaved: () => void };
   modelSettings?: RecordedModelSettings;
 };
 
@@ -61,7 +66,9 @@ export type RootTurnRecord = WorkerRecord & {
   model: string;
   mode?: Mode;
   goalId?: string;
+  goalVerification?: GoalVerificationCheckpoint;
   approvedPlan?: ProposedPlan;
+  designReview?: AgentDesignReview;
   completedShellFingerprints?: string[];
   pendingSteering?: ContextUserMessage[];
 };
@@ -72,6 +79,21 @@ export const hasSteeringToRecover = (record: RootTurnRecord | undefined): boolea
   }
   const last = record.messages.at(-1);
   return Boolean(record.pendingSteering?.length || (last?.role === 'user' && last.promptContext?.id === record.turnId && last.id !== record.turnId));
+};
+
+export const rememberGoalVerification = (record: RootTurnRecord, update: GoalVerificationUpdate | undefined): boolean => {
+  if (!update || !update.isCurrent() || record.goalId !== update.goalId || record.pendingSteering?.length) {
+    return false;
+  }
+  const saved = goalVerificationCheckpointSchema.safeParse(record.goalVerification);
+  const receipts = saved.success && saved.data.binding === update.binding ? saved.data.receipts : [];
+  record.goalVerification = {
+    binding: update.binding,
+    receipts: update.receipt
+      ? [...receipts.filter(({ toolCallId }) => toolCallId !== update.receipt?.toolCallId), update.receipt]
+      : receipts.filter(({ command }) => command !== update.command),
+  };
+  return true;
 };
 
 export const createRecordedInput = (prompt: string, images: string[] | undefined, promptContext: PromptContext): ContextUserMessage => ({

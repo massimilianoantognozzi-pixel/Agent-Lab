@@ -881,7 +881,7 @@ describe('Agent - compactMessagesIfNeeded', () => {
   const runCompact = async (resultMessages: any[], taskTokensOverride?: number, modelMessages: any[] = [], userMessage = makeUserRequestMessage()) => {
     const task = createMockTask();
     task.task.contextCompactingThresholdTokens = taskTokensOverride;
-    task.compactConversation = vi.fn().mockResolvedValue(undefined);
+    task.compactConversation = vi.fn().mockResolvedValue(true);
     task.smartCompactConversation = vi.fn().mockResolvedValue([]);
     task.handoffConversation = vi.fn().mockResolvedValue(undefined);
     task.getContextMessages = vi.fn().mockResolvedValue([]);
@@ -917,6 +917,41 @@ describe('Agent - compactMessagesIfNeeded', () => {
     expect(vi.mocked(task.compactConversation).mock.lastCall?.[8]).toBe(false);
     expect(JSON.stringify(modelMessages)).not.toContain(text);
     expect(modelMessages.at(-1)).toMatchObject({ role: 'user' });
+  });
+
+  it('keeps the original history when overflow recovery returns only a summary heading', async () => {
+    agent = buildAgent(() => undefined);
+    agent['modelManager'].isStreamingDisabled = vi.fn(() => true);
+    agent.generateText = vi.fn(async () => '### **Conversation Summary**\n');
+    const user = makeUserRequestMessage();
+    const history = [user];
+    const toolEvidence = makeResultMessages(100000);
+    const modelMessages = [{ role: 'user', content: user.content }] as const;
+    const pendingMessages = [...modelMessages];
+    const task = createMockTask();
+    task.compactConversation = vi.fn(async () => false);
+
+    await expect(
+      agent['compactMessagesIfNeeded'](
+        task,
+        mockProfile,
+        { id: 'test-provider' } as any,
+        'test-model',
+        user,
+        history,
+        [],
+        pendingMessages,
+        toolEvidence,
+        undefined,
+        undefined,
+        true,
+      ),
+    ).rejects.toThrow('Il provider non ha restituito un riepilogo utilizzabile dopo il limite di contesto.');
+
+    expect(task.compactConversation).not.toHaveBeenCalled();
+    expect(history).toEqual([user]);
+    expect(pendingMessages).toEqual(modelMessages);
+    expect(toolEvidence).toEqual(makeResultMessages(100000));
   });
 
   it('should compact based on the token threshold when the model context size is unknown', async () => {

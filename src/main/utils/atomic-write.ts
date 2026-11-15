@@ -4,16 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const retryableWindowsRenameErrors = new Set(['EACCES', 'EBUSY', 'EPERM']);
 
-export const atomicWriteJsonFile = async (filePath: string, data: unknown): Promise<void> => {
-  const dir = path.dirname(filePath);
-  await fs.promises.mkdir(dir, { recursive: true });
-
-  const baseName = path.basename(filePath);
-  const temporaryPath = path.join(dir, `${baseName}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
-  await fs.promises.writeFile(temporaryPath, JSON.stringify(data, null, 2), 'utf8');
+export const renameWithWindowsRetry = async (source: string, destination: string): Promise<void> => {
   for (let attempt = 0; ; attempt++) {
     try {
-      await fs.promises.rename(temporaryPath, filePath);
+      await fs.promises.rename(source, destination);
       return;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -23,6 +17,16 @@ export const atomicWriteJsonFile = async (filePath: string, data: unknown): Prom
       await delay(15 * 2 ** attempt);
     }
   }
+};
+
+export const atomicWriteJsonFile = async (filePath: string, data: unknown): Promise<void> => {
+  const dir = path.dirname(filePath);
+  await fs.promises.mkdir(dir, { recursive: true });
+
+  const baseName = path.basename(filePath);
+  const temporaryPath = path.join(dir, `${baseName}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.promises.writeFile(temporaryPath, JSON.stringify(data, null, 2), 'utf8');
+  await renameWithWindowsRetry(temporaryPath, filePath);
 };
 
 export const cleanupStaleTempFiles = async (filePath: string): Promise<void> => {

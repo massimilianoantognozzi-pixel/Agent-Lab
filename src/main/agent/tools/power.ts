@@ -36,9 +36,23 @@ import { ensureRipgrepBinary, filterIgnoredFiles, scrapeWeb } from '@/utils';
 import { isAbortError, isFileNotFoundError } from '@/utils/errors';
 import { getShellCommandArgs, getShellInitCommand, getShellPath } from '@/utils/shell';
 import { BoundedOutputAccumulator, expandTilde, readFileContent, truncateToolResult, coerceBoolean } from '@/agent/utils';
+import {
+  getNpmTestScriptAttribution,
+  hasEmptyNativeTestReport,
+  NATIVE_EMPTY_TEST_REPORT,
+  NATIVE_NPM_TEST_SCRIPT_IDENTIFIED,
+  NATIVE_VERIFICATION_RESEARCH_QUERY,
+  resolveGoalVerificationScope,
+  verificationResearchQuery,
+  type GoalVerificationScope,
+} from '@/task/goal-verification';
 import { RIPGREP_BINARY_PATH } from '@/constants';
 import { isGeneralMode } from '@/lab-mode';
 import { observeGeneralToolResult } from '@/general-knowledge';
+
+// Host-owned metadata, separate from the model's Bash input schema.
+export const VERIFIED_BASH_SCOPE = Symbol('verified-bash-scope');
+export const NATIVE_PENDING_BASH_PROCESS = Symbol('native-pending-bash-process');
 
 /**
  * File lock map to prevent race conditions when multiple edits target the same file.
@@ -49,7 +63,13 @@ const fileLocks = new Map<string, Promise<unknown>>();
 
 const BASH_STREAMING_PREVIEW_CHARS = 8 * 1024;
 const BASH_STREAMING_UPDATE_INTERVAL_MS = 150;
-type CommandResult = { stdout: string; stderr: string; exitCode: number | null };
+type CommandResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  [NATIVE_EMPTY_TEST_REPORT]?: boolean;
+  [NATIVE_NPM_TEST_SCRIPT_IDENTIFIED]?: boolean;
+};
 type CommandInput = (input: string, close: boolean) => Promise<void>;
 export type PowerCommandSession = {
   signal: AbortSignal;
@@ -118,7 +138,11 @@ export const createPowerToolset = (
         runningCommands.delete(processId);
         return result;
       }
-      return { ...command.preview(), processId };
+      const pending = { ...command.preview(), processId };
+      Object.defineProperty(pending, NATIVE_PENDING_BASH_PROCESS, {
+        value: (id: string) => id === processId && !commandSession?.signal.aborted && getCommand(id) === command,
+      });
+      return pending;
     } finally {
       clearWaitTimer(timer);
     }
@@ -148,8 +172,8 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
       const expandedPath = expandTilde(filePath);
       task.addToolMessage(toolCallId, TOOL_GROUP_NAME, TOOL_FILE_EDIT, input, undefined, undefined, promptContext);
 
-      if (searchTerm === replacementText) {
-        return 'Already updated - no changes were needed.';
+      if (!isRegex && searchTerm === replacementText) {
+        return 'No edit applied: searchTerm and replacementText are identical. The file contents have not been checked. Read the current file before choosing another edit.';
       }
 
       // Sanitize escape characters from searchTerm and replacementText
@@ -206,16 +230,20 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           // Normalize Windows line endings to Unix for consistent matching
           fileContent = fileContent.replace(/\r\n/g, '\n');
           let modifiedContent: string;
+          let matched: boolean;
 
           if (isRegex) {
             const regex = new RegExp(searchTerm, replaceAll ? 'g' : '');
             modifiedContent = fileContent.replace(regex, replacementText);
+            matched = fileContent === modifiedContent && regex.test(fileContent);
           } else {
             const sanitizedSearchTerm = sanitize(searchTerm).replace(/\r\n/g, '\n');
             const sanitizedReplacementText = sanitize(replacementText);
 
             logger.debug('Sanitized search term:', { sanitizedSearchTerm });
-            logger.debug('Sanitized replacement text:', { sanitizedReplacementText });
+            logger.debug('Sanitized replacement text:', {
+              sanitizedReplacementText,
+            });
 
             if (replaceAll) {
               // Use replacer function to avoid special replacement patterns ($&, $`, '$', $$)
@@ -223,6 +251,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
             } else {
               modifiedContent = fileContent.replace(sanitizedSearchTerm, () => sanitizedReplacementText);
             }
+            matched = fileContent === modifiedContent && fileContent.includes(sanitizedSearchTerm);
           }
 
           if (fileContent === modifiedContent) {
@@ -232,7 +261,10 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
                 ? 'Try not using the \\ in the string like \\" and others, but use only ".'
                 : 'When you try again make sure to exactly match content, character for character, including all comments, docstrings, etc.';
 
-            return `Warning: Given 'searchTerm' was not found in the file. Content remains the same. ${improveInfo}`;
+            const reason = matched
+              ? 'No edit applied: the replacement would leave the file unchanged.'
+              : "Warning: Given 'searchTerm' was not found in the file. Content remains the same.";
+            return `${reason} Read the current file before choosing another edit. ${improveInfo}`;
           }
 
           await fs.writeFile(absolutePath, modifiedContent, {
@@ -728,7 +760,10 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           return 'Operation was cancelled by user.';
         }
 
-        logger.debug('ripgrep results count:', { count: results.length, stderr: stderrData.substring(0, 500) });
+        logger.debug('ripgrep results count:', {
+          count: results.length,
+          stderr: stderrData.substring(0, 500),
+        });
 
         if (results.length === 0) {
           if (stderrData.trim()) {
@@ -803,7 +838,8 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
       interactive: z.boolean().optional().describe('Keep stdin open for bash_input. Requires yieldMs and interactive shell approval.'),
       tty: z.boolean().optional().describe('Run in a native pseudo-terminal. Requires interactive mode. Send terminal keys with bash_input.'),
     }),
-    execute: async (input, { toolCallId }) => {
+    execute: async (input, options) => {
+      const { toolCallId } = options;
       const { command, cwd, timeout, description, yieldMs, interactive, tty } = input;
       if (tty && !interactive) {
         return 'TTY commands require interactive mode.';
@@ -869,7 +905,20 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return 'Read pending command results with bash_poll before starting another background command.';
       }
 
-      const absoluteCwd = expandedCwd ? path.resolve(task.getTaskDir(), expandedCwd) : task.getTaskDir();
+      let absoluteCwd = expandedCwd ? path.resolve(task.getTaskDir(), expandedCwd) : task.getTaskDir();
+      const admittedScope = (
+        options as typeof options & {
+          [VERIFIED_BASH_SCOPE]?: GoalVerificationScope;
+        }
+      )[VERIFIED_BASH_SCOPE];
+      if (admittedScope) {
+        const launchScope = await resolveGoalVerificationScope(task.getTaskDir(), cwd);
+        commandSignal?.throwIfAborted();
+        if (!launchScope || path.relative(admittedScope.root, launchScope.root) || path.relative(admittedScope.directory, launchScope.directory)) {
+          return 'Verification working directory changed or is unavailable. Run the check again from a confirmed checkout.';
+        }
+        absoluteCwd = launchScope.directory;
+      }
 
       const isPosix = process.platform !== 'win32';
 
@@ -885,7 +934,11 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         await new Promise<void>((resolve, reject) => treeKill(pid, 'SIGKILL', (error) => (error ? reject(error) : resolve())));
       };
 
-      let preview = (): CommandResult => ({ stdout: '', stderr: '', exitCode: null });
+      let preview = (): CommandResult => ({
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+      });
       let commandInput: CommandInput | undefined;
       let cancelCommand: (() => void) | undefined;
       const completion = new Promise<CommandResult>((resolve) => {
@@ -919,8 +972,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           }
         };
 
-        const finishOutput = async (accumulator: BoundedOutputAccumulator): Promise<string> => {
-          const content = await accumulator.finish();
+        const presentOutput = (content: string, accumulator: BoundedOutputAccumulator): Promise<string> => {
           const didSpill = accumulator.didSpill();
           return truncateToolResult(content, 1000, 50, 10000, !didSpill, didSpill ? `Full output saved to ${accumulator.getSpillFilePath()}.` : undefined);
         };
@@ -933,8 +985,11 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           cleanup();
 
           try {
-            const truncatedStdout = await finishOutput(stdoutAccumulator);
-            const truncatedStderr = stderrOverride ?? (await finishOutput(stderrAccumulator));
+            const stdout = await stdoutAccumulator.finish();
+            const stderr = stderrOverride === null ? await stderrAccumulator.finish() : '';
+            const emptyTestReport = exitCode === 0 && hasEmptyNativeTestReport(command, stdout, stderr);
+            const truncatedStdout = await presentOutput(stdout, stdoutAccumulator);
+            const truncatedStderr = stderrOverride ?? (await presentOutput(stderr, stderrAccumulator));
 
             if (isGeneralMode()) {
               await observeGeneralToolResult(
@@ -948,7 +1003,18 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
               ).catch((error) => logger.warn('Native command knowledge metadata could not be recorded', { error }));
             }
 
-            resolve({ stdout: truncatedStdout, stderr: truncatedStderr, exitCode });
+            const result: CommandResult = {
+              stdout: truncatedStdout,
+              stderr: truncatedStderr,
+              exitCode,
+            };
+            Object.defineProperty(result, NATIVE_EMPTY_TEST_REPORT, { value: emptyTestReport });
+            const npmScriptIdentified = getNpmTestScriptAttribution(command, stdout);
+            if (npmScriptIdentified !== undefined) {
+              Object.defineProperty(result, NATIVE_NPM_TEST_SCRIPT_IDENTIFIED, { value: npmScriptIdentified });
+            }
+            Object.defineProperty(result, NATIVE_VERIFICATION_RESEARCH_QUERY, { value: verificationResearchQuery(command) });
+            resolve(result);
           } catch (error) {
             resolve({
               stdout: '',
@@ -1031,7 +1097,11 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
               name: 'xterm-256color',
               cols: 100,
               rows: 30,
-              env: { ...process.env, TERM: 'xterm-256color', PATH: getShellPath() },
+              env: {
+                ...process.env,
+                TERM: 'xterm-256color',
+                PATH: getShellPath(),
+              },
             });
             const activeTerminal = terminal;
             commandInput = async (data, close) => {
@@ -1065,7 +1135,12 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           }
           childProcess = spawn(shellExec, shellArgs, {
             cwd: absoluteCwd,
-            env: { ...process.env, TERM: 'dumb', DEBIAN_FRONTEND: 'noninteractive', PATH: getShellPath() },
+            env: {
+              ...process.env,
+              TERM: 'dumb',
+              DEBIAN_FRONTEND: 'noninteractive',
+              PATH: getShellPath(),
+            },
             stdio: [interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'],
             detached: isPosix,
           });
@@ -1148,7 +1223,14 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return completion;
       }
       const processId = randomUUID();
-      runningCommands.set(processId, { directory: task.getTaskDir(), profileId: profile.id, completion, preview, input: commandInput, cancel: cancelCommand });
+      runningCommands.set(processId, {
+        directory: task.getTaskDir(),
+        profileId: profile.id,
+        completion,
+        preview,
+        input: commandInput,
+        cancel: cancelCommand,
+      });
       return readCommand(processId, yieldMs);
     },
   });
@@ -1156,18 +1238,27 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
   const bashPollTool = tool({
     description:
       'Read the output and exit status of a process started by bash in this task session. The ID can be used across turns while the task stays open. A null exit code means it is still running.',
-    inputSchema: z.object({ processId: z.string().uuid(), yieldMs: z.number().int().min(1).max(30000).default(1000) }),
+    inputSchema: z.object({
+      processId: z.string().uuid(),
+      yieldMs: z.number().int().min(1).max(30000).default(1000),
+    }),
     execute: async ({ processId, yieldMs }) => readCommand(processId, yieldMs),
   });
 
   const bashInputTool = tool({
     description:
       'Send stdin to an interactive command started by bash in this task session. Set close to signal EOF in pipe mode. Use bash_poll for the output and exit status.',
-    inputSchema: z.object({ processId: z.string().uuid(), input: z.string().max(8192), close: z.boolean().default(false) }),
+    inputSchema: z.object({
+      processId: z.string().uuid(),
+      input: z.string().max(8192),
+      close: z.boolean().default(false),
+    }),
     execute: async (request) => {
       const writeInput = getCommand(request.processId)?.input;
       if (!writeInput) {
-        return { error: 'The process does not have an open stdin in this task session.' };
+        return {
+          error: 'The process does not have an open stdin in this task session.',
+        };
       }
       const [approved] = await approvalManager.handleToolApproval(stdinToolId, { ...request }, stdinToolId, 'Approve sending input to the running command?');
       abortSignal?.throwIfAborted();

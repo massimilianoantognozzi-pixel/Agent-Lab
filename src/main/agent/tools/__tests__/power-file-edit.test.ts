@@ -60,6 +60,32 @@ describe('Power Tools - file_edit edge cases', () => {
     return tools[fileEditToolKey];
   };
 
+  it('reports identical search and replacement without claiming the file is already updated', async () => {
+    const filePath = 'fixture.js';
+    const original = 'export const threshold = -1;\n';
+    await fs.writeFile(path.join(tempDir, filePath), original, 'utf8');
+    const currentGuess = 'export const threshold = 1;';
+    const result = await getFileEditTool().execute(
+      { filePath, searchTerm: currentGuess, replacementText: currentGuess, isRegex: false, replaceAll: false },
+      { toolCallId: 'identical-input' },
+    );
+    expect(result).toContain('No edit applied');
+    expect(result).not.toContain('Already updated');
+    expect(await fs.readFile(path.join(tempDir, filePath), 'utf8')).toBe(original);
+  });
+
+  it('allows an actual replacement when equal input strings are used in regex mode', async () => {
+    const filePath = 'fixture.txt';
+    const target = path.join(tempDir, filePath);
+    await fs.writeFile(target, 'aaa', 'utf8');
+    const result = await getFileEditTool().execute(
+      { filePath, searchTerm: 'a+', replacementText: 'a+', isRegex: true, replaceAll: false },
+      { toolCallId: 'regex-input' },
+    );
+    expect(result).toContain('Successfully edited');
+    expect(await fs.readFile(target, 'utf8')).toBe('a+');
+  });
+
   describe('searchTerm containing backticks (issue #707 - FIXED)', () => {
     it('should correctly find and replace when searchTerm contains backtick patterns', async () => {
       // This test reproduces the exact bug from issue #707
@@ -546,7 +572,7 @@ const regex = /^[a-z]+$/;
         { toolCallId: 'tool-call-133' },
       );
 
-      expect(result).toContain('Already updated');
+      expect(result).toContain('No edit applied');
     });
   });
 

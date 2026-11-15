@@ -58,7 +58,7 @@ import {
 import type { ExtensionManager } from '@/extensions/extension-manager';
 import type { Store } from '@/store';
 
-import { AIDER_DESK_BUILTIN_PROMPTS_DIR, AIDER_DESK_GLOBAL_PROMPTS_DIR, AIDER_DESK_PROMPTS_DIR } from '@/constants';
+import { AIDER_DESK_BUILTIN_PROMPTS_DIR, AIDER_DESK_GLOBAL_PROMPTS_DIR, AIDER_DESK_PROMPTS_DIR, TASK_AGENTS_RULE_FILES } from '@/constants';
 import logger from '@/logger';
 import { Task } from '@/task';
 import { shouldUsePolling } from '@/utils/file-watch';
@@ -444,8 +444,8 @@ export class PromptsManager {
     }
   };
 
-  private getRulesContent = async (task: Task, agentProfile?: AgentProfile) => {
-    const ruleFiles = await task.getRuleFilesAsContextFiles(agentProfile);
+  public getRulesContent = async (task: Task, agentProfile?: AgentProfile) => {
+    const { files: ruleFiles, instructionDirectory, projectDirectory } = await task.getRuleContext(agentProfile);
 
     logger.debug('Rule files for prompt content:', { ruleFiles });
 
@@ -453,17 +453,28 @@ export class PromptsManager {
       ruleFiles.map(async (file) => {
         try {
           let absolutePath: string;
-          if (file.path.startsWith('~/')) {
+          const baseName = path.basename(file.path);
+          const isProjectInstruction = file.source === 'project-rule' && TASK_AGENTS_RULE_FILES.some((fileName) => fileName === baseName);
+          if (/^~[\\/]/.test(file.path)) {
             const homeDir = (await import('os')).homedir();
             absolutePath = path.join(homeDir, file.path.slice(2));
           } else if (path.isAbsolute(file.path)) {
             absolutePath = file.path;
+          } else if (isProjectInstruction && file.path === baseName) {
+            absolutePath = path.join(instructionDirectory, file.path);
           } else {
-            absolutePath = path.join(task.getProjectDir(), file.path);
+            absolutePath = path.join(projectDirectory, file.path);
           }
 
           const content = await fs.readFile(absolutePath, 'utf8');
-          const fileName = path.basename(file.path);
+          const relativePath = path.relative(instructionDirectory, absolutePath);
+          const isAncestorInstruction =
+            isProjectInstruction &&
+            path
+              .dirname(relativePath)
+              .split(path.sep)
+              .every((segment) => segment === '..');
+          const fileName = isAncestorInstruction ? relativePath.split(path.sep).join('/') : baseName;
           return `      <File name="${fileName}"><![CDATA[\n${content}\n]]></File>`;
         } catch (err) {
           logger.warn(`Failed to read rule file ${file.path}: ${err}`);

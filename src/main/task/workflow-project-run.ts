@@ -4,8 +4,16 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { developmentChangedFiles, developmentFilesMatch, isIntegrated, readDevelopmentFiles, readDevelopmentHead } from './workflow-development';
+import {
+  developmentChangedFiles,
+  developmentFilesMatch,
+  isIntegrated,
+  isKnownDevelopmentCommit,
+  readDevelopmentFiles,
+  readDevelopmentHead,
+} from './workflow-development';
 import { workflowServiceRetryable } from './workflow-docker';
+import { unverifiedEvidenceExclusions } from './workflow-evidence';
 import { assertWorkflowText, requiredWorkflowChecks, validateWorkflowPath, workflowFileNames, type WorkflowProject } from './workflow-policy';
 
 import type { parseProjectWorkflowCommand } from './workflow-project-commands';
@@ -25,6 +33,7 @@ const validation = z.strictObject({
   expected: text,
   files: z.array(z.string()).min(1).optional(),
 });
+export const workflowDesignSurface = z.enum(['ui', 'mobile', 'ui-and-mobile']);
 const workPlan = z.strictObject({
   tasks: z.array(
     z.strictObject({
@@ -33,6 +42,7 @@ const workPlan = z.strictObject({
       request: text,
       files: z.array(z.string()).min(1),
       checks: z.array(z.string()).min(1),
+      designSurface: workflowDesignSurface.optional(),
       dependsOn: z.array(id).default([]),
       evidenceFiles: z.array(z.string()).min(1).optional(),
       evidenceRevision: z
@@ -77,6 +87,7 @@ type LegacyReceipt = { key: string; policyHash: string; base: string; taskId?: s
 export type ProjectTaskContext = {
   id: string;
   integrated: { id: string; commit: string }[];
+  designSurface?: WorkTask['designSurface'];
   attestations?: { id: string; commit: string; passed: true }[];
 };
 
@@ -103,7 +114,7 @@ export const readWorkflowValidationRevision = async (policy: WorkflowProject, st
     return validationRevision({});
   }
 };
-const taskDefinition = ({ id, kind, request, files, checks, dependsOn, afterValidation }: WorkTask) => ({
+const taskDefinition = ({ id, kind, request, files, checks, dependsOn, afterValidation, designSurface }: WorkTask) => ({
   id,
   kind,
   request,
@@ -111,7 +122,9 @@ const taskDefinition = ({ id, kind, request, files, checks, dependsOn, afterVali
   checks,
   dependsOn,
   afterValidation,
+  designSurface,
 });
+const evidenceDefinition = (task: WorkTask) => [taskDefinition(task), task.evidenceFiles, task.validations];
 const manualResult = (message: string) => ({ phase: 'waiting' as const, message: '## Validazioni manuali\n\n' + message });
 
 export const runProjectWorkflow = async (args: {
@@ -266,13 +279,15 @@ export const runProjectWorkflow = async (args: {
         throw new Error('La validazione ' + item.id + ' usa file fuori perimetro.');
       }
       const validationKey = evidenceRevision || evidenceFiles ? digest([key, item, legacyEvidenceKey]) : digest([key, item]);
-      validationEvidence.set(item.id, { key: validationKey, owner: task.id, files: [...new Set([...files, ...(item.files ?? [])])] });
-      return { ...item, excluded: new Set([...excluded].filter((file) => !item.files?.includes(file))), key: validationKey };
+      const validationInputs = [...new Set([...files, ...(item.files ?? [])])];
+      validationEvidence.set(item.id, { key: validationKey, owner: task.id, files: validationInputs });
+      return { ...item, inputs: new Set(validationInputs), excluded: new Set([...excluded].filter((file) => !item.files?.includes(file))), key: validationKey };
     });
     return {
       ...task,
       validations,
       evidenceKey,
+      inputs: new Set(files),
       excluded,
       policy: researchAfterFailures === undefined ? taskPolicy : { ...taskPolicy, researchAfterFailures },
       legacyKey: digest([project, key]),
@@ -294,22 +309,55 @@ export const runProjectWorkflow = async (args: {
     changes.set(key, files);
     return files;
   };
-  const changedInputs = async (from: string, to: string, excluded: Set<string>) => (await changedFiles(from, to)).filter((file) => !excluded.has(file));
+  const reviewedEvidenceRevision = async (entry: (typeof entries)[number], head: string) => {
+    const revision = entry.evidenceRevision;
+    if (
+      !revision ||
+      !(await isKnownDevelopmentCommit(policy, revision, head, signal)) ||
+      !(await developmentFilesMatch(policy, revision, head, sources, signal))
+    ) {
+      return;
+    }
+    const reviewedTasks = await readPreviousTasks(revision).catch(() => {
+      signal?.throwIfAborted();
+      return [];
+    });
+    const reviewed = reviewedTasks.find(({ id }) => id === entry.id);
+    const current = tasks.find(({ id }) => id === entry.id)!;
+    return reviewed && digest(evidenceDefinition(reviewed)) === digest(evidenceDefinition(current)) ? revision : undefined;
+  };
+  const exclusionReviews = new Map<string, string[]>();
+  const changedInputs = async (from: string, to: string, scope: { inputs: Set<string>; excluded: Set<string> }, exclusionBase: string) => {
+    const paths = await changedFiles(from, to);
+    if (!scope.excluded.size) {
+      return paths;
+    }
+    const sinceReview = await changedFiles(exclusionBase, to);
+    const candidates = sinceReview.some((file) => scope.inputs.has(file)) ? [...scope.excluded].sort() : sinceReview.filter((file) => scope.excluded.has(file));
+    // A later check does not renew an exclusion made for a different input snapshot.
+    const key = digest([to, [...scope.inputs].sort(), candidates]);
+    const uncertain = exclusionReviews.get(key) ?? (candidates.length ? await unverifiedEvidenceExclusions(policy, to, scope.inputs, candidates, signal) : []);
+    exclusionReviews.set(key, uncertain);
+    return [...new Set([...paths.filter((file) => !scope.excluded.has(file)), ...uncertain])].sort();
+  };
   const register = async (entry: (typeof entries)[number], commit: string, head: string) => {
     completed.set(entry.id, commit);
     if (!entry.validations.length) {
       return;
     }
     let changed = false;
+    const exclusionBase = (await reviewedEvidenceRevision(entry, head)) ?? commit;
     for (const item of entry.validations) {
       const previous = progress[item.key];
       const previousIsCurrent =
-        previous && (await isIntegrated(policy, previous.commit, signal, head)) && (await changedInputs(previous.commit, head, item.excluded)).length === 0;
+        previous &&
+        (previous.commit === head ||
+          ((await isIntegrated(policy, previous.commit, signal, head)) && (await changedInputs(previous.commit, head, item, exclusionBase)).length === 0));
       if (!previousIsCurrent) {
         if (previous) {
           state.history[digest([item.key, previous.commit])] = previous;
         }
-        const version = !entry.evidenceRevision && (await changedInputs(commit, head, item.excluded)).length === 0 ? commit : head;
+        const version = !entry.evidenceRevision && (await changedInputs(commit, head, item, exclusionBase)).length === 0 ? commit : head;
         progress[item.key] = { commit: version, confirmed: 0 };
         changed = true;
       }
@@ -420,12 +468,9 @@ export const runProjectWorkflow = async (args: {
     const sourcesChanged = commit !== head && !(await developmentFilesMatch(policy, commit, head, sources, signal));
     const oldTask = (await readPreviousTasks(commit)).find(({ id }) => id === entry.id);
     const definitionChanged = !oldTask || digest(taskDefinition(oldTask)) !== digest(taskDefinition(entry));
+    const reviewed = await reviewedEvidenceRevision(entry, head);
     if (sourcesChanged || definitionChanged) {
-      const revision = entry.evidenceRevision;
-      const reviewed =
-        revision && (await isIntegrated(policy, revision, signal, head)) && (await developmentFilesMatch(policy, revision, head, sources, signal));
-      const reviewedTask = reviewed && (await readPreviousTasks(revision)).find(({ id }) => id === entry.id);
-      if (!reviewed || (definitionChanged && (!reviewedTask || digest(taskDefinition(reviewedTask)) !== digest(taskDefinition(entry))))) {
+      if (!reviewed) {
         evidenceIssues.set(
           entry.id,
           (sourcesChanged ? 'fonti approvate cambiate' : 'definizione del task cambiata') + ': riesamina i criteri e aggiorna la revisione delle prove',
@@ -434,7 +479,7 @@ export const runProjectWorkflow = async (args: {
       }
     }
     const hasBrowser = entry.policy.checks.some((check) => check.type === 'browser');
-    const inputsChanged = await changedInputs(from, head, entry.excluded);
+    const inputsChanged = await changedInputs(from, head, entry, reviewed ?? commit);
     if (!hasBrowser && !inputsChanged.length && (from === head || (await isIntegrated(policy, from, signal, head)))) {
       if (saved) {
         return true;
@@ -643,6 +688,7 @@ export const runProjectWorkflow = async (args: {
       const taskContext: ProjectTaskContext = {
         id: entry.id,
         integrated: [...completed].map(([id, commit]) => ({ id, commit })),
+        ...(entry.designSurface && { designSurface: entry.designSurface }),
         ...(attestations.length ? { attestations } : {}),
       };
       const execute = (prompt: string) => args.execute(file, entry.policy, prompt, source, taskContext, evidenceHead);

@@ -101,6 +101,17 @@ describe('repository workflow', () => {
     return match![0];
   };
 
+  it('keeps planning when the model lists the same authorized file twice', async () => {
+    const generate = vi.fn<Generate>(async () => JSON.stringify({ ...plan, files: [plan.files[0], plan.files[0]] }));
+
+    const result = await run('/workflow bug Correggi il filtro.', generate);
+
+    expect(result.message).toMatch(/\/workflow approve [0-9a-f]{64}/);
+    expect(generate).toHaveBeenCalledOnce();
+    expect(JSON.parse(await fs.readFile(statePath, 'utf8'))).toMatchObject({ plan: { files: plan.files }, approved: false });
+    expect(await fs.readFile(source(), 'utf8')).toBe(original);
+  });
+
   it('delivers a staged patch only after the old bug fails and the candidate passes', async () => {
     const command = await approve();
     await expect(run('/workflow resume')).rejects.toThrow('versione esatta');
@@ -671,6 +682,138 @@ describe('repository workflow', () => {
     expect(investigate).not.toHaveBeenCalled();
   }, 30_000);
 
+  it.each([
+    'same commit',
+    'separate commits',
+    'indirect import',
+    'computed import',
+    'asset reference',
+    'extensionless module',
+    'aliased CommonJS loader',
+    'optional CommonJS loader',
+    'CommonJS element access',
+    'computed CommonJS property',
+    'generic CommonJS call',
+  ])(
+    'does not reuse an old exclusion after an import changes (%s)',
+    async (scenario) => {
+      if (scenario === 'indirect import') {
+        await fs.writeFile(path.join(policy.root, 'src/bridge.ts'), "export { threshold } from './shared';\n");
+      }
+      if (scenario === 'extensionless module') {
+        await fs.writeFile(path.join(policy.root, 'src/shared.js'), 'module.exports = 0;\n');
+      }
+      useTwoBranches();
+      policy.references = [{ path: 'DESIGN.md', role: 'blueprint' }];
+      policy.workPlan = 'plan.json';
+      const sharedPath = scenario === 'extensionless module' ? 'src/shared' : 'src/shared.ts';
+      const hasLiteralLoader = ['optional CommonJS loader', 'CommonJS element access', 'generic CommonJS call'].includes(scenario);
+      policy.evidenceExcludes = { 'T-1': hasLiteralLoader ? [sharedPath, 'src/unrelated.ts'] : [sharedPath] };
+      policy.checks.push({ id: 'notes', type: 'contains', file: 'src/notes.md', text: 'positivi' });
+      const upstream = { id: 'T-1', kind: 'bug', request: 'Correggi il filtro.', files: ['src/filter.ts'], checks: ['regression'] };
+      const dependent = { id: 'T-2', kind: 'change', request: 'Documenta il filtro.', files: ['src/notes.md'], checks: ['notes'], dependsOn: ['T-1'] };
+      const commitPlan = async (tasks: unknown[], shared: string, filter?: string) => {
+        git('switch', 'dev');
+        await fs.writeFile(path.join(policy.root, 'plan.json'), JSON.stringify({ tasks }));
+        await fs.writeFile(path.join(policy.root, sharedPath), shared);
+        if (hasLiteralLoader) {
+          await fs.writeFile(path.join(policy.root, 'src/unrelated.ts'), `// An unrelated file\n${shared}`);
+        }
+        if (filter) {
+          await fs.writeFile(source(), filter);
+        }
+        git('add', '.');
+        git('commit', '-m', 'Aggiorna la fixture');
+        git('switch', 'main');
+      };
+
+      await commitPlan([upstream], 'export const threshold = 0;\n');
+      expect((await run('Avvia il lavoro')).message).toContain('Task integrati sul ramo di sviluppo: T-1');
+      const dependencySource: Record<string, string> = {
+        'computed import': "const source = './shared';\nexport const cutoff = import(source);\n",
+        'indirect import': "export { threshold } from './bridge';\n",
+        'asset reference': "export const resource = new URL('./shared.ts', import.meta.url);\n",
+        'extensionless module': "export const cutoff = require('./shared');\n",
+        'aliased CommonJS loader': "const load = require;\nexport const cutoff = load('./shared');\n",
+        'optional CommonJS loader': "export const cutoff = require?.('./shared');\n",
+        'CommonJS element access': "export const cutoff = module['require']('./shared');\n",
+        'computed CommonJS property': "const method = 'require';\nexport const cutoff = module[method]('./shared');\n",
+        'generic CommonJS call': "export const cutoff = require<string>('./shared');\n",
+      };
+      const withImport = fixed + (dependencySource[scenario] ?? "export { threshold } from './shared';\n");
+      if (scenario === 'separate commits') {
+        await commitPlan([upstream], 'export const threshold = 0;\n', withImport);
+        const rechecked = await runRepositoryWorkflow({
+          policy,
+          statePath,
+          prompt: 'Riprendi il lavoro',
+          generate: vi.fn<Generate>(async () => JSON.stringify({ findings: ['Il filtro ora importa il modulo escluso.'], checks: ['regression'] })),
+          continueRecovery: true,
+        });
+        expect(rechecked.objectiveComplete).toBe(false);
+      }
+      await commitPlan([upstream, dependent], 'export const threshold = 4;\n', withImport);
+      const head = git('rev-parse', 'dev');
+      const generate = vi.fn<Generate>(async (stage, _instructions, input) => {
+        if (stage === 'investigate') {
+          expect(JSON.parse(input)).toMatchObject({ task: 'T-1', unknownFiles: [sharedPath], commit: head });
+          return JSON.stringify({ findings: ['Il filtro ora importa il modulo che era stato escluso.'], checks: ['regression'] });
+        }
+        if (stage === 'plan') {
+          return JSON.stringify({ ...plan, files: dependent.files, criteria: [{ scenario: 'Documenta il filtro.', check: 'notes' }], reproduction: null });
+        }
+        if (stage === 'implement') {
+          return JSON.stringify({ changes: [{ path: 'src/notes.md', content: 'Mantiene solo i valori positivi.' }] });
+        }
+        return response(stage);
+      });
+
+      const result = await run('Riprendi il lavoro', generate);
+      expect(result.message).toContain('T-2 · dipendenza in attesa');
+      expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['investigate']);
+      expect(git('rev-parse', 'dev')).toBe(head);
+    },
+    30_000,
+  );
+
+  it('keeps a missing historical review plan local to that review', async () => {
+    const beforePlan = useTwoBranches();
+    policy.references = [{ path: 'DESIGN.md', role: 'blueprint' }];
+    policy.workPlan = 'plan.json';
+    const upstream = {
+      id: 'T-1',
+      kind: 'bug',
+      request: 'Correggi il filtro.',
+      files: ['src/filter.ts'],
+      checks: ['regression'],
+      validations: [{ id: 'V-1', title: 'Filtro', environment: 'Fixture', steps: ['Apri il filtro.'], expected: 'Solo positivi.' }],
+    };
+    const independent = { id: 'T-2', kind: 'change', request: 'Aggiorna le note.', files: ['src/notes.md'], checks: ['notes'] };
+    policy.checks.push({ id: 'notes', type: 'contains', file: 'src/notes.md', text: 'positivi' });
+    const commitPlan = async (tasks: unknown[]) => {
+      git('switch', 'dev');
+      await fs.writeFile(path.join(policy.root, 'plan.json'), JSON.stringify({ tasks }));
+      git('add', 'plan.json');
+      git('commit', '-m', 'Aggiorna il piano');
+      git('switch', 'main');
+    };
+    await commitPlan([upstream]);
+    expect((await run('Avvia il lavoro')).message).toContain('Task integrati sul ramo di sviluppo: T-1');
+
+    await commitPlan([{ ...upstream, evidenceRevision: beforePlan }, independent]);
+    expect((await run('Riprendi le validazioni')).message).toContain('V-1 · Filtro');
+    const generate = vi.fn<Generate>(async (stage) => {
+      if (stage === 'plan') {
+        return JSON.stringify({ ...plan, files: independent.files, criteria: [{ scenario: 'Verifica le note.', check: 'notes' }], reproduction: null });
+      }
+      if (stage === 'implement') {
+        return JSON.stringify({ changes: [{ path: 'src/notes.md', content: 'Mantiene solo i valori positivi.' }] });
+      }
+      return response(stage);
+    });
+    expect((await run('Riprendi il lavoro', generate)).message).toContain('Task integrati sul ramo di sviluppo: T-1, T-2');
+  }, 30_000);
+
   it('gives the next planner the attestation that unblocked its task', async () => {
     const first = {
       id: 'T-1',
@@ -774,6 +917,168 @@ describe('repository workflow', () => {
     await expect(readRemoteRepositoryPatch(policy, statePath, approval.slice('/workflow approve '.length))).resolves.toContain('openDetails');
     expect(await fs.readFile(source(), 'utf8')).toBe(original);
   });
+
+  it('requires design and design review when the versioned task declares a surface that the model omits', async () => {
+    const base = useTwoBranches();
+    policy.references.push({ path: 'DESIGN.md', role: 'blueprint' });
+    policy.workPlan = 'plan.json';
+    const definition = {
+      id: 'T-1',
+      kind: 'bug',
+      request: 'Mostra solo valori positivi nella vista.',
+      files: plan.files,
+      checks: ['regression'],
+      designSurface: 'ui',
+    };
+    git('switch', 'dev');
+    await fs.writeFile(path.join(policy.root, policy.workPlan), JSON.stringify({ tasks: [definition] }));
+    git('add', policy.workPlan);
+    git('commit', '-m', 'Dichiara la superficie del task');
+    const approvedHead = git('rev-parse', 'dev');
+    git('switch', 'main');
+    const design = { sharedLogic: 'Riusa filter.', ui: 'Mantieni il filtro nella vista attuale.', mobile: null, questions: [] };
+    const generate = vi.fn<Generate>(async (stage, _instructions, input) => {
+      if (stage === 'plan') {
+        expect(JSON.parse(input)).toMatchObject({ projectTask: { designSurface: 'ui' } });
+      }
+      if (stage === 'design') {
+        expect(JSON.parse(input)).toMatchObject({ plan: { surface: 'ui' } });
+        return JSON.stringify(design);
+      }
+      if (stage === 'design-review') {
+        expect(JSON.parse(input)).toMatchObject({ plan: { surface: 'ui', design } });
+        expect(git('rev-parse', 'dev')).toBe(approvedHead);
+      }
+      return response(stage === 'design-review' ? 'review' : stage);
+    });
+
+    const result = await run('Avvia il lavoro', generate);
+
+    expect(result.message).toContain('Task integrati sul ramo di sviluppo: T-1');
+    expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['plan', 'design', 'implement', 'review', 'design-review']);
+    expect(git('rev-parse', 'dev^')).toBe(approvedHead);
+    expect(git('rev-parse', 'main')).toBe(base);
+  }, 30_000);
+
+  it('rejects an earlier plan without the design required by the current task', async () => {
+    const approval = await approve();
+    const generate = vi.fn<Generate>(async (stage) => response(stage));
+
+    await expect(
+      runRepositoryWorkflow({
+        policy,
+        statePath,
+        prompt: approval,
+        generate,
+        projectTask: { id: 'T-1', integrated: [], designSurface: 'ui' },
+      }),
+    ).rejects.toThrow('Il piano deve includere il lavoro del Designer');
+    expect(generate).not.toHaveBeenCalled();
+    expect(JSON.parse(await fs.readFile(statePath, 'utf8'))).toMatchObject({ approved: false });
+    expect(await fs.readFile(source(), 'utf8')).toBe(original);
+  });
+
+  it.each([
+    'new candidate',
+    'shared UI dependency',
+    ...(process.platform === 'win32' ? ['case-folded UI dependency'] : []),
+    'prepared candidate without a design receipt',
+    'prepared candidate rejected by the Designer',
+    'prepared candidate published while the Designer is working',
+  ])(
+    'requires the Designer for an ad hoc UI patch with no planned surface (%s)',
+    async (scenario) => {
+      const caseFolded = scenario === 'case-folded UI dependency';
+      const shared = scenario === 'shared UI dependency' || caseFolded;
+      const view = shared ? 'src/labels.ts' : 'src/view.tsx';
+      const before = shared ? 'export const label = "Visualizza scheda";\n' : 'export const View = () => <button>Visualizza scheda</button>;\n';
+      const after = shared ? 'export const label = "Apri scheda";\n' : 'export const View = () => <button>Apri scheda</button>;\n';
+      const corrected = 'export const View = () => <button aria-label="Apri scheda">Apri scheda</button>;\n';
+      const finding = 'Mantieni l’etichetta accessibile quando il testo è sostituito.';
+      await fs.writeFile(path.join(policy.root, view), before);
+      if (shared) {
+        await fs.writeFile(path.join(policy.root, 'src/shared.ts'), `export { label } from "./${caseFolded ? 'Labels' : 'labels'}";\n`);
+        await fs.writeFile(
+          path.join(policy.root, 'src/view.tsx'),
+          `import { label } from "./${caseFolded ? 'Shared' : 'shared'}";\nexport const View = () => <button>{label}</button>;\n`,
+        );
+      }
+      policy.context = shared ? [view, 'src/shared.ts', 'src/view.tsx'] : [view];
+      policy.editable = [view];
+      policy.checks = [{ id: 'ui-label', type: 'contains', file: view, text: 'Apri scheda' }];
+      const base = useTwoBranches();
+      let reviewingPrepared = false;
+      let correctionRequested = false;
+      let preparedCommit: string | undefined;
+      const generate = vi.fn<Generate>(async (stage, _instructions, input) => {
+        if (stage === 'plan') {
+          return JSON.stringify({ ...plan, files: [view], reproduction: null, criteria: [{ scenario: 'La vista mostra il nuovo testo.', check: 'ui-label' }] });
+        }
+        if (stage === 'design') {
+          return JSON.stringify({ sharedLogic: 'Conserva View.', ui: 'Modifica solo l’etichetta del pulsante.', mobile: null, questions: [] });
+        }
+        if (stage === 'implement') {
+          return JSON.stringify({ changes: [{ path: view, content: after }] });
+        }
+        if (stage === 'debug') {
+          expect(JSON.parse(input).feedback).toEqual([finding]);
+          return JSON.stringify({ changes: [{ path: view, content: corrected }] });
+        }
+        if (stage === 'design-review') {
+          expect(JSON.parse(input).changes).toEqual([{ path: view, before, content: correctionRequested ? corrected : after }]);
+          expect(git('rev-parse', 'dev')).toBe(base);
+          if (reviewingPrepared && scenario === 'prepared candidate published while the Designer is working') {
+            git('update-ref', 'refs/heads/dev', preparedCommit!, base);
+            return JSON.stringify({ verdict: 'fail', findings: [finding] });
+          }
+          if (reviewingPrepared && scenario === 'prepared candidate rejected by the Designer' && !correctionRequested) {
+            correctionRequested = true;
+            return JSON.stringify({ verdict: 'fail', findings: [finding] });
+          }
+        }
+        return response(stage === 'design-review' ? 'review' : stage);
+      });
+
+      const draft = await run('/workflow change Cambia il testo del pulsante nella vista.', generate);
+      const approval = draft.message.match(/\/workflow approve [0-9a-f]{64}/)![0];
+      if (scenario.startsWith('prepared candidate')) {
+        git('switch', 'dev');
+        await expect(run(approval, generate)).rejects.toThrow('aperto in un checkout');
+        const saved = JSON.parse(await fs.readFile(statePath, 'utf8'));
+        preparedCommit = saved.pendingIntegration.integration.commit;
+        delete saved.pendingIntegration.designReviewed;
+        await fs.writeFile(statePath, JSON.stringify(saved));
+        git('switch', 'main');
+        generate.mockClear();
+        reviewingPrepared = true;
+      }
+      if (scenario === 'prepared candidate published while the Designer is working') {
+        await expect(run('/workflow resume', generate)).rejects.toThrow('prima dell’integrazione');
+        const saved = JSON.parse(await fs.readFile(statePath, 'utf8'));
+        expect(saved.pendingIntegration.integration.commit).toBe(preparedCommit);
+        expect(git('rev-parse', 'dev')).toBe(preparedCommit);
+        expect((await run('/workflow resume', generate)).phase).toBe('done');
+        expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['design-review']);
+        return;
+      }
+      const delivery = await run(preparedCommit ? '/workflow resume' : approval, generate);
+
+      expect(generate.mock.calls.map(([stage]) => stage)).toContain('design-review');
+      expect(delivery.message).toContain('Revisione UI/UX del codice PASS');
+      expect(git('rev-parse', 'dev^')).toBe(base);
+      expect(git('rev-parse', 'main')).toBe(base);
+      if (scenario === 'prepared candidate without a design receipt') {
+        expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['design-review']);
+        expect(git('rev-parse', 'dev')).toBe(preparedCommit);
+      }
+      if (scenario === 'prepared candidate rejected by the Designer') {
+        expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['design-review', 'debug', 'review', 'design-review']);
+        expect(git('rev-parse', 'dev')).not.toBe(preparedCommit);
+        expect(git('show', 'dev:' + view)).toBe(corrected.trim());
+      }
+    },
+    30_000,
+  );
 
   it('requires a new plan if a selected skill changes before approval', async () => {
     let text = 'Usa il filtro esistente.';

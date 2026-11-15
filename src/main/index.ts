@@ -345,6 +345,10 @@ const initWindow = async (windowMgr: WindowManager, storeInstance: Store, projec
     }
   }
 
+  if (newWindow.isDestroyed() || newWindow.webContents.isDestroyed()) {
+    return newWindow;
+  }
+
   // Apply saved zoom level
   const settings = storeInstance.getSettings();
   newWindow.webContents.setZoomFactor(settings.zoomLevel ?? 1.0);

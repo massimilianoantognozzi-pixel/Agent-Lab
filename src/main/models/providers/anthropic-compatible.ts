@@ -13,7 +13,8 @@ import { getDefaultUsageReport } from '@/models/providers/default';
 import { syncProviderTlsRule } from '@/models/utils';
 
 const ensureV1Suffix = (baseUrl: string): string => {
-  return baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
+  const normalized = baseUrl.trim().replace(/\/+$/, '');
+  return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`;
 };
 
 const loadAnthropicCompatibleModels = async (

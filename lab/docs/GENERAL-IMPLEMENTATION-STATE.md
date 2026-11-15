@@ -1,5 +1,1011 @@
 # Ripresa del riallineamento generale
 
+L'utente ha chiarito il 15 novembre che l'agente deve proseguire
+finché può compiere un'azione tecnica in autonomia. Una review
+o un errore recuperabile non richiedono un nuovo prompt.
+«Riprendi» è ammesso dopo la chiusura del lavoro o quando un
+impedimento concreto rende impraticabile la ripresa automatica.
+Una validazione manuale necessaria può sospenderlo. Diagnosi,
+codice e verifiche tecniche rimangono responsabilità di Agent-Lab.
+L'agente può chiedere informazioni sul prodotto e decisioni.
+In attesa della risposta, prosegue il lavoro indipendente per
+cui dispone già di istruzioni chiare.
+
+Per le API, il perimetro confermato è limitato ai modelli offerti
+gratuitamente, come GLM sulla piattaforma Standard. Un eventuale
+account Anthropic sarà collegato tramite OAuth autorizzato per il
+client. Il collaudo attuale mantiene i provider del profilo.
+
+## Revisione Designer in Agent ordinario — r108
+
+In Agent ordinario, la r104 poteva arrivare a `READY_FOR_REVIEW`
+dopo una modifica JSX senza chiamare il Designer. La r108 acquisisce
+una baseline dei sorgenti e richiede la revisione sul candidato
+effettivo prima di chiudere il turno o completare il goal. La
+ricevuta registra impronta del candidato, modello ed esito. Se il
+candidato o le regole cambiano mentre il Designer lavora, il motore
+riesamina lo stato corrente. I rilievi ritornano all'agente nello
+stesso turno, con la possibilità di correggere e ripetere i controlli.
+
+Il Designer riceve la richiesta, il piano disponibile, le regole
+effettive del task, il sorgente modificato e quello dei suoi importatori
+riconosciuti. L'analisi copre anche JSX con identificatori non alfabetici,
+React `createElement` e SVG. La ripresa legacy usa i percorsi attribuiti
+agli strumenti registrati, inclusa la risoluzione delle maiuscole
+Windows. Se la cronologia non permette di attribuire le modifiche, il
+candidato resta da riesaminare. Una risposta illeggibile del Designer
+viene ritentata e un esito ancora pendente mantiene il task incompleto.
+
+La prova Electron r106 con risposte deterministiche ha osservato un
+rilievo persistito, una correzione nativa nello stesso turno e una nuova
+ricevuta legata al file corretto. La r108 aggiunge le regressioni per SVG,
+React senza JSX e identificatori JSX validi. Review indipendente e 71
+test mirati superati. L'ASAR r108 ha SHA-256
+`2D605A10B92962B8902ADCBFD8BC1BE1CA6CCA215BB2521B6C823E2606CC41EB`.
+La suite Node ha 1.910 test superati e due opzioni di integrazione
+escluse. Typecheck Node e Web, lint e Semgrep completati.
+
+## Revisione Designer nelle modifiche ad hoc — r104
+
+Nel workflow ad hoc una modifica JSX o una modifica a una
+dipendenza della vista poteva essere pubblicata dopo un piano
+con `surface: none`, senza revisione del Designer. La r104
+riconosce il candidato effettivo e le dipendenze relative
+visibili nello snapshot. Su Windows considera anche import
+con maiuscole diverse. Richiede la revisione UI/UX prima della
+consegna, anche se il Planner ha indicato sola logica.
+
+La ripresa di un commit UI preparato e non pubblicato verifica
+lo stesso candidato. Se il Designer lo approva, viene pubblicato
+lo stesso commit. Se fornisce rilievi e la base è ancora la
+stessa, il Correttore riprende il piano approvato con quei
+rilievi. Il controllo dopo entrambi i verdetti conserva la
+ricevuta se `dev` è avanzato durante la review. Se il commit
+è già integrato, la ripresa ne riconcilia la ricevuta storica.
+
+Su ASAR r104 SHA-256
+`D645AE001B4BB8728CC2935EABA8EFB1A27F223261D3F5D055B25B46B2CFDC7A`,
+la prova Electron con Git reale e modello deterministico
+modifica `labels.ts`, importata da `view.tsx` attraverso `shared.ts`.
+La richiesta è ad hoc, il piano resta `surface: none` e `dev`
+non avanza durante la revisione UI. Dopo il verdetto, una sola
+modifica viene integrata. `main` resta pulito ed Electron esce
+con codice 0.
+
+11 test mirati e 1.900 Node superati, due esclusi per
+configurazione opzionale. Typecheck Node e Web, lint,
+Semgrep e review indipendente completati. L'obbligo provato
+riguarda il workflow. La verifica della stessa garanzia in
+Agent ordinario resta aperta.
+
+## Fallimenti con codice di uscita zero — r102
+
+Due prove Electron su r101 hanno completato il goal con un
+risultato insufficiente. Jest ha restituito codice 0 con un
+test superato e uno fallito, usando `testFailureExitCode: 0`.
+Unittest ha restituito codice 0 con il solo fallimento atteso.
+
+La r102 rifiuta i fallimenti dichiarati nel riepilogo Jest.
+Con unittest, se skip e fallimenti attesi esauriscono il
+totale, il motore cerca un esito positivo nel report. La
+diagnostica separata dalla riga compatta non vale come esito.
+Il controllo viene applicato anche alle ricevute riprese.
+
+Su ASAR r102 SHA-256
+`50773EB1F4C9D664BECC9B5991593DFF0165B3A4B8944236DDA97E374B342C72`,
+Electron con Jest e Python reali ha rifiutato le due ricevute.
+Il caso unittest con un successo reale accanto al fallimento
+atteso ha completato il goal con la ricevuta originale. Ciascuna
+istanza Electron ha restituito codice 0. Il modello di queste
+prove era deterministico su loopback.
+
+152 test mirati e 1.894 Node superati, due esclusi per
+configurazione opzionale. Typecheck Node e Web, lint,
+Semgrep e review indipendente passati.
+
+## Ricevute Jest e ripresa della verifica — r101
+
+In r100, `jest --listTests --runInBand` e una suite con
+tutti i test saltati restituivano codice 0 e producevano
+entrambi una ricevuta, anche se il test non era stato eseguito.
+La r101 riconosce l'ispezione, il report senza test superati
+e l'output di aiuto di unittest. Se più fasi npm emettono
+output e il riepilogo esiste solo su stderr, il motore chiede
+una prova attribuibile allo script richiesto. Un riepilogo
+positivo attribuito conserva la sua validità.
+
+Il recupero ricontrolla il risultato nativo nel checkpoint.
+Una ricevuta con un esito di sola ispezione o con un report
+senza risultati utili non può essere riutilizzata. Restano
+visibili la chiamata e il risultato storico.
+
+Su ASAR r101 SHA-256
+`B717FEF7B33DA219BBAF156E8A088E3F3CDB8E972EA7B17551240A2FE5AE3168`,
+le prove Electron con Jest reale hanno rifiutato l'elenco, gli
+skip e il successo del solo pretest npm. Un test realmente
+superato ha prodotto la ricevuta e concluso l'obiettivo. In
+una quinta prova, r100 ha salvato la ricevuta erronea prima
+dell'arresto del processo. R101 ha riaperto lo stesso turno,
+conservato il risultato nativo, rifiutato la ricevuta e lasciato
+attivo l'obiettivo. La suite è stata caricata una volta.
+
+147 test mirati, 1.889 Node superati e due esclusi per
+configurazione opzionale. Typecheck Node e Web, lint,
+Semgrep e review indipendente passati.
+
+## Superficie UI nel piano di lavoro versionato — r100
+
+Un percorso autorizzato ripetuto nel piano del modello faceva
+interrompere la pianificazione con una richiesta di ripresentare
+lo stesso lavoro. La r100 conserva la prima occorrenza e verifica
+il perimetro prima di salvare il piano.
+
+Se il task versionato dichiara `designSurface`, il motore usa
+quella superficie per Designer e review. La superficie fa parte
+dell'identità della definizione. Un piano privo del design richiesto
+non può essere approvato. I task senza il campo continuano a usare
+la superficie del piano generato e conservano le chiavi esistenti.
+
+Su ASAR r100 SHA-256
+`08844E19550F36FB8E7E458C0FD158A71E11B8969E28F075B46BB95A8D6160C2`,
+la fixture Electron con Git reale dichiara `ui`. Il Planner
+simulato indica `none` e ripete il percorso. Il Designer e il
+revisore UI lavorano sul piano `ui` con il percorso unico. Prima
+del verdetto del Designer il ramo `dev` è immutato e manca la
+ricevuta di integrazione. Dopo il verdetto e la verifica, un
+solo commit aggiorna il file previsto in `dev`. `main` resta
+pulito ed Electron esce con codice 0.
+
+Quattro test mirati e 1.873 Node superati, due esclusi per
+configurazione. Typecheck Node e Web, lint, Semgrep e review
+indipendente passati.
+
+## Ricevute Node e limite del singolo turno — r99
+
+Su r98 il comando reale `node --test --help` ha restituito
+codice 0 senza eseguire la fixture. L'obiettivo senza un
+comando di verifica dichiarato ha accettato l'ID nativo e
+si è concluso. In una seconda prova, `maxIterations=1` ha
+bloccato l'obiettivo dopo il primo controllo fallito.
+
+La r99 riconosce l'aiuto e la versione di Node come output
+senza prova. I riepiloghi nativi riconosciuti conservano
+l'esito dei test. Il limite delle iterazioni chiude il turno
+dell'obiettivo attivo e lascia proseguire il lavoro.
+
+Su ASAR r99 SHA-256
+`D7B07DA70B0136AE05196F4E02D5A09B2B436191612A3E1268C8359EDBF2E092`,
+tre prove Electron con provider deterministico e Node reale
+verificano gli esiti. L'aiuto lascia l'obiettivo attivo e
+la richiesta di completamento viene respinta. Un test
+positivo ammette l'ID nativo e chiude l'obiettivo. Il limite
+di un'iterazione avvia un secondo turno che riceve il primo
+fallimento senza lanciare di nuovo il comando e senza nuovi
+messaggi utente. La fixture arresta l'osservazione dopo la
+transizione. Tutte le istanze Electron restituiscono codice 0.
+
+241 test mirati, 1.870 Node superati e due esclusi per
+configurazione. Typecheck Node e Web, lint, Semgrep e review
+indipendente passati.
+
+## Conservazione della cronologia durante la compattazione — r98
+
+Nella r97 quattro risposte HTTP 200 senza riepilogo lasciavano la
+cronologia su disco e aggiungevano un messaggio utente artificiale
+alla richiesta successiva. La r98 conserva l'input originale e
+il risultato nativo se manca un riepilogo utilizzabile. Dopo un
+rifiuto per limite di contesto, espone l'errore di compattazione
+e conserva la cronologia. Il Codex di riferimento verifica la
+presenza del testo del riepilogo prima della sostituzione nel
+percorso post-turno. [Sorgente del riferimento](https://github.com/openai/codex/blob/7194b2177643f3c639cfc5b29f6398c545b0e7e2/codex-rs/core/src/compact.rs#L369)
+
+La r98 rifiuta risposte vuote e risposte con la sola intestazione
+prevista dal prompt. Lo Stop durante la generazione o durante la
+pulizia asincrona impedisce l'applicazione. La conversazione resta
+disponibile fino alla sostituzione. Un errore nella proiezione
+ripristina la cronologia e l'Annulla in memoria. La ripubblicazione
+della cronologia nel renderer dopo tale errore resta fuori dalla
+prova.
+
+Su ASAR r98 SHA-256
+`228A056B715970619F7BE38489AB18E5C66CA809CA25523CE6C89ED62B215CBE`,
+due prove Electron con provider loopback hanno conservato una sola
+copia dell'input e il risultato nativo originale nella richiesta
+successiva, senza riepilogo artificiale. Ciascun verificatore è
+partito una volta, con exit 0. Il turno è rimasto lo stesso ed
+Electron si è chiuso con codice 0. La prova positiva sullo stesso
+ASAR ha salvato il riepilogo valido una volta e lo ha inviato
+all'inferenza successiva con l'estratto della richiesta originale.
+Anche in quel caso il codice nativo 0 risulta da un solo avvio e
+il turno termina con Electron 0. 236 test mirati, 1.863 Node
+superati e due esclusi per configurazione.
+Typecheck Node e Web, lint, Semgrep e review indipendente passati.
+
+## Regole Git dalla radice alla directory attiva — r97
+
+La r96, aperta normalmente in una sottocartella di un Git
+reale, inviava solo il suo `AGENTS.override.md`. La regola
+della radice mancava dal prompt. La lettura Power operava
+effettivamente nella sottocartella selezionata.
+
+La r97 risale dalla directory fisica del task fino al primo
+marcatore Git e presenta i file dalla radice alla directory
+attiva, con precedenza per `AGENTS.override.md` a ogni livello.
+Il prompt indica la provenienza relativa delle regole antenate.
+Lab e cartelle senza marcatore restano limitati alla directory
+del task per le istruzioni versionate.
+
+La raccolta e la lettura del prompt riusano le directory
+fisiche già risolte. Tre prove con junction hanno verificato
+la scelta del repository fisico e la coerenza dello snapshot
+se cambia la destinazione durante la lettura, anche quando
+le regole condivise appartengono al progetto di un worktree
+distinto. 147 test mirati e suite Node con 1.853 passati e
+due esclusi. Typecheck Node e Web, lint, Semgrep e review
+indipendente passati.
+
+Su ASAR r97 SHA-256
+`22BC9BA904D3231982F144DDAFD47527459CA4E787AAAF089B99E21C82A63480`,
+entrambe le richieste al provider di prova contengono
+`../AGENTS.md` seguito da `AGENTS.override.md`, una volta
+ciascuno. Il fallback e la cartella sorella restano fuori.
+Power legge dalla sottocartella del task; Git resta pulito
+ed Electron esce con codice 0.
+
+Il caso semantico Anagrafiche ha una seconda fixture in cui
+l'override della sottocartella richiede una variante locale.
+Codex e Agent-Lab r97 con GPT-6.1 Sol modificano soltanto
+la pagina Anagrafiche, usando l'opzione di etichetta del
+componente condiviso. L'oracolo indipendente vede «Apri
+scheda» in Anagrafiche, il default «Visualizza scheda» in
+Rubrica, «Dettaglio storico» in Archivio e «Salva preferenze»
+in Impostazioni. Il test nativo esegue due prove. I test
+della fixture sono in sola lettura; l'oracolo separato
+verifica l'esito specifico richiesto. Electron esce con
+codice 0 e l'autorizzazione temporanea viene rimossa.
+
+## Regole della directory operativa — r96
+
+Su r94, un task associato a un worktree Git reale ha letto
+la sorgente del worktree con Power e ha inviato al modello
+il file `AGENTS.md` del checkout principale. I due file
+contenevano regole differenti, verificate separatamente.
+
+La r96 sceglie il file di istruzioni nella directory operativa
+del task. Se esiste un file regolare `AGENTS.override.md`,
+ha precedenza su `AGENTS.md`. Un worktree senza entrambi
+i file non eredita un `AGENTS.md` dall'altro checkout. Le
+regole condivise configurate per progetto e profilo restano
+disponibili. La priorità rispecchia la scelta nell'upstream
+fissato. [Priorità in Codex](https://github.com/openai/codex/blob/7194b2177643f3c639cfc5b29f6398c545b0e7e2/codex-rs/core/src/agents_md.rs#L263)
+
+Con ASAR r96 SHA-256
+`C1841A5E9AD874B1C0ABE36F13C697D42916573A188A3580E6274C26C02513F8`,
+due prove Electron con Git reale hanno verificato presenza e
+assenza della regola nel worktree. Le letture Power hanno usato
+la cartella effettiva del task. I riferimenti sono rimasti
+puliti e le istanze Electron hanno restituito codice 0.
+138 test mirati, 1.847 test Node superati e due esclusi per
+configurazione. Lint, typecheck e review indipendente passati.
+
+La prova semantica Anagrafiche usa una richiesta breve e le
+regole persistenti della fixture. Codex e l'Agent-Lab r96 con
+GPT-6.1 Sol hanno modificato soltanto il valore predefinito
+nel componente comune. L'oracolo indipendente conferma
+«Apri scheda» sia in Anagrafiche sia in Rubrica, «Dettaglio
+storico» in Archivio e «Salva preferenze» in Impostazioni.
+Agent-Lab ha eseguito i due test nativi, ha indicato entrambi
+gli utilizzi e la variante preservata ed è uscito con codice
+0. Il primo banco di prova bloccava le ricerche iniziali. La
+prova valida usa la ricerca confinata al repository sintetico.
+
+## Attesa dei worker concorrenti — r95
+
+Nel Codex di riferimento `7194b21`, l'attesa di più agenti
+ritorna i risultati terminali già disponibili oppure il primo
+risultato terminale che arriva. La sessione Codex desktop ha
+osservato il completamento del worker rapido mentre il lento
+era ancora attivo. [Sorgente del riferimento](https://github.com/openai/codex/blob/7194b2177643f3c639cfc5b29f6398c545b0e7e2/codex-rs/core/src/tools/handlers/multi_agents/wait.rs#L115)
+
+Nel pacchetto r94 entrambi i worker erano in esecuzione, ma
+il relativo strumento richiedeva un unico `workerId`. La r95
+accetta anche `workerIds` e restituisce gli esiti terminali
+disponibili al primo completamento. Il formato della chiamata
+singola rimane compatibile. L'attesa multipla scade senza
+raccogliere i worker in corso. L'annullamento della singola
+attesa rimuove il timer e le sottoscrizioni.
+
+Il gruppo conserva gli esiti dei worker sani se il salvataggio
+finale di un altro fallisce. La lettura dello storico ricontrolla
+lo stato attivo prima di presentare l'esito e la raccolta riconosce
+lo slot esatto. 148 test mirati, lint, typecheck Node, 12 regole
+Semgrep locali e review indipendente superati.
+
+L'ASAR r95 SHA-256
+`63B1356C9A59D1CBDC499876C05DC4D0C69D2E6377B3F33D5D3775A04537028F`
+ha restituito il risultato del worker rapido in 886 ms con
+un limite di 14 secondi e il worker lento ancora in corso.
+Due processi nativi si sono sovrapposti per 311 ms. Il worker
+lento è stato raccolto con l'attesa singola. Electron è uscito
+con codice 0. Suite Node, 1.844 passati e due esclusi per
+configurazione. La prova usa un provider di test su loopback.
+
+## Riconnessione durante il turno — r94
+
+Il Codex di riferimento `7194b21` abilita per impostazione
+predefinita la riconnessione del campionamento dopo un errore
+di connessione. Le attese partono da 5 secondi, raddoppiano e
+si fermano a 60 secondi. Il sorgente esclude i turni interni
+e Bedrock. [Retry](https://github.com/openai/codex/blob/7194b2177643f3c639cfc5b29f6398c545b0e7e2/codex-rs/core/src/responses_retry.rs#L82)
+· [Flag predefinito](https://github.com/openai/codex/blob/7194b2177643f3c639cfc5b29f6398c545b0e7e2/codex-rs/features/src/lib.rs#L1575)
+
+Su r93 il provider loopback non era in ascolto all'inizio
+dell'inferenza. Quattro connessioni sono state rifiutate.
+Il task ha registrato l'interruzione e l'apertura successiva
+dell'endpoint non ha prodotto richieste HTTP o tool.
+
+La r94 mantiene attivo lo stesso turno principale mentre
+attende una connessione iniziale. La classificazione richiede
+una causa di connessione e, negli aggregati, conferma ogni
+causa. Un errore HTTP o dopo l'inizio delle operazioni resta
+soggetto ai limiti esistenti. L'attesa usa il segnale di Stop.
+Un rifiuto confermato prima della richiesta non consuma token
+e viene contabilizzato separatamente dai casi di uso ignoto.
+140 test mirati, lint, typecheck e review indipendente passati.
+
+L'ASAR r94 SHA-256
+`AE790740EE30B414921D43EBE56E87FB8309B01A44119F484D11C4E9485330E1`
+ha ripreso il turno dopo il ripristino dell'endpoint.
+Un solo prompt, un solo verificatore nativo con exit 0 e lo
+stesso ID di turno. Nella prova separata Stop ha annullato
+la riconnessione. L'apertura dell'endpoint dopo Stop non ha
+prodotto richieste né tool. Entrambe le esecuzioni Electron
+sono uscite con codice 0. La suite Node completa conta
+1.838 superati, zero falliti e due esclusi per configurazione.
+
+## Validazione Windows della r93 — fixture portabili
+
+I cinque file di test hanno riprodotto i 41 fallimenti della
+suite nel checkout Windows. Le fixture usano ora percorsi
+nativi e valori di piattaforma espliciti. Il test del watcher
+conserva l'input prima della normalizzazione. Le rinomine Git
+usano nomi ammessi dal filesystem e verificano con Git reale
+il ripristino con conversioni LF e CRLF, oltre ai byte binari.
+
+La suite Node completa ha superato 1.831 test, con due prove
+escluse perché dipendono dalla configurazione opzionale di
+ricerca e Docker. La suite Web ha superato 516 test. La review
+indipendente ha verificato che il delta riguarda le fixture.
+Il binario selezionato dal desktop rimane la r93.
+
+## Windows r93 — attribuzione delle ricevute npm
+
+Nella r92, `npm test --silent` ha eseguito un test saltato
+nello script richiesto e un test riuscito in `posttest`. Il
+comando è uscito con 0 senza intestazioni npm. Il goal è stato
+chiuso usando un risultato che non identificava lo script.
+
+La r93 mantiene codice di uscita e output del comando. Per
+ammettere la verifica richiede di identificare lo script dal
+report nativo prima che venga abbreviato. Un'intestazione
+stampata da un comando annidato non qualifica un'invocazione
+npm esplicitamente silenziosa. Le ricevute attribuite salvano
+il riscontro nel journal. Alla ripresa, le ricevute precedenti
+prive del riscontro sono rivalutate con il loro output storico.
+La correzione lascia i risultati delle esecuzioni in cronologia.
+
+169 test mirati, lint, typecheck Node, scansione locale e review
+indipendente superati. Le prove distinguono anche le opzioni
+npm dagli argomenti del runner dopo `--`.
+
+La suite Node Windows conta 1.789 test superati, 41 falliti
+e due esclusi. I nomi dei fallimenti coincidono con la r87.
+La review ha ricondotto i casi a fixture e asserzioni di
+portabilità per shell, skill, costanti, watcher e rinomine Git.
+
+Nel pacchetto r93 con ASAR SHA-256
+`B6F43CA1A8054F2989FD9014E3801EB0C267582AD1ACCC49235FFFC587784200`,
+la prova con `npm test --silent` ha mantenuto exit 0 e
+l'obiettivo attivo senza una ricevuta ammessa. `npm test`
+con intestazioni e un test positivo nello script richiesto
+ha registrato la ricevuta e completato l'obiettivo. Entrambe
+le prove usano npm e Electron reali con provider controllato
+su loopback e uscita Electron 0.
+
+## Windows r92 — chiusura durante il caricamento della finestra
+
+Il collaudo del pacchetto r91 ha chiuso l'app mentre
+`initWindow` attendeva `loadURL`. Electron è uscito con codice
+0, ma il registro ha riportato `Object has been destroyed` su
+`setZoomFactor` dopo la distruzione della finestra. Il sorgente
+di avvio era identico fra r87 e r91.
+
+La r92 verifica `BrowserWindow` e `webContents` prima di
+applicare le impostazioni dopo l'attesa. L'applicazione di zoom
+e font segue il percorso precedente quando entrambi sono
+attivi. Sono passati 11 test mirati per finestra, retry e
+riavvio, lint, Semgrep locale e review indipendente.
+
+La prova controllata ha atteso l'evento di distruzione di
+finestra e `webContents` prima della ripresa di `loadURL`.
+La sequenza genera ancora l'errore sull'ASAR r91 e termina
+con exit 0 e log errori vuoto sulla r92, ASAR SHA-256
+`C41E17401CFBFF07F9936097979363B27D17C0DE4D9593028DFB52502BB0CF46`.
+Le sorgenti delle ricevute sono identiche fra r91 e r92.
+
+## Collaudo Windows r91 — verifiche pytest e Vitest
+
+Su r87 un progetto Python sintetico ha eseguito pytest 9.0.3
+con uno skip e un fallimento atteso. Un progetto TypeScript
+sintetico ha eseguito Vitest 4.1.12 tramite `npm test` con
+un solo test saltato. Entrambi i runner hanno restituito 0.
+Electron ha ammesso le ricevute e salvato i due goal completi.
+
+La r91 legge il riepilogo terminale dei due runner prima del
+troncamento. Skip, todo o fallimenti attesi senza test riusciti
+non qualificano la ricevuta nei formati riconosciuti. Vitest
+funziona anche dentro lo script npm richiesto. Il riepilogo
+del relativo `posttest` resta fuori dalla ricevuta. L'inferenza
+del verificatore distingue inoltre i comandi di raccolta o
+ispezione riprodotti dalle esecuzioni che svolgono davvero
+i test. Per esempio Vitest 4.1.12 esegue i test con `run --version`.
+
+I due difetti diagnostici sono stati riprodotti anche in unit
+test. Sono passati 159 test mirati, lint, Node typecheck, le
+12 regole Semgrep locali e la review indipendente. Le prove
+del pacchetto esatto sono annotate nella matrice operativa.
+
+## Windows r87 — verifica Python unittest
+
+Python 3.14.3 con `python -m unittest discover` ha restituito
+exit 0 in una fixture con il solo test saltato. La r86 su
+Electron ha ammesso la ricevuta e salvato il goal completo.
+Due test hanno riprodotto il difetto nella generazione del
+risultato nativo e nella lettura del report senza i metadati
+del risultato originale.
+
+La r87 riconosce il report compatto di unittest prima del
+troncamento della console, nel canale stderr o nell'output
+unificato del terminale. Un rapporto con soli skip riconoscibili
+non qualifica il goal. La presenza di una verifica riuscita
+accanto a subtest saltati mantiene la ricevuta ammissibile.
+I formati non riconosciuti rimangono fuori da questa prova.
+
+Sulla ASAR `50CFDE386FD3AD61FF5F5010D84EDF53B96FE0C3FCECEBD0E95087037FECBC43`,
+Python 3.14.3 ed Electron reali hanno verificato entrambi i casi.
+Il test saltato è uscito con 0 e la richiesta di completamento
+è stata respinta. Lo stesso progetto con un test eseguito e
+riuscito ha registrato il goal completo con la ricevuta nativa.
+Provider deterministico su loopback e uscita Electron 0 in
+entrambi i casi.
+
+181 test mirati, Node e Web typecheck, lint, 12 regole Semgrep
+locali e review indipendente superati. La suite Node completa
+su Windows ha 1.780 passati, 41 fallimenti e due esclusi.
+I 41 fallimenti sono già presenti nella r77. Il caso precedente
+del ricaricamento profili è passato nella r87.
+
+## Windows r86 — regole locali del profilo condiviso
+
+La r80 su Windows usava il profilo globale in due progetti,
+ma ometteva le regole del profilo presenti soltanto nelle
+directory dei progetti. Il controllo dipendeva da un percorso
+con slash. Il ramo precedente, dove si applicava, accodava le
+regole alla copia globale in memoria.
+
+La r86 risolve le regole aggiuntive al momento della lettura,
+nel progetto attivo e con il nome di directory registrato.
+Il profilo globale rimane intatto. Un profilo locale con
+`config.json` conserva le proprie regole. I percorsi reali
+dell'overlay devono rimanere nel progetto. Il prompt gestisce
+anche il prefisso home con separatore Windows. Quando il registro
+viene ricaricato, resta disponibile mentre si legge la nuova
+versione. Un errore temporaneo di lettura conserva il registro
+precedente. Una configurazione JSON malformata viene saltata al
+momento dell'aggiornamento e i profili validi vengono pubblicati.
+
+I 139 test mirati r86 e la review indipendente sono passati.
+Sulla ASAR `E8D973C57B3A48B1DBC3EA3E50677EECBAFBCC4E59E887FCF42A13E77362A103`,
+due task ordinari Electron hanno ricevuto la regola globale e
+soltanto la regola locale del rispettivo progetto, con provider
+simulato su loopback e uscita Electron 0. La r84 ha verificato
+anche la rimozione della regola locale nella stessa sessione.
+
+## OpenRouter Messages reale — ripresa sulla r80
+
+Dopo HTTP 401 dalla credenziale preesistente, l'utente ha
+autorizzato OAuth separatamente nel browser. L'ASAR r80 ha
+inviato richieste Anthropic Messages a OpenRouter con il modello
+gratuito `cohere/north-mini-code:free`, tramite un relay che
+inoltrava il corpo senza traduzioni. Nella fixture, due turni
+hanno eseguito il comando iniziale con exit 1 e `node --test`
+con exit 0 e un test superato. La fixture stabiliva il confine
+del primo turno. La cronologia non contiene nuovi messaggi
+utente fra i turni.
+
+Il relay locale ha respinto metadati Messages validi in due
+tentativi prima di inoltrare la richiesta seguente. Dopo la
+correzione e la nuova autorizzazione, Electron riaperto ha
+ripreso il turno salvato con `/goal resume`. Una risposta HTTP
+200 ha portato a `update_goal` sullo stesso turno, citando la
+ricevuta nativa preesistente. Stato `complete` e journal
+`success` persistiti. Ciascun comando risulta avviato una sola
+volta. Il relay è stato chiuso dopo cinque richieste upstream
+complessive, quattro HTTP 200 e un HTTP 401. Autorizzazioni e
+configurazioni della prova erano isolate dal profilo in uso.
+Il reporter di ripresa ha fallito in scrittura dopo il test.
+Stato, cronologia e trace sono stati verificati direttamente.
+Il codice di uscita del secondo Electron non è stato raccolto.
+
+## Build Windows r80 — processo Bash ancora disponibile
+
+Su r77, il provider Anthropic-compatible simulato interrompeva
+la connessione dopo `message_stop` mentre la shell aveva già
+restituito un processId. Il figlio era ancora attivo e avviato
+una sola volta. Il task rimaneva interrotto e il provider aveva
+ricevuto una sola richiesta.
+
+La r80 riusa il risultato interlocutorio e indirizza il modello
+al poll dello stesso processId quando la sessione può ancora
+servirlo. Il controllo usa l'handle prodotto da Power e il poll
+nativo originale. Il wrapper verifica anche l'identità della
+funzione di poll catturata prima delle estensioni. Un processo
+scaduto, consumato o appartenente a un altro ambito non entra
+nel recupero automatico. 161 test, Node typecheck e review
+indipendente passati. Sulla ASAR
+`D481676AAB56B0DECF20A3226674FB81FE589E784A4C5F6C044F8BE9D1C9470E`,
+il provider ha ricevuto lo stesso processId dopo il distacco.
+Il poll nativo ha restituito exit 0 e il risultato è arrivato
+alla richiesta successiva. Stesso turno completo, un avvio
+e un prompt originale. Electron, Bash e Node reali, provider
+simulato su loopback. Uscita Electron 0.
+
+- ZIP Windows x64 con 466 file verificati. SHA-256 `F97BD4623B6E2C68EBEB1FA4DD15FD93BD2A5D08CDF3A78116FC9C02384FB29C`.
+- Il desktop seleziona r80. Sette configurazioni con gli stessi hash, ripristino r77 e prova di avvio su profili isolati.
+
+## Build Windows r77 — prosecuzione dopo un distacco tardivo
+
+Nella prova r75 una risposta Anthropic-compatible perdeva la
+connessione dopo il terminale di protocollo e dopo l'exit 0
+del comando nativo. Il risultato restava nel journal. Con
+Electron ancora aperto, il turno si fermava senza una nuova
+richiesta al provider. Il confronto osserva una singola
+esecuzione del comando e un solo prompt originale.
+
+La r76 ha conservato le chiamate concluse e i relativi esiti
+prima di ricostruire la richiesta dello stesso turno. La r77
+separa conservazione e addebito dall'ammissibilità della
+richiesta seguente. Al limite resta il risultato e viene
+contabilizzato l'uso già comunicato. Se il provider ammette
+il tentativo e il turno ha margine, riprende con gli stessi ID
+degli strumenti già eseguiti. Le chiamate incomplete o con
+processo ancora in corso seguono il recupero esistente.
+159 test mirati, typecheck Node, lint e review passati.
+La suite Node Windows conta 1.766 passati, 42 fallimenti e due
+esclusi. I 42 fallimenti nominativi coincidono con la r71.
+La ASAR `DB0B7C5348445C9BB57C56A880C92927001878188E5591784F79A19570A540D8`
+ha superato la prova del distacco dopo il comando nativo. La
+richiesta successiva ha riusato l'ID originale e lo stesso
+turno è terminato con un solo avvio e senza nuova istruzione.
+Al limite di un'iterazione, il risultato è presente sia nella
+cronologia sia nel journal e il provider ha ricevuto una sola
+richiesta. Entrambe le prove usano Electron e Node reali e
+provider simulato su loopback. Uscita Electron 0.
+
+Il controllo prima del terminale di protocollo ha verificato
+zero avvii dello strumento incompleto. Il tentativo automatico
+ha eseguito una sola volta il comando valido e ha completato
+lo stesso turno. Il primo ID non è arrivato alla nuova richiesta.
+
+Un controllo indipendente con Plan sulla r75 ha completato
+una lettura di file mentre la domanda di prodotto restava in
+attesa. Dopo la scelta nell'interfaccia, ha salvato il piano
+usando gli esiti dei due strumenti dallo stesso batch. Una
+risposta modello deterministica e l'IPC Electron effettivo.
+
+- ZIP Windows x64 con 466 file verificati. SHA-256 `77E4741F195ECAE92BE7B86CA09FB2ADA2EEE2CB07F5EF9FA1612685A21C869D`.
+- Il desktop seleziona r77. Sette configurazioni con gli stessi hash, ripristino r75, smoke di avvio con profili isolati.
+
+## Build Windows r75 — recupero della ricevuta nativa
+
+Su r73, dopo l'arresto forzato di Electron il medesimo turno
+recuperava l'esito di Node, ma `get_goal` perdeva la ricevuta
+prima ammessa. Il completamento con l'ID originale era
+respinto. Il comando era partito una sola volta.
+
+La r75 salva l'ammissione con la ricevuta nativa nel journal
+esistente. Il modello la vede dopo che il journal l'ha
+salvata. La ripresa ricontrolla obiettivo, checkout canonico,
+digest e ID della chiamata nativa. Input nuovi, operazioni
+irrisolte e scritture superate sospendono il riuso. Un
+fallimento successivo dello stesso comando revoca le prove
+precedenti di quel comando e conserva i risultati storici.
+155 test mirati, lint, typecheck Node e web, Semgrep e review
+indipendente passati. La ASAR
+`981253F6551BC7B98FF6A79DF8D84D78466AA9E2F580D4C55C7FA10F58727D9E`
+ha superato due arresti forzati su fixture separate. A checkout
+invariato l'ID originale ha completato lo stesso obiettivo.
+Con un file tracciato cambiato durante la chiusura, l'esito
+storico è rimasto nel contesto e la vecchia ricevuta è stata
+respinta. Un avvio nativo a scenario e uscita Electron 0 dopo
+la ripresa. Node, Git ed Electron reali. Provider simulato.
+
+- ZIP Windows x64 con 466 file verificati. SHA-256 `347304D378152549ED9A26E6C6F0FD7EB6DA8EADF3A85B11F277DD7AC6CDB450`.
+- Il desktop seleziona r75. Sette configurazioni con gli stessi hash e collegamento r73 per il ripristino. Verifica di avvio su profilo isolato.
+
+### Interruzione della connessione dopo uno strumento
+
+Una prova r73 su Anthropic-compatible simulato ha interrotto
+la connessione fisica dopo `message_stop` e dopo exit 0 del
+comando nativo, nella stessa risposta. «Riprendi» ha riusato
+il risultato nello stesso turno con un solo avvio del comando.
+La prova r73 dimostra il recupero con «Riprendi». La prova
+r77 verifica anche la prosecuzione automatica a provider
+nuovamente disponibile e app ancora aperta. Prima di
+`message_stop` l'SDK effettivo non ha
+eseguito il comando nella fixture e il provider simulato ha
+restituito un errore di trasporto.
+
+## Build Windows r73 — ricerca mirata dopo i fallimenti
+
+La r71 ripeteva l'interazione dopo due verifiche fallite ma non
+apriva la ricerca, pur avendo l'estensione già autorizzata.
+La r72 ha riprodotto con Electron, Node e l'estensione SearXNG
+in modalità URL la differenza: una sola richiesta mirata a
+Node dopo due exit 1, con la fonte di prova consegnata al
+modello prima della correzione. Node e il typecheck sono poi
+passati nello stesso turno. Provider e risposta di ricerca
+controllati su loopback.
+
+La r73 usa il tipo di verifica osservato da Power. Il risultato
+nativo diretto o raccolto con `bash_poll` conserva una query
+pubblica predefinita. Percorsi, sorgenti e log non formano la
+query. Due verifiche fallite dello stesso tipo chiedono una
+nuova diagnosi. La ricerca usa la stessa autorizzazione già
+configurata, richiede un campionamento successivo disponibile
+e usa al massimo tre query distinte nel turno. I report Node
+validamente riconosciuti con zero test superati contano come
+fallimenti. 143 test, lint, typecheck Node e review passati.
+La ASAR
+`01D9350C436A80B68C96203A13FEDF2E3F77D13CF562D746FEDE1BB525222190`
+ha superato le due prove Electron. Una usa comandi diretti.
+L'altra prova conserva gli ID dei processi in background e
+attiva la ricerca solo dopo il secondo poll terminale in
+errore. In entrambi i casi una sola query, fonte ricevuta
+prima della correzione, due verifiche native positive e
+uscita Electron 0. Provider e risposta di ricerca simulati
+su loopback. L'estensione SearXNG è quella effettiva in modalità
+URL. Semgrep e typecheck web passati.
+
+- ZIP Windows x64 con 466 file verificati. SHA-256 `0D818BA7FC1E8D4B4C823F4BEA340E09BDE15189BC74CCF21EE028B49EE1EB14`.
+- Il collegamento desktop punta a r73. Sette configurazioni del profilo con gli stessi hash. Ripristino r71 e smoke Electron su profilo isolato.
+
+Il confronto r73 con Codex desktop ha usato GPT-6.1 Sol,
+lo stesso prompt, gli stessi byte iniziali e il medesimo
+componente condiviso. Entrambi hanno osservato gli esiti
+`1 → 0 → 1 → 0 → 0` per filtro, formattazione e verifica
+complessiva. Solo `shared.cjs` è cambiato. I cinque file
+finali coincidono byte per byte e Node conferma 2 test su 2.
+La prima fixture contava un intento Bash respinto prima
+dell'avvio. L'esito originale è conservato e le cinque
+ricevute native sono state ricontrollate senza contattare
+nuovamente il modello. Il riavvio separato sul profilo
+isolato è uscito con codice 0. Credenziale temporanea rimossa.
+
+## Build Windows r71 — esclusioni e ricevute npm
+
+Con Git reale, la r68 integrava il task dipendente dopo una
+modifica a un modulo CommonJS escluso. L'analisi ora raccoglie
+direttamente dall'AST le chiamate letterali che lo scanner
+TypeScript può saltare. Alias e chiavi calcolate su `module`
+sospendono il riuso delle esclusioni della prova interessata.
+I test verificano cinque forme CommonJS e dimostrano che
+un'esclusione indipendente rimane valida nei casi letterali.
+La prova impacchettata r69 blocca T-2, registra l'indagine sul
+modulo e conserva entrambi i riferimenti Git e la ricevuta T-1.
+
+Con `npm test` e uno script che esegue direttamente `node --test`,
+la r68 completava il goal anche con tutti i test saltati. La
+r69 rileva il riepilogo Node a zero, ma usa quello sbagliato se
+`posttest` esegue altri test. La r71 lega il riepilogo allo
+script npm riconoscibile e chiude il suo output solo al
+`post<nome-script>` dello stesso pacchetto. La diagnostica
+su stdout non modifica questo confine.
+
+43 test del workflow passati e due esclusi. 96 test mirati,
+typecheck, lint, review separata e Semgrep passati. La suite
+Node completa su Windows conta 1.745 passati, 42 fallimenti e
+due esclusi. Rispetto alla r67 è passato il test di rinomina
+corretto nella r68 e non risultano nuovi fallimenti nominali.
+
+La ASAR `187FCA19662E34464D7DC9EE7EA291BF6462F779417F3D1D54B21BC3061EFCB5`
+ha superato tre prove Electron con npm e Node reali e un
+provider deterministico su loopback. La r71 respinge zero
+test superati quando lo script principale è tutto saltato,
+anche con `posttest` positivo o diagnostica iniziale. Accetta
+il controllo con un test effettivamente superato e registra
+il completamento. Lo smoke Windows e i 466 file dello ZIP
+sono stati verificati. SHA-256 ZIP
+`584F095DE4D4B0CFE37EF4BEBCC5685D4911C8AE452270CF660D6D988E361D30`.
+Il collegamento desktop seleziona r71 e conserva i sette file
+di configurazione. Il collegamento r68 resta per il ripristino.
+Lo smoke ha usato un profilo isolato.
+
+## Build Windows r68 — confronto Git dopo una rinomina
+
+Su Windows il contenuto precedente risultava vuoto dopo una
+rinomina inclusa in un commit. La vista ricavava il genitore
+passando il suffisso `^` a una shell. La r68 passa gli argomenti a
+Git direttamente e legge il percorso precedente dal genitore.
+Lo stesso test Git reale fallisce prima e passa dopo. Una prova
+Windows con `core.autocrlf=false` limitato al processo ha superato
+i sette scenari con nomi supportati dal filesystem. Sono passati
+anche 47 test Git collegati, typecheck Node, lint e review.
+
+La prova Electron sulla ASAR r68 `7DB1C680331ED5DB91FA07EBD4270424F65C3A20A1AA1DC40C0FF6BA197018A0`
+ha restituito cinque righe precedenti e sei nuove, entrambe
+identiche a `git show`. La r67 sullo stesso commit restituiva
+vuoto il contenuto precedente. Commit, indice, riferimenti e
+working tree sono rimasti identici. Entrambe le app sono uscite
+con codice 0, con profilo isolato e Git 2.53.0.windows.2.
+
+- ZIP Windows x64, 466 file verificati. SHA-256 `D33A2C817BFE8293AFEFB12F0C3F68AF544169EB09A8DB5D4CE222D035079B42`.
+- Il collegamento desktop punta alla r68. Sette configurazioni del profilo hanno conservato gli hash ed è disponibile il ripristino r67. Lo smoke ha avviato Electron su profilo isolato.
+
+## Adattatore Anthropic e GLM reale — prova mediata
+
+L'adattatore Anthropic compatibile della r67 ha completato
+un obiettivo usando GLM-4.5-Flash Standard reale attraverso un
+gateway locale Messages JSON verso Chat Completions. Tre
+richieste senza streaming hanno restituito HTTP 200. Dopo exit 1
+il turno automatico ha ottenuto pass 1 ed exit 0 da Node. Il
+modello ha citato l'ID nativo e il completamento è persistito.
+6.168 token osservati fuori cache e 2.623 letti dalla cache.
+Electron è uscito con codice 0. La fixture limita il menu dei
+comandi e stabilizza la fine del primo turno.
+
+La r68 ha superato anche lo streaming sul percorso mediato.
+Tre richieste Standard GLM-4.5-Flash HTTP 200, evento SSE
+Messages per i delta degli argomenti e ID delle chiamate
+conservati. Il modello ha registrato il completamento dopo
+un test riuscito nel turno automatico. Electron exit 0. I
+3.495 token fuori cache coincidono con il consumo salvato,
+oltre a 5.205 letti dalla cache. Ogni argomento di quella prova
+ha avuto un solo delta non vuoto. Una seconda prova r68 ha
+diviso ciascuno dei tre argomenti di GLM reale in due delta
+Messages non vuoti. Ha preservato gli hash, il testo Unicode,
+il completamento e l'uscita Electron 0. La frammentazione è
+stata applicata dal gateway. L'endpoint Messages nativo resta
+da collaudare.
+
+Sulla medesima r68, GPT-6.1 Sol reale ha proseguito dopo exit 1
+e usato il subagente Audit. Dopo arresto forzato durante un
+comando, ha ripreso lo stesso turno e goal, con quattro comandi
+avviati una volta ciascuno. Ricevuta nativa e stato completo
+persistiti. Chiusura della seconda Electron con codice 0.
+Il controllo ha confermato l'arresto dei processi della fixture
+anche se `taskkill` ha restituito 128.
+
+## Launcher locale — verifica Ollama 0.40.16
+
+Il pin della 0.40.15 respingeva l'eseguibile installato dopo
+l'aggiornamento. Il membro `ollama.exe` dell'archivio Windows x64
+pubblicato da Ollama 0.40.16 coincide con il file installato e
+ha firma Authenticode valida di Ollama Inc. Il launcher accetta
+ora quell'esatto SHA-256. Conserva il controllo prima di avviare
+il processo, senza cambi a modello, porta o profilo.
+
+Il manifest Devstral in `manifests-v2` coincide con quello del
+registry ufficiale. La variante locale condivide i pesi, usa
+il parser `ministral` e conserva `num_ctx=32768`. Tutti i sei
+blob dei due manifest hanno superato il confronto SHA-256.
+Il manifest legacy è l'ancora di compatibilità. Ollama 0.40.16
+risolve prima `manifests-v2`. Otto test di configurazione e
+fallback e review indipendente sono passati. La revisione
+automatica ha respinto il precedente avvio dedicato. La prova
+attuale non ha avviato Ollama e la qualifica di inferenza resta
+aperta. L'Ollama standard su 11434 risponde, con catalogo vuoto.
+
+## Build Windows r67 — ricevute dei verificatori nativi
+
+Una verifica nominata dall'utente richiede una revisione del checkout
+disponibile. Il test r63 accettava exit 0 anche quando mancava
+l'impronta della revisione. La r64 conserva checkout e directory
+canonici, ricontrolla entrambi dopo l'approvazione e usa quella
+directory per l'avvio. Le ricevute conservano checkout e revisione
+anche attraverso i poll e fino alla pubblicazione del completamento.
+Il controllo riguarda la directory iniziale del processo.
+
+Electron ha confermato sulla r64 che un test reale e una revisione
+identificabile consentono il completamento e che un checkout privo
+di input utilizzabili resta senza ricevuta. Un checkout con un
+sorgente tracciato e senza test produceva invece un falso esito
+positivo. La r65 lo ha respinto, ma accettava ancora un output
+troncato da un'esecuzione con 1.200 test saltati e zero superati.
+
+La r67 ricava l'esito dai riepiloghi TAP e spec riconosciuti di
+`node --test` prima del troncamento per l'interfaccia e conserva
+il controllo anche per un processo letto via poll. Un riepilogo
+nativo positivo resta valido se la parte visibile mostra solo un
+riepilogo diagnostico precedente a zero. La prova sulla ASAR
+`0D87AD719531A902EBDD735AB6067BC0664CDB655C81B0D44D737745954A36BD`
+ha confermato entrambi i casi con Electron, Node e Git reali e un
+provider simulato su loopback. L'uscita di Electron è stata 0.
+
+151 test mirati, lint, typecheck, Semgrep mirato e review
+indipendente del delta passati. Suite Node Windows, 1.736 passati,
+due esclusi e gli stessi 43 fallimenti nominali della r63.
+
+GLM-4.5-Flash Standard reale ha eseguito un comando con exit 1.
+Nel turno automatico seguente ha eseguito `node --test verify.cjs`
+con un test superato e ha registrato `complete` con l'ID della
+ricevuta nativa. Quattro risposte HTTP 200 e uscita Electron 0.
+La fixture limita i comandi e stabilizza la fine del primo turno.
+L'endpoint loopback del Devstral configurato non rispondeva al
+controllo in sola lettura. La sua qualifica reale rimane aperta.
+
+- ZIP Windows x64, 466 file verificati. SHA-256 `3664706B8DF943D2298B7937C0AD59167CC20E0E4D4C33203DE32FAE9D9C55CC`.
+- Collegamento desktop r67, ripristino r63 e sette configurazioni del profilo con hash verificati. Avvio Electron verificato su profilo isolato.
+
+## Build Windows r63 — recupero di una modifica senza effetto
+
+La r61 ha ripetuto modifiche senza effetto con Qwen e l'adattatore
+Anthropic compatibile. La risposta `Already updated` era fuorviante:
+la ricerca e la sostituzione erano identiche e il file non era stato
+letto. La r63 dichiara il mancato intervento. Quando la lettura è
+disponibile e consentita, offre il lettore per un campione, con
+la stessa approvazione esistente. Poi riapre gli strumenti ordinari
+e usa il contenuto della lettura per guidare una modifica mirata.
+
+La prima implementazione r62 forzava lo strumento. Il test con
+l'AI SDK ha riprodotto l'interruzione di un provider che risponde
+in testo senza una chiamata. La r63 usa la scelta automatica e
+gestisce anche percorsi relativi e assoluti dello stesso file.
+131 test mirati, typecheck e lint passati. La suite Node completa
+conta 1.724 passati, due esclusi e gli stessi 43 fallimenti della
+baseline Windows.
+
+La revisione automatica ha rifiutato il riavvio dell'istanza locale
+llama.cpp in questo turno. L'errore è `blocked by policy` e la
+porta del collaudo rimane chiusa. Il collaudo r63 usa un provider
+Anthropic Messages simulato su loopback. Dopo una modifica senza
+effetto, la prova esegue la lettura, la correzione e il verificatore
+nativo, exit 1 prima della correzione ed exit 0 dopo, nello stesso
+turno. Le prove Qwen reali della r61 conservano il proprio perimetro.
+
+Il collaudo sulla stessa ASAR con GLM-4.5-Flash reale ha ottenuto
+sei risposte HTTP 200. La prova richiedeva esplicitamente il tentativo
+iniziale senza effetto. Il modello ha riletto il file nel campione
+successivo, ha corretto solo `filter.js` e ha ripetuto lo stesso
+verificatore nativo, da exit 1 a exit 0 nello stesso turno.
+
+- ASAR SHA-256 `2A4C1F22637BF81EBF85CCF8F44101CE3FED818FCA9B089161B9BD4A16887682`.
+- ZIP Windows x64, 466 file verificati. SHA-256 `FD2B951D42D6AA2C3F5519BA6CBC1C034D32A5E19440464F93FC683D78DBBACC`.
+- Collegamento desktop r63, ripristino r61 e sette configurazioni del profilo con hash verificati.
+
+## Build Windows r61 — dipendenze delle prove
+
+La fixture Git sulla base r60 ha integrato un task dipendente
+dopo che il suo predecessore aveva iniziato a importare un file
+che prima risultava escluso. Il controllo originario del filtro
+continuava a passare. La r61 legge il grafo dei moduli relativi
+JavaScript e TypeScript dal commit di sviluppo e riesamina le
+esclusioni quando cambiano i file o gli input rilevanti. Se il
+riferimento è indiretto, ambiguo o calcolato, il task dipendente
+rimane in attesa senza modificare `dev` o ricreare la ricevuta
+già integrata. Le esclusioni dimostrate estranee restano attive.
+
+I test coprono import diretti e indiretti, import calcolati,
+`import.meta`, risoluzione senza estensione, commit separati e
+un piano storico mancante. Sono passati 52 test della suite
+governata e un ulteriore test mirato sul piano storico. Due
+prove che richiedono servizi esterni restano escluse da questa
+esecuzione. Typecheck, lint mirato e Semgrep locale sui due file
+applicativi sono passati.
+
+La prova comparativa su Electron e Git reale nel repository
+sintetico ha confermato la regressione r60 e il blocco r61.
+Il salvataggio della diagnosi lascia invariati i due riferimenti
+Git e la ricevuta precedente. Provider simulato su loopback.
+
+- ASAR SHA-256 `07E03E3CA4E468930673EA49DDD5FCF691A0A86D9A5360A1A08447894C092CF1`.
+- ZIP Windows x64, 466 file verificati. SHA-256 `FF079F9302D7D3C173712233E76FB957CF4956693FAB3BFAF03933807E605643`.
+- Collegamento desktop r61, ripristino r60 e sette configurazioni con hash verificati.
+
+Sul pacchetto r61, Qwen3-4B locale ha riprodotto un difetto.
+Ha corretto solo `filter.js` e ha ottenuto exit 0 dopo exit 1
+usando lo stesso `verify.cjs`. Node ha confermato gli esiti in
+modo indipendente. Il primo tentativo aveva esaurito l'output
+prima degli strumenti. Il profilo isolato della prova riuscita
+disattiva il ragionamento e usa temperatura zero. Il test usa
+llama.cpp Vulkan su loopback con pesi Qwen ufficiali verificati.
+La qualifica del Devstral configurato resta aperta.
+
+Le due prove Qwen con l'adattatore Anthropic compatibile hanno
+usato `/v1/messages` e il modello reale. La prima ha corretto
+il file senza ripetere il verificatore nativo. La seconda ha
+raggiunto il limite delle iterazioni con il file immutato.
+Il ciclo Anthropic resta da qualificare. Il processo di
+inferenza portabile della fixture è terminato e la sua porta
+loopback è chiusa.
+
+## Build Windows r60 — 15 novembre 2026
+
+La r60 allinea catalogo e inferenza di Gemini e Anthropic
+compatibile. Gemini aggiunge il prefisso predefinito a un host
+senza percorso e conserva il prefisso API o proxy esplicitamente
+configurato. I test attraversano gli SDK installati, anche SSE
+Gemini. Il conto del goal esclude i token letti dalla cache e
+include le scritture in cache.
+
+Su Electron, l'adattatore Ollama ha eseguito un verificatore
+nativo con un endpoint simulato su loopback. Contatori omessi:
+una richiesta e stato `usage_limited`. Zero esplicito: due
+richieste dello stesso turno, una sola esecuzione del verificatore,
+64 token nel secondo campione e stato `budget_limited`.
+Nessun goal è risultato completato.
+
+Sul medesimo pacchetto, GLM-4.5-Flash reale ha restituito due
+risposte HTTP 200. La fixture limita il primo campione al
+verificatore sintetico. Il comando è partito una volta con exit 1.
+È seguito nello stesso turno un riepilogo senza strumenti. Il goal
+rimane `budget_limited` e registra 3.067 token dopo la deduzione
+delle letture dalla cache, in accordo con i due report HTTP.
+
+La suite completa ha osservato un errore EPERM sulla pubblicazione
+di una ricevuta di revisione prima della correzione. Il test
+mirato riproduce l'errore e conferma la pubblicazione della stessa
+ricevuta riusando il retry limitato della rinomina Windows.
+
+- Node completo, 1.712 passati, due esclusi e gli stessi 43 fallimenti nominativi della baseline Windows.
+- ASAR SHA-256 `70198B212503555A7436A1727C2507270F0DB5222E0BB66FA864670C437EBB13`. Smoke Windows passato.
+- ZIP Windows x64, 466 file verificati. SHA-256 `B9FB2AF74898BF3CB2BE0C98308594813487E43DD8B4725C4564A0C05F81A9FF`.
+- Collegamento desktop r60, ripristino r59 e sette configurazioni del profilo con hash verificati.
+
+La prova verifica il protocollo Ollama. Il modello Devstral reale
+resta da qualificare. L'Ollama standard risponde su loopback ma
+non registra modelli. La precedente revisione automatica ha
+rifiutato l'avvio dell'istanza dedicata.
+
+## Build Windows r59 — 15 novembre 2026
+
+Il desktop avvia la r59. Il collaudo Electron con provider
+deterministico su loopback ha eseguito una volta il verificatore
+con exit 1. Dopo 64 token sullo strumento e 16 sul riepilogo, il
+goal è rimasto `budget_limited` e privo di evidenza di completamento.
+Il riepilogo è arrivato nello stesso turno senza strumenti.
+La r58 riproduceva l'assenza del riepilogo con la stessa fixture.
+
+La r58 ha anche verificato il limite raggiunto durante una
+compattazione, senza un altro campione, e lo stato `usage_limited`
+dopo un singolo HTTP 429 di quota. La cronologia rimane disponibile
+se il modello non restituisce un riepilogo. I subagenti ricontrollano
+il budget prima di chiamare il provider e prima di eseguire lo
+strumento.
+
+- ASAR SHA-256 `4C0002620D1F2BE3F4216C24F5CC3D0F3A4096CEB7EFC0DACEB5F1AAFB0C45B6`.
+- ZIP Windows x64, 466 file verificati. SHA-256 `89F5360C5B2E9F23F4AA5FEFE8368DC1B4EE384F17418DD49176E7EE9A375658`.
+- Smoke Windows passato con profilo isolato. Sette configurazioni del profilo con hash verificati, ripristino r57.
+
+## Build Windows r57 — 15 novembre 2026
+
+Il collegamento desktop avvia la r57. I sette file di configurazione
+del profilo conservano gli hash e il collegamento r56 è disponibile
+per il ripristino. Le due build differiscono nei cataloghi inglese e
+italiano. Sono passati i 516 test renderer, il controllo dei cinque
+cataloghi e lo smoke Windows con profilo isolato.
+
+- ASAR SHA-256 `7AA6CDA0D45CEB75B5B6C1CC6141C3E33912F7318AF55C40F6F939AB5535DB3B`.
+- ZIP Windows x64, 466 file verificati. SHA-256 `DE358518E1E48917DC81CEDC311D71DF378D509C344C9B6E9F2146E7C2AD93B2`.
+
+Il candidato successivo conserva lo stato di limite del goal se una
+compattazione esaurisce il budget prima di una nuova richiesta. Il
+controllo è condiviso con i subagenti. La cronologia resta disponibile
+se la compattazione non produce un riepilogo. Il test sulla r57
+riproduceva una richiesta e un addebito ulteriori. Restano la prova
+Electron del candidato e il confronto con il riepilogo di chiusura
+previsto da Codex.
+
 ## Build Windows r56 — ripresa a freddo
 
 Una richiesta Riprendi ricevuta durante l'avvio attende modelli,

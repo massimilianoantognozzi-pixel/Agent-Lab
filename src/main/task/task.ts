@@ -106,8 +106,36 @@ import { isGovernedWorkflow, snapshotWorkflowFiles, workflowProjectFor } from '.
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
 import { projectContinuationRevision, readWorkflowValidationRevision } from './workflow-project-run';
 import { readShadcnReferences } from './workflow-shadcn';
-import { agentGoalCommandPattern, AgentGoalStore, describeAgentGoal, newAgentGoal, type AgentGoal, type AgentGoalTurn } from './agent-goal';
-import { goalWorktreeRevision, isGoalVerificationDirectory, isProjectVerificationCommand } from './goal-verification';
+import {
+  AgentDesignReviewPending,
+  agentDesignReviewInstructions,
+  getAgentDesignCandidate,
+  legacyDesignTouches,
+  parseAgentDesignReview,
+  readAgentDesignSnapshot,
+} from './agent-design-review';
+import {
+  agentGoalCommandPattern,
+  AgentGoalStore,
+  describeAgentGoal,
+  goalVerificationBinding,
+  goalVerificationCheckpointSchema,
+  newAgentGoal,
+  type AgentGoal,
+  type AgentGoalTurn,
+  type AgentGoalUsage,
+  type GoalVerificationReceipt,
+} from './agent-goal';
+import {
+  goalWorktreeRevision,
+  getNpmTestScriptAttribution,
+  hasEmptyNativeTestReport,
+  isNpmTestVerification,
+  isProjectVerificationCommand,
+  NATIVE_EMPTY_TEST_REPORT,
+  NATIVE_NPM_TEST_SCRIPT_IDENTIFIED,
+  resolveGoalVerificationScope,
+} from './goal-verification';
 
 import type { z } from 'zod';
 import type { ToolContent, JSONValue } from '@common/types';
@@ -125,13 +153,14 @@ import {
   recoveredTurnHistory,
   reconcileTurnProgress,
   rememberCompletedShell,
+  rememberGoalVerification,
   WORKER_STOP,
 } from '@/agent/worker-checkpoint';
 import { defaultAgentReasoning } from '@/models/agent-reasoning';
 import { CODEX_PLAN_MODE } from '@/agent/codex-plan-mode';
 import { getAllFiles, isValidProjectFile } from '@/utils/file-system';
 import { isFreelanceEnabled } from '@/lab-projects/policy';
-import { isLabMode } from '@/lab-mode';
+import { isGeneralMode, isLabMode } from '@/lab-mode';
 import { projectUpdatedFiles, projectFileContents, projectFileDiff } from '@/lab-projects/files';
 import { atomicWriteJsonFile } from '@/utils/atomic-write';
 import {
@@ -142,6 +171,7 @@ import {
   AIDER_DESK_TASKS_DIR,
   AIDER_DESK_TMP_DIR,
   AIDER_DESK_TODOS_FILE,
+  TASK_AGENTS_RULE_FILES,
   WORKTREE_BRANCH_PREFIX,
 } from '@/constants';
 import { Agent, AgentProfileManager, McpConfigManager, McpManager } from '@/agent';
@@ -167,7 +197,7 @@ import { getElectronApp } from '@/app';
 import { PromptsManager } from '@/prompts';
 import { PythonDependenciesInstaller } from '@/python-dependencies-installer';
 import { getNetworkEnvVars } from '@/network-manager';
-import { CompactionLevel, extractSummary, smartCompactMessages } from '@/agent/compaction';
+import { CompactionLevel, extractUsableSummary, smartCompactMessages } from '@/agent/compaction';
 
 export const INTERNAL_TASK_ID = 'internal';
 export const RESPONSE_CHUNK_FLUSH_INTERVAL_MS = 10;
@@ -259,6 +289,7 @@ export class Task {
   private agentGoalRetryDelay = 0;
   private planAdmission = false;
   private isCompacting = false;
+  private readonly manualCompactionControllers = new Set<AbortController>();
   private lastSmartCompactionMessageCount = 0;
   private smartCompactionLevel = CompactionLevel.One;
 
@@ -1789,7 +1820,9 @@ export class Task {
       throw new Error('Resolve the pending plan before running a different turn.');
     }
 
-    const trackRoot = ((mode === 'agent' || mode === 'plan' || mode === CODEX_PLAN_MODE) && Boolean(prompt)) || Boolean(recoveredTurn || goalTurn);
+    const designReviewEnabled = mode === 'agent' && isGeneralMode();
+    const trackRoot =
+      designReviewEnabled || ((mode === 'agent' || mode === 'plan' || mode === CODEX_PLAN_MODE) && Boolean(prompt)) || Boolean(recoveredTurn || goalTurn);
     if (trackRoot && this.rootTurnInUse) {
       throw new Error('An agent turn is already running.');
     }
@@ -1825,12 +1858,32 @@ export class Task {
         progress = (event) => {
           this.rootTurnWrites = this.rootTurnWrites.then(async () => {
             rememberCompletedShell(rootTurn!, event.receipt);
+            const verificationAdmitted = rememberGoalVerification(rootTurn!, event.goalVerification);
             reconcileTurnProgress(rootTurn!, event);
             await this.saveRootTurn(rootTurn!);
+            if (verificationAdmitted) {
+              event.goalVerification?.onSaved();
+            }
           });
           return this.rootTurnWrites;
         };
         this.rootTurnWrites = Promise.resolve();
+        if (designReviewEnabled && !rootTurn.designReview) {
+          const previous = recoveredTurn ?? (this.task.state === DefaultTaskState.Interrupted ? await this.readRootTurn() : undefined);
+          const sameTask =
+            previous?.state === 'running' && previous.mode === 'agent' && previous.directory === rootTurn.directory && previous.epoch === rootTurn.epoch;
+          if (sameTask && previous.designReview) {
+            rootTurn.designReview = { baseline: previous.designReview.baseline, legacyTouched: previous.designReview.legacyTouched };
+          } else {
+            const legacyTouched = sameTask ? legacyDesignTouches(previous) : prompt === null && !goalTurn ? undefined : [];
+            if (legacyTouched === undefined) {
+              rootTurn.designReview = {};
+            } else {
+              const { hashes, scope } = await readAgentDesignSnapshot(rootTurn.directory, goalTurn?.signal);
+              rootTurn.designReview = { baseline: { hashes, scope }, legacyTouched };
+            }
+          }
+        }
         await progress({});
       }
       if (this.closing || (trackRoot && this.rootTurnClosed)) {
@@ -1884,7 +1937,10 @@ export class Task {
               if (this.closing || this.rootTurnClosed || !goalUserPrompt.includes(authorization)) {
                 throw new Error('Goal creation requires explicit authorization in the latest user request.');
               }
-              const next = { ...newAgentGoal(objective, budget), originTurnId: rootTurn!.turnId };
+              const next = {
+                ...newAgentGoal(objective, budget),
+                originTurnId: rootTurn!.turnId,
+              };
               let bound: AgentGoalTurn | undefined;
               await this.agentGoalStore.mutate((current) => {
                 if (this.closing || this.rootTurnClosed || (current && current.status !== 'complete')) {
@@ -1904,6 +1960,113 @@ export class Task {
       if (steeringRoot) {
         this.activeRootSteering = steeringRoot;
       }
+      const designRoot = designReviewEnabled ? rootTurn : undefined;
+      const reviewCandidate = designRoot
+        ? async (signal?: AbortSignal) => {
+            const snapshot = await readAgentDesignSnapshot(designRoot.directory, signal);
+            const instructions = designRoot.messages.flatMap((message) =>
+              message.role === 'user' && message.promptContext?.id === designRoot.turnId ? [extractTextContent(message.content)] : [],
+            );
+            const previousRequest = !instructions.length && !goalTurn ? designRoot.messages.findLast((message) => message.role === 'user') : undefined;
+            if (previousRequest) {
+              instructions.push(extractTextContent(previousRequest.content));
+            }
+            const request = {
+              instructions: [...new Set([...(goalTurn ? [goalTurn.goal.objective] : []), ...instructions])],
+              plan: designRoot.approvedPlan?.markdown,
+            };
+            const { baseline, legacyTouched } = designRoot.designReview ?? {};
+            if (!getAgentDesignCandidate(baseline, snapshot, request, undefined, legacyTouched)) {
+              return undefined;
+            }
+            return getAgentDesignCandidate(baseline, snapshot, request, await this.promptsManager.getRulesContent(this, profile), legacyTouched);
+          }
+        : undefined;
+      const rejectedAttempts = new Map<string, number>();
+      const reviewRootChanges =
+        designRoot && reviewCandidate
+          ? async (signal: AbortSignal, usage?: AgentGoalUsage) => {
+              const entry = await reviewCandidate(signal);
+              if (!entry) {
+                return undefined;
+              }
+              const { candidate, reviewInput } = entry;
+              const state = (designRoot.designReview ??= {});
+              let receipt = state.receipt;
+              if (!receipt || receipt.candidate !== candidate) {
+                const provider = designRoot.modelSettings?.provider ?? profile.provider;
+                const model = designRoot.modelSettings?.model ?? profile.model;
+                const reviewer = this.agentProfileManager
+                  .getProjectProfiles(this.project)
+                  .find(
+                    (item) =>
+                      item.id !== profile.id &&
+                      item.subagent?.enabled &&
+                      item.provider === provider &&
+                      (item.id === 'opencode-designer' || item.id === 'designer') &&
+                      (!profile.enabledSubagentIds || profile.enabledSubagentIds.includes(item.id)),
+                  );
+                const modelId = `${provider}/${reviewer?.model ?? model}`;
+                this.addLogMessage('loading', 'Revisione indipendente del Designer sulle modifiche UI.', false, promptContext);
+                const input = reviewInput();
+                const generateVerdict = async (instructions: string) => {
+                  const raw = await this.agent.generateText(
+                    modelId,
+                    instructions,
+                    input,
+                    designRoot.directory,
+                    [],
+                    true,
+                    signal,
+                    uuidv4(),
+                    false,
+                    undefined,
+                    usage,
+                  );
+                  signal.throwIfAborted();
+                  return raw;
+                };
+                let verdict: ReturnType<typeof parseAgentDesignReview>;
+                const raw = await generateVerdict(agentDesignReviewInstructions);
+                try {
+                  verdict = parseAgentDesignReview(raw);
+                } catch {
+                  const retry = await generateVerdict(
+                    `${agentDesignReviewInstructions}\nLa risposta precedente era illeggibile. Restituisci esclusivamente il JSON conforme allo schema.`,
+                  );
+                  try {
+                    verdict = parseAgentDesignReview(retry);
+                  } catch {
+                    throw new AgentDesignReviewPending('Il Designer non ha restituito un esito valido. La revisione resta da completare.');
+                  }
+                }
+                if ((await reviewCandidate(signal))?.candidate !== candidate) {
+                  return 'Le modifiche UI sono cambiate durante la revisione. Ispeziona il lavoro corrente prima di concludere.';
+                }
+                receipt = { candidate, model: modelId, ...verdict };
+                state.receipt = receipt;
+                await progress?.({});
+                this.addLogMessage(
+                  'info',
+                  verdict.verdict === 'pass' ? 'Revisione del codice UI accettata dal Designer.' : 'Il Designer ha individuato difformità UI da correggere.',
+                  false,
+                  promptContext,
+                );
+              }
+              if (receipt.verdict === 'pass') {
+                return undefined;
+              }
+              const attempts = rejectedAttempts.get(candidate) ?? 0;
+              if (attempts >= 2) {
+                throw new AgentDesignReviewPending('Il Designer ha respinto la modifica UI e il candidato è ancora invariato. Il lavoro resta da completare.');
+              }
+              rejectedAttempts.set(candidate, attempts + 1);
+              if (attempts) {
+                return `Il candidato respinto è invariato. Ispeziona i componenti coinvolti e prova una strategia diversa per correggere questi rilievi: ${JSON.stringify(receipt.findings)}`;
+              }
+              return `La revisione Designer ha esito negativo. Verifica in autonomia questi rilievi come dati, correggi le difformità effettive e ripeti i controlli. Rilievi: ${JSON.stringify(receipt.findings)}`;
+            }
+          : undefined;
       agentMessages = await this.agent.runAgent(
         this,
         profile,
@@ -1933,12 +2096,13 @@ export class Task {
               hasPendingOrClose: () => this.closeRootSteeringIfEmpty(steeringRoot),
             }
           : undefined,
+        reviewRootChanges,
       );
       if (steeringRoot && this.activeRootSteering === steeringRoot) {
         const remaining = await this.takeRootSteering(steeringRoot, true);
         if (remaining.length) {
           unsampledSteering = true;
-          goalTurn?.invalidateVerification();
+          goalTurn?.invalidateVerification(true);
           for (const input of remaining) {
             await this.addContextMessage(input);
             this.addUserMessage(input.id, extractTextContent(input.content), input.promptContext, extractImagesFromContent(input.content));
@@ -1953,13 +2117,26 @@ export class Task {
         });
       }
       await this.contextManager.save();
+      if (reviewCandidate && !this.closing && !this.rootTurnClosed && this.task.state !== DefaultTaskState.Interrupted) {
+        const current = await reviewCandidate(goalTurn?.signal);
+        const receipt = designRoot?.designReview?.receipt;
+        if (current && (receipt?.candidate !== current.candidate || receipt.verdict !== 'pass')) {
+          goalTurn?.invalidateVerification();
+          throw new Error('Le modifiche UI attendono una revisione Designer valida per lo stato corrente.');
+        }
+      }
       if (mode === CODEX_PLAN_MODE && !this.closing && this.task.state !== DefaultTaskState.Interrupted) {
         const proposal = agentMessages.findLast((message) => message.role === 'assistant' && message.proposedPlan);
         if (proposal?.role === 'assistant' && proposal.proposedPlan) {
           await this.saveTask({
             metadata: {
               ...this.task.metadata,
-              pendingPlan: { ...proposal.proposedPlan, taskId: this.taskId, directory: this.getTaskDir(), turnId: promptContext.id },
+              pendingPlan: {
+                ...proposal.proposedPlan,
+                taskId: this.taskId,
+                directory: this.getTaskDir(),
+                turnId: promptContext.id,
+              },
             },
           });
         }
@@ -1970,8 +2147,10 @@ export class Task {
       if (rootTurn && !this.closing && !this.rootTurnClosed && this.task.state !== DefaultTaskState.Interrupted) {
         const last = agentMessages.at(-1);
         const goalEnded = goalTurn && (goalTurn.signal.aborted || agentMessages.length > 0);
+        const limitedGoal = goalTurn && !goalEnded ? await goalTurn.readGoal() : undefined;
+        const goalReachedLimit = limitedGoal?.id === goalTurn?.goal.id && (limitedGoal?.status === 'budget_limited' || limitedGoal?.status === 'usage_limited');
         const finalText = last?.role === 'assistant' && extractTextContent(last.content).trim();
-        rootTurn.state = unsampledSteering ? 'running' : goalEnded || finalText ? 'success' : 'error';
+        rootTurn.state = unsampledSteering ? 'running' : goalEnded || goalReachedLimit || finalText ? 'success' : 'error';
         await progress?.({});
         if (rootTurn.state !== 'success') {
           await this.saveTask({
@@ -2106,7 +2285,14 @@ export class Task {
     return lower.includes('proceed') && lower.includes('(y/n)');
   }
 
-  private pendingPlan(): (ProposedPlan & { directory: string; turnId: string; implementationTaskId?: string; implementationTurnId?: string }) | undefined {
+  private pendingPlan():
+    | (ProposedPlan & {
+        directory: string;
+        turnId: string;
+        implementationTaskId?: string;
+        implementationTurnId?: string;
+      })
+    | undefined {
     const value = this.task.metadata?.pendingPlan;
     if (
       !value ||
@@ -2172,7 +2358,15 @@ export class Task {
         const implementationTurnId = plan.implementationTurnId ?? uuidv4();
         if (!plan.implementationTaskId) {
           await this.saveTask({
-            metadata: { ...this.task.metadata, pendingPlan: { ...plan, taskId: this.taskId, implementationTaskId: targetId, implementationTurnId } },
+            metadata: {
+              ...this.task.metadata,
+              pendingPlan: {
+                ...plan,
+                taskId: this.taskId,
+                implementationTaskId: targetId,
+                implementationTurnId,
+              },
+            },
           });
         }
         let target = this.project.getTask(targetId);
@@ -2333,7 +2527,7 @@ export class Task {
     recoveryInstructions?: string,
     interruptedToolFingerprints?: ReadonlySet<string>,
     recoveredModelSettings?: RecordedModelSettings,
-    onGoalUsage?: AgentGoalTurn['onUsage'],
+    onGoalUsage?: AgentGoalUsage,
   ): Promise<ContextMessage[]> {
     profile = {
       ...profile,
@@ -2899,7 +3093,7 @@ export class Task {
     await this.sendContextFilesUpdated();
   }
 
-  public async runCommand(command: string, addToHistory = true) {
+  public async runCommand(command: string, addToHistory = true, contextMessages?: ContextMessage[]) {
     const extensionResult = await this.extensionManager.dispatchEvent('onCommandExecuted', { command }, this.project, this);
     if (extensionResult.blocked) {
       logger.debug('Command execution blocked by extension');
@@ -2966,7 +3160,7 @@ export class Task {
       }
 
       this.findMessageConnectors('run-command').forEach((connector) =>
-        connector.sendRunCommandMessage(command, this.contextManager.toConnectorMessages(), this.contextManager.getContextFiles()),
+        connector.sendRunCommandMessage(command, this.contextManager.toConnectorMessages(contextMessages), this.contextManager.getContextFiles()),
       );
     }
   }
@@ -3520,9 +3714,56 @@ export class Task {
     return [...contextFiles, ...ruleFiles];
   }
 
+  private async getTaskInstructionDirectories(taskDir: string): Promise<string[]> {
+    if (isLabMode()) {
+      return [taskDir];
+    }
+
+    const physicalDirectory = await fs.realpath(taskDir).catch(() => undefined);
+    if (!physicalDirectory) {
+      return [taskDir];
+    }
+    const directories: string[] = [];
+    let directory = physicalDirectory;
+    while (true) {
+      directories.push(directory);
+      try {
+        const marker = await fs.stat(path.join(directory, '.git'));
+        if (marker.isDirectory() || marker.isFile()) {
+          return directories.reverse();
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          return [physicalDirectory];
+        }
+      }
+
+      const parent = path.dirname(directory);
+      if (parent === directory) {
+        return [physicalDirectory];
+      }
+      directory = parent;
+    }
+  }
+
   public async getRuleFilesAsContextFiles(profile?: AgentProfile, includeDisabled = false): Promise<ContextFile[]> {
+    return (await this.getRuleContext(profile, includeDisabled)).files;
+  }
+
+  public async getRuleContext(
+    profile?: AgentProfile,
+    includeDisabled = false,
+  ): Promise<{ files: ContextFile[]; instructionDirectory: string; projectDirectory: string }> {
     const ruleFiles: ContextFile[] = [];
     const homeDir = homedir();
+    const taskDir = this.getTaskDir();
+    const projectDir = this.getProjectDir();
+    const [instructionDirectories, resolvedProjectDirectory] = await Promise.all([
+      this.getTaskInstructionDirectories(taskDir),
+      path.relative(taskDir, projectDir) ? fs.realpath(projectDir).catch(() => projectDir) : undefined,
+    ]);
+    const instructionDirectory = instructionDirectories.at(-1) ?? taskDir;
+    const projectDirectory = resolvedProjectDirectory ?? instructionDirectory;
 
     // Get global rule files
     if (await fileExists(AIDER_DESK_GLOBAL_RULES_DIR)) {
@@ -3546,19 +3787,21 @@ export class Task {
       }
     }
 
-    // Include AGENTS.md from project root if it exists
-    const agentsFilePath = path.join(this.project.baseDir, 'AGENTS.md');
-    if (await fileExists(agentsFilePath)) {
-      ruleFiles.push({
-        path: 'AGENTS.md',
-        readOnly: true,
-        source: 'project-rule',
-      });
+    // Discover the repository instructions from the root down to this task's directory.
+    for (const directory of instructionDirectories) {
+      for (const fileName of TASK_AGENTS_RULE_FILES) {
+        const rulePath = path.join(directory, fileName);
+        const file = await fs.stat(rulePath).catch(() => undefined);
+        if (file?.isFile()) {
+          ruleFiles.push({ path: directory === instructionDirectory ? fileName : rulePath, readOnly: true, source: 'project-rule' });
+          break;
+        }
+      }
     }
 
     // Get project rule files
     try {
-      const projectRulesDir = path.join(this.project.baseDir, AIDER_DESK_PROJECT_RULES_DIR);
+      const projectRulesDir = path.join(projectDirectory, AIDER_DESK_PROJECT_RULES_DIR);
       const projectRuleFileNames = await fs.readdir(projectRulesDir);
       for (const fileName of projectRuleFileNames) {
         if (fileName.endsWith('.md')) {
@@ -3576,8 +3819,8 @@ export class Task {
     }
 
     // Get agent profile rule files
-    if (profile && profile.ruleFiles && profile.ruleFiles.length > 0) {
-      for (const ruleFilePath of profile.ruleFiles) {
+    if (profile) {
+      for (const ruleFilePath of await this.agentProfileManager.getRuleFilesForProjectProfile(profile, this.project)) {
         try {
           await fs.access(ruleFilePath);
           // Convert to relative path with ~/ prefix if in home directory
@@ -3610,7 +3853,8 @@ export class Task {
     // Filter out disabled rule files
     const disabledRuleFiles = this.project.getProjectSettings().disabledRuleFiles ?? [];
 
-    return includeDisabled ? extensionResult.files : extensionResult.files.filter((f) => !disabledRuleFiles.includes(f.path));
+    const files = includeDisabled ? extensionResult.files : extensionResult.files.filter((f) => !disabledRuleFiles.includes(f.path));
+    return { files, instructionDirectory, projectDirectory };
   }
 
   public getRepoMap(): string {
@@ -3867,7 +4111,7 @@ export class Task {
     this.eventManager.sendTool(data);
   }
 
-  public async clearContext(addToHistory = false, updateContextInfo = true, updateTaskState = true, createSnapshot = true) {
+  public async clearContext(addToHistory = false, updateContextInfo = true, updateTaskState = true, createSnapshot = true, publishReplacement?: () => void) {
     logger.info('Clearing context:', {
       baseDir: this.project.baseDir,
       addToHistory,
@@ -3885,8 +4129,11 @@ export class Task {
       await this.saveTask({ metadata: { ...this.task.metadata, workerEpoch } });
     }
 
-    this.contextManager.clearMessages(true, createSnapshot);
-    await this.runCommand('clear', addToHistory);
+    if (!publishReplacement) {
+      this.contextManager.clearMessages(true, createSnapshot);
+    }
+    await this.runCommand('clear', addToHistory, publishReplacement ? [] : undefined);
+    publishReplacement?.();
     this.eventManager.sendClearTask(this.project.baseDir, this.taskId, true, false);
 
     if (updateContextInfo) {
@@ -4038,6 +4285,7 @@ export class Task {
     }
 
     // Default behavior: interrupt main agent
+    this.manualCompactionControllers.forEach((controller) => controller.abort());
     logger.debug('Interrupting response:', {
       baseDir: this.project.baseDir,
       taskId: this.taskId,
@@ -4128,23 +4376,36 @@ export class Task {
         return;
       }
       const promptContext = { id: root.turnId };
-      const event = { prompt: text, mode: 'agent', promptContext, steering: true };
+      const event = {
+        prompt: text,
+        mode: 'agent',
+        promptContext,
+        steering: true,
+      };
       const inputPolicy = this.extensionManager.isInitialized()
         ? await this.extensionManager.dispatchEvent('onPromptStarted', event, this.project, this)
         : event;
       if (!canAccept() || ('blocked' in inputPolicy && inputPolicy.blocked) || inputPolicy.mode !== 'agent' || !inputPolicy.prompt.trim()) {
         return;
       }
-      const input = { ...createRecordedInput(inputPolicy.prompt, images, promptContext), id: clientId };
+      const input = {
+        ...createRecordedInput(inputPolicy.prompt, images, promptContext),
+        id: clientId,
+      };
       const existing = root.pendingSteering?.find(({ id }) => id === clientId) ?? root.messages.find(({ id }) => id === clientId);
       if (existing) {
         accepted = existing.role === 'user' && existing.id !== root.turnId && JSON.stringify(existing.content) === JSON.stringify(input.content);
         return;
       }
 
-      const updated = { ...root, pendingSteering: [...(root.pendingSteering ?? []), input] };
+      const updated = {
+        ...root,
+        pendingSteering: [...(root.pendingSteering ?? []), input],
+        goalVerification: undefined,
+      };
       await this.saveRootTurn(updated);
       root.pendingSteering = updated.pendingSteering;
+      root.goalVerification = undefined;
       accepted = true;
     });
     this.rootTurnWrites = record.catch((error) => {
@@ -4172,7 +4433,11 @@ export class Task {
         }
         return;
       }
-      const updated = { ...root, pendingSteering: [], messages: [...root.messages, ...root.pendingSteering] };
+      const updated = {
+        ...root,
+        pendingSteering: [],
+        messages: [...root.messages, ...root.pendingSteering],
+      };
       await this.saveRootTurn(updated);
       messages = root.pendingSteering;
       root.pendingSteering = [];
@@ -4554,23 +4819,38 @@ export class Task {
               if (record.goalId) {
                 throw error;
               }
-              logger.warn('Could not read the agent goal during recovery.', { error });
+              logger.warn('Could not read the agent goal during recovery.', {
+                error,
+              });
               return null;
             })
           : null;
-      const originalGoal = possibleGoal?.id === record.goalId || possibleGoal?.originTurnId === record.turnId ? possibleGoal : null;
+      let originalGoal = possibleGoal?.id === record.goalId || possibleGoal?.originTurnId === record.turnId ? possibleGoal : null;
       if (originalGoal?.originTurnId === record.turnId) {
         record.goalId ??= originalGoal.id;
       }
-      if (this.closing || this.isPromptRunning() || this.rootTurnInUse) {
+      const restoredVerification = originalGoal?.status === 'active' ? await this.recoverGoalVerification(originalGoal, record) : [];
+      if (originalGoal && record.goalVerification) {
+        const current = await this.agentGoalStore.read();
+        if (!current || current.status !== 'active' || goalVerificationBinding(current) !== goalVerificationBinding(originalGoal)) {
+          return;
+        }
+        originalGoal = current;
+      }
+      if (this.closing || this.isPromptRunning() || this.rootTurnInUse || this.task.metadata?.recoverableRootTurn !== record.turnId) {
         return;
       }
       if (record.goalId && (originalGoal?.id !== record.goalId || originalGoal.status !== 'active')) {
         this.addLogMessage('warning', 'Resume the active goal before resuming its interrupted turn.', true);
         return;
       }
+      if (record.goalVerification && originalGoal) {
+        record.goalVerification = restoredVerification.length ? { binding: goalVerificationBinding(originalGoal), receipts: restoredVerification } : undefined;
+      }
       const goalTurn =
-        originalGoal?.id === record.goalId && originalGoal?.status === 'active' ? this.createAgentGoalTurn(originalGoal, record.turnId) : undefined;
+        originalGoal?.id === record.goalId && originalGoal?.status === 'active'
+          ? this.createAgentGoalTurn(originalGoal, record.turnId, restoredVerification)
+          : undefined;
       try {
         await this.runPromptInAgent(
           profile,
@@ -4775,7 +5055,11 @@ export class Task {
     }
     const goal = await this.agentGoalStore.read();
     if (goal?.status === 'active' && this.writableGoalLoaded && !this.closing) {
-      return { project: this.project.baseDir, taskId: this.taskId, goalId: goal.id };
+      return {
+        project: this.project.baseDir,
+        taskId: this.taskId,
+        goalId: goal.id,
+      };
     }
     return undefined;
   }
@@ -4868,12 +5152,72 @@ export class Task {
     });
   }
 
-  private createAgentGoalTurn(goal: AgentGoal, turnId: string): AgentGoalTurn {
+  private async recoverGoalVerification(goal: AgentGoal, record: RootTurnRecord): Promise<GoalVerificationReceipt[]> {
+    const checkpoint = goalVerificationCheckpointSchema.safeParse(record.goalVerification);
+    if (
+      !checkpoint.success ||
+      record.goalId !== goal.id ||
+      checkpoint.data.binding !== goalVerificationBinding(goal) ||
+      record.pendingTools?.length ||
+      hasSteeringToRecover(record)
+    ) {
+      return [];
+    }
+    const scope = await resolveGoalVerificationScope(this.getTaskDir());
+    const revision = scope && (await goalWorktreeRevision(scope.root).catch(() => undefined));
+    if (!scope || !revision) {
+      return [];
+    }
+    const nativeTool = (name: string) => name === 'power---bash' || name === 'power---bash_poll';
+    const observedResults = new Map<string, unknown>([
+      ...(record.unmergedReceipts ?? []).filter(({ name }) => nativeTool(name)).map(({ id, output }) => [id, output] as const),
+      ...record.messages.flatMap((message) =>
+        message.role === 'tool'
+          ? message.content
+              .filter(({ toolName }) => nativeTool(toolName))
+              .map(({ toolCallId, output }) => [toolCallId, 'value' in output ? output.value : undefined] as const)
+          : [],
+      ),
+    ]);
+    const hasValidVerificationOutput = ({ toolCallId, command, npmScriptIdentified }: GoalVerificationReceipt): boolean => {
+      if (hasEmptyNativeTestReport(command, undefined, undefined)) {
+        return false;
+      }
+      const needsNpmAttribution = !npmScriptIdentified && isNpmTestVerification(command);
+      const saved = observedResults.get(toolCallId);
+      try {
+        const output: unknown = typeof saved === 'string' ? JSON.parse(saved) : saved;
+        if (!output || typeof output !== 'object' || !('exitCode' in output)) {
+          return !needsNpmAttribution;
+        }
+        const stdout = 'stdout' in output ? output.stdout : undefined;
+        const stderr = 'stderr' in output ? output.stderr : undefined;
+        return (
+          output.exitCode === 0 &&
+          !hasEmptyNativeTestReport(command, stdout, stderr) &&
+          (!needsNpmAttribution || getNpmTestScriptAttribution(command, stdout) === true)
+        );
+      } catch {
+        return !needsNpmAttribution;
+      }
+    };
+    return checkpoint.data.receipts.filter(
+      (receipt) =>
+        observedResults.has(receipt.toolCallId) &&
+        receipt.revision === revision &&
+        !path.relative(receipt.root, scope.root) &&
+        (goal.verifier ? receipt.command === goal.verifier : isProjectVerificationCommand(receipt.command)) &&
+        hasValidVerificationOutput(receipt),
+    );
+  }
+
+  private createAgentGoalTurn(goal: AgentGoal, turnId: string, restoredVerification: GoalVerificationReceipt[] = []): AgentGoalTurn {
     const controller = new AbortController();
     this.agentGoalTurnController = controller;
     let accountedAt = Date.now();
-    const verified = new Map<string, { command: string; revision: string | undefined }>();
-    const failed = new Set<string>();
+    const verified = new Map(restoredVerification.map((receipt) => [receipt.toolCallId, receipt]));
+    const unattributedNpmResults = new Set<string>();
+    const binding = goalVerificationBinding(goal);
     let completion: AgentGoal['evidence'];
     let verificationGeneration = 0;
     const matches = (current: AgentGoal | null): current is AgentGoal =>
@@ -4884,8 +5228,7 @@ export class Task {
       goal,
       signal: controller.signal,
       readGoal: () => this.agentGoalStore.read(),
-      getAvailableVerification: () =>
-        [...verified].filter(([, proof]) => !failed.has(proof.command)).map(([toolCallId, { command }]) => ({ toolCallId, command })),
+      getAvailableVerification: () => [...verified.values()].map(({ toolCallId, command }) => ({ toolCallId, command })),
       canExecute: async () => !this.closing && !controller.signal.aborted && matches(await this.agentGoalStore.read()),
       onUsage: async (tokens, countTime = true) => {
         const now = Date.now();
@@ -4925,13 +5268,12 @@ export class Task {
       reportTerminalError: async () => {
         await mutateGoal((current) => ({ ...current, status: 'blocked' }));
       },
-      invalidateVerification: () => {
+      invalidateVerification: (clearReceipts = false) => {
         verificationGeneration++;
         completion = undefined;
-        for (const [id, proof] of verified) {
-          if (!proof.revision) {
-            verified.delete(id);
-          }
+        if (clearReceipts) {
+          verified.clear();
+          unattributedNpmResults.clear();
         }
       },
       beginVerification: async (input) => {
@@ -4944,32 +5286,71 @@ export class Task {
         }
         const checkout = this.getTaskDir();
         const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
-        if (cwd && !(await isGoalVerificationDirectory(checkout, cwd))) {
+        const scope = await resolveGoalVerificationScope(checkout, cwd);
+        if (!scope) {
           return;
         }
         const generation = verificationGeneration;
-        const revision = await goalWorktreeRevision(checkout).catch(() => undefined);
-        return { command, revision, generation };
+        const revision = await goalWorktreeRevision(scope.root).catch(() => undefined);
+        return revision ? { command, revision, generation, scope } : undefined;
       },
-      continueVerification: (verification) => ({ ...verification, generation: verificationGeneration }),
-      acceptToolResult: async (id, verification, output, stillCurrent = () => true) => {
+      continueVerification: (verification) => ({
+        ...verification,
+        generation: verificationGeneration,
+      }),
+      acceptToolResult: async (id, verification, output, stillCurrent = () => true, persist) => {
         if (!verification || !output || typeof output !== 'object' || !('exitCode' in output)) {
           return;
         }
         const { command, generation } = verification;
-        if (output.exitCode === 0) {
-          const revision = await goalWorktreeRevision(this.getTaskDir()).catch(() => undefined);
-          if (!stillCurrent() || generation !== verificationGeneration || revision !== verification.revision || (!revision && !goal.verifier)) {
+        const current = () => !controller.signal.aborted && stillCurrent() && generation === verificationGeneration;
+        const emptyReport =
+          NATIVE_EMPTY_TEST_REPORT in output
+            ? output[NATIVE_EMPTY_TEST_REPORT] === true
+            : hasEmptyNativeTestReport(command, 'stdout' in output ? output.stdout : undefined, 'stderr' in output ? output.stderr : undefined);
+        const npmScriptIdentified =
+          NATIVE_NPM_TEST_SCRIPT_IDENTIFIED in output
+            ? output[NATIVE_NPM_TEST_SCRIPT_IDENTIFIED] === true
+            : getNpmTestScriptAttribution(command, 'stdout' in output ? output.stdout : undefined);
+        if (output.exitCode === 0 && !emptyReport && npmScriptIdentified !== false) {
+          const scope = await resolveGoalVerificationScope(this.getTaskDir());
+          const revision =
+            scope && !path.relative(verification.scope.root, scope.root) ? await goalWorktreeRevision(scope.root).catch(() => undefined) : undefined;
+          if (!current() || revision !== verification.revision) {
             return;
           }
-          failed.delete(command);
-          verified.set(id, { command, revision });
-        } else if (typeof output.exitCode === 'number') {
-          failed.add(command);
+          const receipt: GoalVerificationReceipt = { toolCallId: id, command, revision, root: verification.scope.root };
+          if (npmScriptIdentified) {
+            receipt.npmScriptIdentified = true;
+          }
+          if (persist && !(await persist({ goalId: goal.id, binding, command, receipt, isCurrent: current }))) {
+            return;
+          }
+          if (current()) {
+            verified.set(id, receipt);
+          }
+        } else if (typeof output.exitCode === 'number' && current()) {
+          if (output.exitCode === 0 && npmScriptIdentified === false) {
+            unattributedNpmResults.add(id);
+          }
+          for (const [toolCallId, proof] of verified) {
+            if (proof.command === command) {
+              verified.delete(toolCallId);
+            }
+          }
+          if (completion?.toolCallIds.some((toolCallId) => !verified.has(toolCallId))) {
+            completion = undefined;
+          }
+          await persist?.({ goalId: goal.id, binding, command, isCurrent: current });
         }
       },
       proposeCompletion: async (summary, evidenceIds) => {
-        if (!evidenceIds.length || evidenceIds.some((id) => !verified.has(id) || failed.has(verified.get(id)!.command))) {
+        if (evidenceIds.some((id) => !verified.has(id) && unattributedNpmResults.has(id))) {
+          throw new Error(
+            'Completion requires successful verification outputs. The npm lifecycle output does not identify the requested test script. Rerun the applicable verification with the npm script headings visible.',
+          );
+        }
+        if (!evidenceIds.length || evidenceIds.some((id) => !verified.has(id))) {
           throw new Error('Completion requires successful verification outputs observed in this turn. Run the applicable checks and cite their tool call IDs.');
         }
         if (goal.verifier && !evidenceIds.some((id) => verified.get(id)?.command === goal.verifier)) {
@@ -4982,19 +5363,31 @@ export class Task {
         return 'Verification received. Completion is recorded when the history and usage are saved.';
       },
       commitCompletion: async () => {
-        if (!completion || controller.signal.aborted || completion.toolCallIds.some((id) => failed.has(verified.get(id)!.command))) {
+        if (!completion || controller.signal.aborted) {
           return false;
         }
         const approved = completion;
-        const proofs = approved.toolCallIds.map((id) => verified.get(id)!);
-        if (proofs.some(({ revision }) => revision !== undefined)) {
-          const revision = await goalWorktreeRevision(this.getTaskDir()).catch(() => undefined);
-          if (proofs.some((proof) => proof.revision !== revision)) {
-            return false;
-          }
+        const proofs = approved.toolCallIds.map((id) => verified.get(id)).filter((proof) => proof !== undefined);
+        if (proofs.length !== approved.toolCallIds.length) {
+          return false;
+        }
+        const scope = await resolveGoalVerificationScope(this.getTaskDir());
+        if (!scope || proofs.some((proof) => path.relative(proof.root, scope.root))) {
+          return false;
+        }
+        const revision = await goalWorktreeRevision(scope.root).catch(() => undefined);
+        if (proofs.some((proof) => proof.revision !== revision)) {
+          return false;
         }
         const result = await mutateGoal((current) =>
-          controller.signal.aborted || completion !== approved ? current : { ...current, status: 'complete', blocker: undefined, evidence: approved },
+          controller.signal.aborted || completion !== approved
+            ? current
+            : {
+                ...current,
+                status: 'complete',
+                blocker: undefined,
+                evidence: approved,
+              },
         );
         if (result?.status !== 'complete' || result.evidence?.turnId !== turnId) {
           return false;
@@ -5302,8 +5695,8 @@ export class Task {
     waitForAgentCompletion = true,
     loadingMessage = 'Compacting conversation...',
     retainInitialUserMessage = true,
-    onGoalUsage?: AgentGoalTurn['onUsage'],
-  ): Promise<void> {
+    onGoalUsage?: AgentGoalUsage,
+  ): Promise<boolean> {
     // Get profile if not provided
     if (!profile) {
       profile = await this.getTaskAgentProfile();
@@ -5316,7 +5709,7 @@ export class Task {
 
     if (!userMessage) {
       this.addLogMessage('warning', 'No conversation to compact.', false, promptContext);
-      return;
+      return false;
     }
 
     const currentTaskState = this.task.state;
@@ -5329,8 +5722,15 @@ export class Task {
 
     this.addLogMessage('loading', loadingMessage);
     this.isCompacting = true;
+    const manualController = abortSignal ? undefined : new AbortController();
+    if (manualController) {
+      this.manualCompactionControllers.add(manualController);
+    }
+    const compactionSignal = abortSignal ?? manualController?.signal;
+    let applied = false;
 
     try {
+      const summaries: ContextMessage[] = [];
       if (!AIDER_MODES.includes(mode)) {
         // Agent mode logic
         if (!profile) {
@@ -5346,17 +5746,19 @@ export class Task {
         if (waitForAgentCompletion) {
           await this.waitForCurrentAgentToFinish();
         }
+        const compactPrompt = await this.promptsManager.getCompactConversationPrompt(this, customInstructions);
+        compactionSignal?.throwIfAborted();
         const agentMessages = await this.agent.runAgent(
           this,
           compactConversationAgentProfile,
-          await this.promptsManager.getCompactConversationPrompt(this, customInstructions),
+          compactPrompt,
           'compact-conversation',
           promptContext,
           contextMessages,
           [],
           undefined,
           false,
-          abortSignal,
+          compactionSignal,
           undefined,
           undefined,
           undefined,
@@ -5372,68 +5774,60 @@ export class Task {
           this.resolveAgentRunPromises();
         }
 
-        if (agentMessages.length > 0) {
-          // Clear existing context and add the summary
-          const summaryMessage = agentMessages[agentMessages.length - 1];
-          summaryMessage.content = extractSummary(extractTextContent(summaryMessage.content));
-
-          const finalMessages: ContextMessage[] = retainInitialUserMessage
-            ? [userMessage, ...skillMessages, summaryMessage]
-            : [
-                {
-                  ...userMessage,
-                  content: 'Continue the task described in the conversation summary.',
-                },
-                ...skillMessages,
-                summaryMessage,
-              ];
-
-          this.contextManager.setContextMessages(finalMessages);
-
-          await this.contextManager.loadMessages(await this.contextManager.getContextMessages());
+        const summary = agentMessages.findLast((message) => message.role === 'assistant' && extractTextContent(message.content).trim());
+        if (summary?.role === 'assistant') {
+          const content = extractUsableSummary(extractTextContent(summary.content));
+          if (content) {
+            summaries.push({ ...summary, content });
+          }
         }
       } else {
-        const responses = await this.sendPromptToAider(
-          await this.promptsManager.getCompactConversationPrompt(this, customInstructions),
-          undefined,
-          'ask',
-          undefined,
-          [],
-          undefined,
-        );
+        const compactPrompt = await this.promptsManager.getCompactConversationPrompt(this, customInstructions);
+        compactionSignal?.throwIfAborted();
+        const responses = await this.sendPromptToAider(compactPrompt, undefined, 'ask', undefined, [], undefined);
 
-        // Collect all new messages before setting the context
-        const newMessages: ContextMessage[] = [userMessage];
         for (const response of responses) {
-          if (response.content) {
-            newMessages.push({
+          const content = extractUsableSummary(response.content);
+          if (content) {
+            summaries.push({
               id: response.messageId,
               role: MessageRole.Assistant,
-              content: extractSummary(response.content),
+              content,
               promptContext,
             });
           }
         }
-
-        // Create final messages array with skill activations inserted between user message and rest
-        const finalMessages: ContextMessage[] = [userMessage, ...skillMessages, ...newMessages.slice(1)];
-
-        // Set all messages at once
-        this.contextManager.setContextMessages(finalMessages);
-
-        await this.contextManager.loadMessages(await this.contextManager.getContextMessages());
       }
 
+      if (compactionSignal?.aborted) {
+        return false;
+      }
+      if (!summaries.length) {
+        this.addLogMessage('info', 'No summary was generated. Original conversation preserved.', false, promptContext);
+        return false;
+      }
+
+      const retainedUser =
+        retainInitialUserMessage || AIDER_MODES.includes(mode)
+          ? userMessage
+          : { ...userMessage, content: 'Continue the task described in the conversation summary.' };
+      const finalMessages: ContextMessage[] = [retainedUser, ...skillMessages, ...summaries];
+      await this.contextManager.applyCompaction(finalMessages, compactionSignal);
+      applied = true;
+
+      this.sendContextInfoUpdated();
       await this.updateContextInfo();
       this.addLogMessage('info', 'Conversation compacted.', false, undefined, ['undoContextChange']);
     } catch (error) {
-      logger.error('Failed to compact conversation', {
-        baseDir: this.project.baseDir,
-        taskId: this.taskId,
-        mode,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      this.addLogMessage('error', 'Failed to compact conversation. Original conversation preserved.');
+      if (applied || !compactionSignal?.aborted) {
+        logger.error('Failed to compact conversation', {
+          baseDir: this.project.baseDir,
+          taskId: this.taskId,
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.addLogMessage('error', applied ? 'Conversation compacted, but the context could not be refreshed.' : 'Failed to compact conversation.');
+      }
       // Prevent memory leaks by cleaning up pending prompt resources
       if (!AIDER_MODES.includes(mode) && waitForAgentCompletion) {
         this.resolveAgentRunPromises();
@@ -5442,12 +5836,18 @@ export class Task {
       }
     } finally {
       this.isCompacting = false;
+      if (manualController) {
+        this.manualCompactionControllers.delete(manualController);
+      }
       await this.saveTask({
         state: currentTaskState,
       });
 
-      await this.runNextQueuedPrompt();
+      if (waitForAgentCompletion) {
+        await this.runNextQueuedPrompt();
+      }
     }
+    return applied;
   }
 
   public async handoffConversation(
@@ -5785,7 +6185,11 @@ export class Task {
     ) {
       this.rootTurnInUse = true;
       try {
-        await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
+        await this.saveTask({
+          state: DefaultTaskState.Interrupted,
+          interruptedAt: new Date().toISOString(),
+          completedAt: undefined,
+        });
       } finally {
         this.rootTurnInUse = false;
       }

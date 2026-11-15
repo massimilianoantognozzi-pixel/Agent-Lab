@@ -106,6 +106,26 @@ describe('Freelance project integrity and denial', () => {
     await expect(writeProjectFile(root, 'app.js', 'new', undefined, false, digest('old'))).rejects.toThrow('cambiato');
     expect(historyFor(root).every((record) => record.state === 'committed')).toBe(true);
   });
+
+  it.skipIf(process.platform !== 'win32')('publishes the committed revision after transient Windows sharing interference', async () => {
+    const rename = fs.promises.rename.bind(fs.promises);
+    let sharingFailures = 0;
+    const handle = vi.spyOn(fs.promises, 'rename').mockImplementation(async (source, destination) => {
+      if (!sharingFailures && String(destination).endsWith('revision.json') && fs.existsSync(destination)) {
+        sharingFailures++;
+        throw Object.assign(new Error('File is temporarily busy'), { code: 'EPERM' });
+      }
+      return rename(source, destination);
+    });
+    try {
+      const revision = await writeProjectFile(root, 'app.js', 'published');
+      expect(sharingFailures).toBe(1);
+      expect(historyFor(root)).toContainEqual(expect.objectContaining({ id: revision.id, state: 'committed' }));
+      expect(fs.readFileSync(path.join(root, 'app.js'), 'utf8')).toBe('published');
+    } finally {
+      handle.mockRestore();
+    }
+  });
   it('recovers an interrupted prepared revision without guessing conflicts', async () => {
     const revision = await writeProjectFile(root, 'app.js', 'completed');
     const file = path.join(projectControl(root), 'history', revision.id, 'revision.json');

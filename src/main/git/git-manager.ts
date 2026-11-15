@@ -2949,7 +2949,9 @@ export class GitManager {
       }
 
       if (commitHash) {
-        const { stdout: parent } = await execWithShellPath(`git rev-parse ${commitHash}^`, { cwd: worktreePath });
+        const { stdout: parent } = await execWithShellPath(['git', 'rev-parse', '--verify', '--end-of-options', `${commitHash}^`], {
+          cwd: worktreePath,
+        });
         const parentHash = parent.trim();
         const newContent = await this.safeGitShow(worktreePath, `${commitHash}`, filePath);
         const oldContent = await this.safeGitShow(worktreePath, parentHash, previousPath ?? filePath);

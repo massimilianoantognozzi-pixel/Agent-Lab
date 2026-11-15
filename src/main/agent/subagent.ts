@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { TurnSettingsMismatch, WORKER_STOP } from './worker-checkpoint';
 
 import type { RecordedModelSettings, WorkerProgress } from './worker-checkpoint';
-import type { AgentGoalTurn } from '@/task/agent-goal';
+import type { AgentGoalUsage } from '@/task/agent-goal';
 
 import { Task } from '@/task';
 import logger from '@/logger';
@@ -34,7 +34,7 @@ export type RunSubagentTaskParams = {
   workerHistory?: ContextMessage[];
   takeSteering?: () => string[];
   onProgress?: (progress: WorkerProgress) => Promise<void>;
-  onGoalUsage?: AgentGoalTurn['onUsage'];
+  onGoalUsage?: AgentGoalUsage;
   onStarted?: (promptContext: PromptContext) => void | Promise<void>;
 };
 
