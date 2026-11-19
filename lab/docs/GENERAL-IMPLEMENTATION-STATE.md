@@ -1,5 +1,32 @@
 # Ripresa del riallineamento generale
 
+## Chiusura del 19 novembre 2026 — Prova di memoria in italiano
+
+**Punto di ripresa per il 20 novembre.** Leggere prima il
+[rapporto dei 21 casi](quality/memoria-it-2026-11-19/Prova-memoria-Agent-Lab-IT.html)
+e discutere con Massimiliano se provare un controllo del sintomo e della
+prova associata prima di mostrare una lezione. L’attivazione sul desktop
+è una decisione aperta. La configurazione di uso quotidiano mantiene la
+memoria semantica disattivata.
+
+Il banco isolato usa sei schede italiane derivate da comportamenti coperti
+dai test. Modello multilingue ONNX q8 eseguito sul PC, taratura e test
+separati. Su 12 richieste pertinenti, la ricerca attuale mette al primo
+posto 9 correzioni, la semantica 7 e l’ibrida 10. Su 9 richieste da
+scartare l’attuale suggerisce una lezione in 8 casi. La semantica con
+soglia dà un falso allarme; l’ibrida con soglia si astiene su tutti i
+21 casi, incluse tutte le richieste pertinenti.
+
+Sulle 10 parafrasi supplementari prive di termini utili in comune con la
+scheda attesa, la semantica colloca la correzione giusta al primo posto
+5 volte, l’ibrida 4 e l’attuale 0. La somiglianza aiuta a trovare candidati;
+la soglia provata non basta a decidere quando suggerirli. Verifiche eseguite:
+38 test di riferimento superati, replica primaria identica e controllo dei
+conteggi indipendente. Nell’[archivio di replica](quality/memoria-it-2026-11-19/Dati-e-replica-memoria-IT.zip)
+si trovano testi, etichette, punteggi e sorgente del recupero provato.
+Le ricevute del banco sono simulate; il collaudo non ha eseguito una
+correzione automatica su un progetto cliente.
+
 L'utente ha chiarito il 15 novembre che l'agente deve proseguire
 finché può compiere un'azione tecnica in autonomia. Una review
 o un errore recuperabile non richiedono un nuovo prompt.
