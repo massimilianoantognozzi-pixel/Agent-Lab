@@ -602,6 +602,7 @@
       "about": "About"
     },
     "extensions": {
+      "reviewProjectCode": "Review project extensions",
       "uiErrorIn": "Error in {{component}}",
       "loading": "Loading extensions...",
       "tabs": {
@@ -1894,6 +1895,11 @@
     "max": "Max"
   },
   "commands": {
+    "inizia": "Start the project from its blueprints and begin the first task",
+    "riprendi": "Resume from the project handoff and documented state",
+    "chiudi": "Close the session, update the handoff, commit and push",
+    "noWorkToResume": "There is no interrupted work to resume in this project.",
+    "noWorkInTask": "This task has no interrupted work to resume.",
     "add": "Add files to the context",
     "agent": "Switch to agent mode. If already in agent mode, opens the agent model selector. Any text after the command is used as a prompt",
     "architect": "Switch to architect mode. Architect mode is used to plan changes to the code base and execute them",

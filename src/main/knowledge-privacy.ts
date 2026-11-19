@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { AIDER_DESK_DATA_DIR } from '@/constants';
 
@@ -23,8 +24,7 @@ export const sanitizeKnowledgeText = (text: string): string =>
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[CONTACT REDACTED]')
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ADDRESS REDACTED]');
 
-// This gate applies only to automatic knowledge capture, never to development tools.
-export const assertKnowledgePayloadSafe = async (text: string): Promise<void> => {
+const verifiedScanner = async () => {
   const executable = path.join(os.homedir(), 'go', 'bin', 'gitleaks.exe');
   if (
     createHash('sha256')
@@ -45,6 +45,44 @@ export const assertKnowledgePayloadSafe = async (text: string): Promise<void> =>
     throw new Error('Configurazione del controllo privacy KB da verificare.');
   }
   const env = Object.fromEntries(['SystemRoot', 'WINDIR', 'TEMP', 'TMP'].filter((key) => process.env[key]).map((key) => [key, process.env[key]]));
+  return { executable, config, env };
+};
+
+export const assertDesktopBlobSafe = async (bytes: Buffer, name: string): Promise<void> => {
+  const { executable, config, env } = await verifiedScanner();
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentlab-publish-'));
+  try {
+    await fs.writeFile(path.join(dir, path.basename(name)), bytes, { flag: 'wx' });
+    const result = await promisify(execFile)(
+      executable,
+      [
+        'dir',
+        '--config',
+        config,
+        '--redact=100',
+        '--ignore-gitleaks-allow',
+        '--no-banner',
+        '--no-color',
+        '--max-archive-depth',
+        '12',
+        '--max-decode-depth',
+        '5',
+        dir,
+      ],
+      { env, cwd: dir, timeout: 30000, windowsHide: true },
+    );
+    if (/\b(?:ERR|WRN|encrypted|skipping|skipped)\b/i.test(result.stderr)) {
+      throw new Error('Scansione incompleta.');
+    }
+  } catch {
+    throw new Error('Pubblicazione sospesa: il controllo dei segreti non ha qualificato ' + name);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+};
+
+export const assertKnowledgePayloadSafe = async (text: string): Promise<void> => {
+  const { executable, config, env } = await verifiedScanner();
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, ['stdin', '--config', config, '--redact=100', '--ignore-gitleaks-allow', '--no-banner', '--no-color', '--timeout', '10'], {
       env,

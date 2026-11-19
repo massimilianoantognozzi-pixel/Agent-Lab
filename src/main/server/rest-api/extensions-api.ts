@@ -57,7 +57,7 @@ export class ExtensionsApi extends BaseApi {
         }
 
         const { projectDir } = parsed;
-        const extensions = this.eventsHandler.getInstalledExtensions(projectDir);
+        const extensions = await this.eventsHandler.getInstalledExtensions(projectDir);
         res.status(200).json(extensions);
       }),
     );

@@ -19,10 +19,10 @@ function announce(line: string, sink: ProbeOutputSink | undefined, isError = fal
 }
 
 export function ensureProbeBinary(onOutput?: ProbeOutputSink): boolean {
-  if (isProbeBinaryPresent()) return true;
-
   const usePipe = typeof onOutput === 'function';
-  announce(`Probe binary not found at ${probeBinaryPath}. Attempting to download...`, onOutput);
+  if (!isProbeBinaryPresent()) {
+    announce(`Probe binary not found at ${probeBinaryPath}. Attempting to download...`, onOutput);
+  }
 
   let result;
   try {
@@ -55,7 +55,7 @@ export function ensureProbeBinary(onOutput?: ProbeOutputSink): boolean {
     }
   }
 
-  if (typeof result.status === 'number' && result.status !== 0) {
+  if (result.status !== 0) {
     announce(`Probe download script exited with code ${result.status}.`, onOutput, true);
     return false;
   }
@@ -65,6 +65,6 @@ export function ensureProbeBinary(onOutput?: ProbeOutputSink): boolean {
     return false;
   }
 
-  announce('Probe binary downloaded successfully.', onOutput);
+  announce('Probe binary verified successfully.', onOutput);
   return true;
 }

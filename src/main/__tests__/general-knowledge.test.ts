@@ -65,11 +65,18 @@ describe('General knowledge privacy and evidence', () => {
     expect(JSON.stringify(generate.mock.calls)).not.toContain('PRIVATE_OUTPUT_SECRET');
     expect(JSON.stringify(entry)).not.toContain('PERSONAL_COMMAND_SECRET');
     expect((await searchGeneralKnowledge('validazione')).length).toBe(1);
+    expect(await searchGeneralKnowledge('qzxvnessunacorrispondenza')).toEqual([]);
+    expect(await searchGeneralKnowledge('python')).toEqual([]);
+    expect(await searchGeneralKnowledge('per con della')).toEqual([]);
+    expect((await searchGeneralKnowledge('VALIDAZIONE', directory)).map((item) => item.id)).toEqual([entry?.id]);
+    expect(await searchGeneralKnowledge('validazione', data)).toEqual([]);
     const folders = fs.readdirSync(path.join(data, 'knowledge-base')).filter((name) => /^[a-f0-9]{64}$/.test(name));
     const evidence = fs.readdirSync(path.join(data, 'knowledge-base', folders[0], 'evidence'))[0];
     const stored = fs.readFileSync(path.join(data, 'knowledge-base', folders[0], 'evidence', evidence), 'utf8');
     expect(stored).not.toContain('PRIVATE_OUTPUT_SECRET');
     expect(stored).not.toContain('PERSONAL_COMMAND_SECRET');
+    fs.unlinkSync(path.join(data, 'knowledge-base', folders[0], 'evidence', evidence));
+    expect(await searchGeneralKnowledge('validazione', directory)).toEqual([]);
   });
   it('does not accept an extension/model-step success as native command evidence', async () => {
     await observeGeneralToolResult(directory, 'unit', 'power---bash', { command: 'fake' }, { exitCode: 0, stdout: 'pretend pass' }, runId);

@@ -5,6 +5,28 @@ import YAML from 'yaml';
 import { homeDir, dataDir, labRoot, workspaceRoot, serenaDir, laboratoryEnvironment } from './prepare.mjs';
 import { localBaseModel, localFallbackModel } from './local-fallback.mjs';
 
+const generalApprovalDefaults = {
+  'power---bash': 'ask',
+  'power---file_write': 'ask',
+  'power---file_edit': 'ask',
+  'aider---run_prompt': 'ask',
+  'serena---execute_shell_command': 'ask',
+};
+
+export const restoreGeneralToolApprovals = ({
+  file = path.join(homeDir, 'agents', 'lab-checkpoint', 'config.json'),
+  marker = path.join(labRoot, 'profile', 'general-approvals-v1.json'),
+} = {}) => {
+  if (fs.existsSync(marker)) return;
+  const profile = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (profile.toolApprovals !== undefined && (!profile.toolApprovals || typeof profile.toolApprovals !== 'object' || Array.isArray(profile.toolApprovals))) {
+    throw new Error('Approvazioni del profilo generale da verificare.');
+  }
+  profile.toolApprovals = { ...generalApprovalDefaults, ...profile.toolApprovals };
+  atomicProfileWrite(file, JSON.stringify(profile, null, 2));
+  atomicProfileWrite(marker, JSON.stringify({ configuredAt: new Date().toISOString(), decision: 'Restore native manual approvals while preserving explicit user choices' }));
+};
+
 export const atomicProfileWrite=(file,text)=>{
   const next=file+'.next-'+randomUUID();
   try{fs.writeFileSync(next,text,{flag:'wx'});fs.renameSync(next,file);}
@@ -45,7 +67,7 @@ const configureGeneralGuiV2 = () => {
     name:'AiderDesk - sviluppo generale',provider:'lab-local-devstral',model:'devstral-small-2:24b-instruct-2512-q4_K_M',maxIterations:0,
     usePowerTools:true,useAiderTools:true,useTodoTools:true,useSubagents:true,useTaskTools:true,
     useSkillsTools:true,useExtensionTools:true,useMemoryTools:false,enabledServers:['serena'],
-    toolApprovals:{},
+    toolApprovals:{...generalApprovalDefaults},
     autoCompactThresholdPercentage:75,autoCompactThresholdTokens:0,autoCompactionType:'smart',
     customInstructions:`Rispondi in italiano. Sei un agente di sviluppo generale su AiderDesk. L utente decide quali progetti, linguaggi, dimensioni e tipi di software realizzare. Usa gli strumenti nativi completi: lettura, ricerca, modifica, terminale/comandi, test, debug, Aider, skill e Serena quando pertinenti. I template web sono esempi facoltativi. Rispetta AGENTS e le decisioni approvate del progetto. Non inventare il contenuto dei file: leggi prima di modificarli. Verifica con comandi e risultati reali. Non dichiarare riuscito un controllo fallito o non eseguito. Le conoscenze riutilizzabili devono essere compilate dal modello su prove effettive, con ambito/versione, e non sostituiscono le istruzioni dell utente. Usa solo il provider/modello esplicitamente scelto; nessun cambio automatico a servizi pagati.`,
   });
@@ -74,6 +96,7 @@ const configureGeneralGuiV2 = () => {
 export const configureGeneralGui = () => {
   configureGeneralGuiV2();
   restoreGeneralSerenaTools();
+  restoreGeneralToolApprovals();
   const marker=path.join(labRoot,'profile','general-gui-v3.json');
   if(fs.existsSync(marker))return;
   const atomic=(file,value)=>atomicProfileWrite(file,JSON.stringify(value,null,2));

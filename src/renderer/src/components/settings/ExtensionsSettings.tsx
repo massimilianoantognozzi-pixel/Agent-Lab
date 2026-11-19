@@ -439,7 +439,7 @@ export const ExtensionsSettings = ({ settings, setSettings, openProjects = [], s
       <div className="space-y-2">
         {filteredInstalledExtensions.map((extension) => {
           const availableExt = availableExtensions.find((avail) => avail.id === extension.id);
-          const extensionHasUpdate = availableExt ? availableExt.version !== extension.metadata.version : false;
+          const extensionHasUpdate = Boolean(availableExt && extension.metadata.version && availableExt.version !== extension.metadata.version);
 
           return (
             <ExtensionCard
@@ -450,7 +450,7 @@ export const ExtensionsSettings = ({ settings, setSettings, openProjects = [], s
               isUpdating={updatingExtensions.has(extension.filePath)}
               isReloading={reloadingExtensions.has(extension.filePath)}
               hasUpdate={extensionHasUpdate}
-              onUpdate={availableExt ? () => handleUpdate(availableExt) : undefined}
+              onUpdate={extensionHasUpdate && availableExt ? () => handleUpdate(availableExt) : undefined}
               onToggle={handleToggleDisabled}
               onUninstall={handleUninstall}
               onReload={handleReload}
@@ -651,6 +651,22 @@ export const ExtensionsSettings = ({ settings, setSettings, openProjects = [], s
 
   return (
     <div className="space-y-4">
+      {projectDir && api.approveProjectExtensions && (
+        <Button
+          size="sm"
+          disabled={isLoading}
+          onClick={() => {
+            const approve = api.approveProjectExtensions;
+            if (approve) {
+              void approve(projectDir)
+                .then((approved) => (approved ? loadInstalledExtensions() : undefined))
+                .catch(() => showErrorNotification(t('settings.extensions.errors.loadInstalled')));
+            }
+          }}
+        >
+          {t('settings.extensions.reviewProjectCode')}
+        </Button>
+      )}
       {/* Tab Navigation */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex gap-1 p-1 bg-bg-primary rounded-lg border border-border-default flex-shrink-0">

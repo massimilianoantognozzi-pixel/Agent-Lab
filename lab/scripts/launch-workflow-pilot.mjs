@@ -200,6 +200,7 @@ export const launchWorkflowPilot = async ({ full = false } = {}) => {
       ? await (await import("./workflow-environment.mjs")).prepareWorkflowEnvironment(pilot, root)
       : pilot;
     Object.assign(env, projectStartupEnvironment());
+    if (full) env.AIDER_DESK_PROJECT_KNOWLEDGE_DIR = path.join(labRoot, "profile", "data", "knowledge-base");
     if (full) env.AIDER_DESK_WORKFLOW_REMOTE_PORT = "24363";
     if (pilot.env.AIDER_DESK_WORKFLOW_PILOT_DIR) preview = await serveWorkflowPreview(project);
     if (full) console.log("Configurazione e associazione remota: " + data);

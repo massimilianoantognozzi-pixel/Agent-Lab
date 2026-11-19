@@ -5,6 +5,7 @@ import { TUI, ProcessTerminal, matchesKey as piMatchesKey, Key } from '@earendil
 import { Command } from 'commander';
 
 import { DEFAULT_HOST, resolvePort } from '../constants';
+import { getApiAuthHeaders } from '../api-auth';
 import { spawnRunnerProcess } from '../runner';
 import { RunStreamModel, RunStreamView } from './run-stream-view';
 
@@ -108,6 +109,7 @@ const fetchJSON = async (
       path,
       method,
       headers: {
+        ...getApiAuthHeaders(),
         'Content-Type': 'application/json',
         Accept: 'application/json',
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
@@ -151,6 +153,7 @@ const callInterrupt = (host: string, port: number, projectDir: string, taskId: s
       path: '/api/project/interrupt',
       method: 'POST',
       headers: {
+        ...getApiAuthHeaders(),
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'Content-Length': Buffer.byteLength(body),
@@ -185,6 +188,7 @@ const requestSSEStream = (host: string, port: number, body: string): Promise<SSE
       path: '/api/run-prompt',
       method: 'POST',
       headers: {
+        ...getApiAuthHeaders(),
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -355,7 +359,7 @@ const runPrompt = async (
     if (opts.autostart) {
       process.stderr.write(`Starting AiderDesk server on port ${port}...\n`);
       try {
-        spawnedProcess = spawnRunnerProcess(port, ['ignore', 'ignore', 'ignore']);
+        spawnedProcess = spawnRunnerProcess(port, ['ignore', 'ignore', 'ignore'], undefined, true);
 
         spawnedProcess.on('error', (err) => {
           process.stderr.write(`Error: Failed to start server: ${err.message}\n`);

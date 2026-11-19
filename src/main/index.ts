@@ -13,6 +13,7 @@ import splashImage from '../../build/splash.mp4?asset';
 import { AIDER_DESK_DATA_DIR, DISABLE_MENU, HEADLESS_MODE } from '@/constants';
 import { ProgressWindow } from '@/progress-window';
 import { setupIpcHandlers } from '@/ipc-handlers';
+import { desktopExternalUrl, isDesktopRendererUrl, isWebViewUrl } from '@/desktop-boundary';
 import { performStartUp, UpdateProgressData } from '@/start-up';
 import { Store } from '@/store';
 import logger, { eventTransport } from '@/logger';
@@ -206,8 +207,10 @@ const initWindow = async (windowMgr: WindowManager, storeInstance: Store, projec
     icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
-      webSecurity: false,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
       webviewTag: true,
     },
   });
@@ -223,8 +226,45 @@ const initWindow = async (windowMgr: WindowManager, storeInstance: Store, projec
   });
 
   newWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url);
+    const url = desktopExternalUrl(details.url);
+    if (url) {
+      void shell.openExternal(url).catch((error) => logger.warn('Could not open external link.', error));
+    }
     return { action: 'deny' };
+  });
+  newWindow.webContents.on('will-navigate', (event, url) => {
+    if (!isDesktopRendererUrl(url)) {
+      event.preventDefault();
+    }
+  });
+  newWindow.webContents.on('will-redirect', (event, url) => {
+    if (!isDesktopRendererUrl(url)) {
+      event.preventDefault();
+    }
+  });
+  newWindow.webContents.on('will-attach-webview', (event, preferences, params) => {
+    if (!isWebViewUrl(params.src)) {
+      event.preventDefault();
+      return;
+    }
+    delete preferences.preload;
+    preferences.contextIsolation = true;
+    preferences.nodeIntegration = false;
+    preferences.sandbox = true;
+    preferences.webSecurity = true;
+  });
+  newWindow.webContents.on('did-attach-webview', (_event, guest) => {
+    guest.setWindowOpenHandler(() => ({ action: 'deny' }));
+    guest.on('will-navigate', (event, url) => {
+      if (!isWebViewUrl(url)) {
+        event.preventDefault();
+      }
+    });
+    guest.on('will-redirect', (event, url) => {
+      if (!isWebViewUrl(url)) {
+        event.preventDefault();
+      }
+    });
   });
 
   // Retry transient network failures (e.g. ERR_NETWORK_CHANGED during dev server loading)
@@ -504,13 +544,15 @@ app.whenReady().then(async () => {
     if (process.platform === 'darwin') {
       // Allow renderer getUserMedia() microphone access.
       // Without this, Electron may never surface the macOS TCC permission prompt and the mic stays unavailable.
-      session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-        if (permission === 'media') {
-          callback(true);
-          return;
-        }
-
-        callback(false);
+      session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+        callback(
+          permission === 'media' &&
+            details.isMainFrame &&
+            isDesktopRendererUrl(contents.getURL()) &&
+            isDesktopRendererUrl(details.requestingUrl) &&
+            'mediaTypes' in details &&
+            Boolean(details.mediaTypes?.length && details.mediaTypes.every((kind) => kind === 'audio')),
+        );
       });
     }
 

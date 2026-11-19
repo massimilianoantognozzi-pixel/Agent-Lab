@@ -6,11 +6,12 @@ import path from 'node:path';
 import { nativeImage } from 'electron';
 import { z } from 'zod';
 import { AutonomyMode, DEFAULT_AUTONOMY_MODE } from '@common/types';
+import { canResumeWork, latestResumableWork, WorkResumeError } from '@common/work-commands';
 
 import { renderRemotePairingCard } from '../../../lab/scripts/workflow-pairing-card.mjs';
 
 import { workflowRemotePage } from './workflow-remote-page';
-import { createRemoteDeviceStore, type RemoteDeviceStore } from './workflow-remote-device';
+import { createRemoteDeviceStore, REMOTE_DEVICE_LIFETIME_SECONDS, type RemoteDeviceStore } from './workflow-remote-device';
 import { createRemotePairingDialog } from './workflow-remote-pairing-dialog';
 
 import type { EventsHandler } from '@/events-handler';
@@ -45,7 +46,12 @@ const action = z.discriminatedUnion('action', [
       .string()
       .trim()
       .max(1500)
-      .refine((prompt) => /^\/workflow (bug|change|feature)\s+\S/.test(prompt) || projectWorkflowCommandPattern.test(prompt)),
+      .refine(
+        (prompt) =>
+          /^\/(?:inizia(?:\s+[\s\S]+)?|riprendi|chiudi(?: [a-zA-Z0-9-]{1,80})?)$/.test(prompt) ||
+          /^\/workflow (bug|change|feature)\s+\S/.test(prompt) ||
+          projectWorkflowCommandPattern.test(prompt),
+      ),
   }),
   z.strictObject({ action: z.literal('resume'), id: taskId }),
   z.strictObject({ action: z.literal('approve'), id: taskId, revision }),
@@ -118,7 +124,7 @@ type DeviceConfig = {
 };
 
 const cookieName = '__Host-agentlab-device';
-const deviceCookie = (token: string, maxAge = 31_536_000) => cookieName + '=' + token + '; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=' + maxAge;
+const deviceCookie = (token: string, maxAge = REMOTE_DEVICE_LIFETIME_SECONDS) => cookieName + '=' + token + '; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=' + maxAge;
 
 const readDeviceCookie = (header: string | undefined): string | undefined => {
   const values =
@@ -150,7 +156,7 @@ export const createWorkflowRemote = (pairing: Pairing, workflows: Workflows, ico
   const nonce = randomBytes(18).toString('base64');
   const page = workflowRemotePage(nonce);
   const active = new Set<string>();
-  const failures = new Set<string>();
+  const failures = new Map<string, string | undefined>();
 
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -225,7 +231,7 @@ export const createWorkflowRemote = (pairing: Pairing, workflows: Workflows, ico
             json(response, 403, { error: 'Associazione revocata. Genera un nuovo QR dal PC.' });
             return;
           }
-          const device = input.client && generation ? { digest: tokenHash.toString('hex'), generation } : undefined;
+          const device = input.client && generation ? { digest: tokenHash.toString('hex'), generation, expiresAt: Date.now() + REMOTE_DEVICE_LIFETIME_SECONDS * 1000 } : undefined;
           await deviceConfig.store.write({ usedCode, device });
         }
         credential.consumed = true;
@@ -250,7 +256,7 @@ export const createWorkflowRemote = (pairing: Pairing, workflows: Workflows, ico
     const isAuthorized = async () => {
       if (browserToken && deviceConfig) {
         const device = (await deviceConfig.store.read()).device;
-        return Boolean(device && timingSafeEqual(Buffer.from(device.digest, 'hex'), tokenDigest(browserToken)));
+        return Boolean(device && device.expiresAt > Date.now() && timingSafeEqual(Buffer.from(device.digest, 'hex'), tokenDigest(browserToken)));
       }
       return Boolean(
         authorizedSession &&
@@ -307,7 +313,7 @@ export const createWorkflowRemote = (pairing: Pairing, workflows: Workflows, ico
       }
       const task = await workflows.read(id);
       if (await stillAuthorized()) {
-        json(response, 200, { task, failed: failures.has(id) });
+        json(response, 200, { task, failed: failures.has(id), failureReason: failures.get(id) });
       }
       return;
     }
@@ -383,8 +389,8 @@ export const createWorkflowRemote = (pairing: Pairing, workflows: Workflows, ico
       const prompt = value.action === 'approve' ? '/workflow approve ' + value.revision : value.action === 'resume' ? '/workflow resume' : value.prompt;
       void workflows
         .run(value.id, prompt)
-        .catch(() => {
-          failures.add(value.id);
+        .catch((error: unknown) => {
+          failures.set(value.id, error instanceof WorkResumeError ? error.message : undefined);
         })
         .finally(() => {
           active.delete(value.id);
@@ -461,14 +467,17 @@ export const startWorkflowRemote = async (events: EventsHandler) => {
         autonomyLocked: events.getProjectSettings(project.root).autonomyModeLocked ?? false,
         model: project.model,
       }),
-      list: async () =>
-        (await events.getTasks(project.root))
-          .filter((task) => !task.archived && (task.createdAt || task.name))
-          .map((task) => ({
-            id: task.id,
-            name: remoteTaskLabel(task.name),
-            state: task.state === 'DONE' ? undefined : task.state,
-          })),
+      list: async () => {
+        const tasks = (await events.getTasks(project.root)).filter((task) => !task.archived && (task.createdAt || task.name));
+        const latest = latestResumableWork(tasks);
+        return tasks.map((task) => ({
+          id: task.id,
+          name: remoteTaskLabel(task.name),
+          state: task.state === 'DONE' ? undefined : task.state,
+          resumable: canResumeWork(task),
+          latestResumable: task.id === latest?.id,
+        }));
+      },
       create: async (settings) => events.createRemoteWorkflowTask(project.root, settings),
       settings: async (id, settings) => events.updateRemoteWorkflowTask(project.root, id, settings),
       patch: async (id, revision) => events.readRemoteWorkflowPatch(project.root, id, revision),

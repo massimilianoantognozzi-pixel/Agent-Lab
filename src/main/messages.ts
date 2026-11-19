@@ -32,6 +32,7 @@ export type MessageAction =
   | 'tokens-info'
   | 'add-message'
   | 'interrupt-response'
+  | 'desktop-safe-stop'
   | 'apply-edits'
   | 'compact-conversation'
   | 'update-repo-map'

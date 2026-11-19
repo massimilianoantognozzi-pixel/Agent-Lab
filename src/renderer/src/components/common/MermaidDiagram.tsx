@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 mermaid.initialize({
   startOnLoad: false,
   theme: 'neutral',
-  securityLevel: 'loose',
+  securityLevel: 'strict',
   suppressErrorRendering: true,
 });
 

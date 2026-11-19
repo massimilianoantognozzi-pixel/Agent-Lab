@@ -9,9 +9,10 @@ type Props = {
   inventory: ProjectCheckResult;
   onTrust: () => void;
   onCancel: () => void;
+  approvalError?: boolean;
 };
 
-export const ProjectTrustDialog = ({ projectPath, inventory, onTrust, onCancel }: Props) => {
+export const ProjectTrustDialog = ({ projectPath, inventory, onTrust, onCancel, approvalError }: Props) => {
   const { t } = useTranslation();
   const groups = [
     { title: t('projectTrust.agents'), items: inventory.agents },
@@ -53,6 +54,11 @@ export const ProjectTrustDialog = ({ projectPath, inventory, onTrust, onCancel }
         ) : null,
       )}
       <p className="text-sm text-text-primary">{t('projectTrust.review')}</p>
+      {approvalError && (
+        <p role="alert" className="mt-2 text-sm text-error">
+          {t('projectTrust.checkFailed')}
+        </p>
+      )}
     </BaseDialog>
   );
 };

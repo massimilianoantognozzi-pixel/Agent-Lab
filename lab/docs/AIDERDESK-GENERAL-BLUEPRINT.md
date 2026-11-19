@@ -63,6 +63,23 @@ perimetro deciso dall’utente.
 
 ### Architettura dell’esecuzione
 
+Decisione approvata il 18 novembre 2026, durante il riesame Claude:
+nessun tetto fisso alle azioni finché il lavoro avanza; Serena resta
+disponibile. Il motore deve riconoscere ripetizioni senza nuove evidenze,
+chiedere al modello di cambiare strategia e, se la ripetizione continua,
+conservare il punto di ripresa lasciando il lavoro incompleto. Attese di
+processi ancora in esecuzione e nuove istruzioni non costituiscono mancato
+progresso. La ripresa automatica non deve rilanciare il ciclo appena fermato.
+
+Il consenso desktop ai comandi sull'host riguarda un incarico concreto e il
+suo progetto/cartella, comprese le riprese automatiche nella sessione
+dell'app. Una nuova richiesta o una modifica dell'obiettivo o della cartella
+richiede una nuova conferma; un incarico concluso non conserva il permesso.
+Le esecuzioni parallele devono conservare l'identità del lavoro autorizzato.
+Il dialogo chiarisce che il consenso non isola i comandi: essi conservano i
+permessi dell'account OS. L'headless mantiene la concessione esplicita
+dell'operatore all'avvio; non riceve una nuova qualifica di isolamento.
+
 Il ciclo Agent e la coda governata riusano il runtime e gli adapter del
 progetto. Gli adapter traducono le richieste del modello e i risultati dei
 tool. Il motore conserva l’identità del lavoro, decide quando riprendere e

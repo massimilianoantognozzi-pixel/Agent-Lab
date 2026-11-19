@@ -5,9 +5,12 @@ import { FSWatcher, watch } from 'chokidar';
 import { debounce } from 'lodash';
 import { fileExists } from '@common/utils';
 
+import { getApprovedProjectMcpConfig } from './project-mcp-trust';
+
 import type { McpServerConfig, SettingsData } from '@common/types';
 import type { Store } from '@/store';
 
+import { resolveContainedPath } from '@/utils/contained-path';
 import { AIDER_DESK_DIR, AIDER_DESK_HOME_DIR, AIDER_DESK_MCP_SERVERS_FILE } from '@/constants';
 import shadcn from '@/task/workflow-shadcn.json';
 import logger from '@/logger';
@@ -42,7 +45,7 @@ export class McpConfigManager {
     logger.debug(`Initializing MCP servers for project: ${projectDir}`);
 
     const projectPath = getProjectMcpServersPath(projectDir);
-    const servers = await this.loadServersFromFile(projectPath);
+    const servers = await getApprovedProjectMcpConfig(projectDir);
     this.projectServers.set(projectDir, servers);
 
     await this.setupWatcherForFile(projectPath);
@@ -88,7 +91,10 @@ export class McpConfigManager {
   }
 
   public resolveServer(name: string, projectDir?: string, supplied?: McpServerConfig): McpServerConfig | undefined {
-    return name === shadcn.server ? this.globalServers[name] : (supplied ?? this.getMergedServers(projectDir)[name]);
+    if (name === shadcn.server) {
+      return this.globalServers[name];
+    }
+    return projectDir ? this.getMergedServers(projectDir)[name] : (supplied ?? this.globalServers[name]);
   }
 
   public getState(): { global: Record<string, McpServerConfig>; projectServers: Record<string, Record<string, McpServerConfig>> } {
@@ -107,13 +113,13 @@ export class McpConfigManager {
   }
 
   public async addServer(projectDir: string | undefined, name: string, config: McpServerConfig): Promise<void> {
-    const servers = { ...(projectDir ? this.getProjectServers(projectDir) : this.getGlobalServers()) };
+    const servers = { ...(projectDir ? await this.loadServersFromFile(getProjectMcpServersPath(projectDir)) : this.getGlobalServers()) };
     servers[name] = config;
     await this.saveServers(projectDir, servers);
   }
 
   public async updateServer(projectDir: string | undefined, oldName: string, name: string, config: McpServerConfig): Promise<void> {
-    const servers = { ...(projectDir ? this.getProjectServers(projectDir) : this.getGlobalServers()) };
+    const servers = { ...(projectDir ? await this.loadServersFromFile(getProjectMcpServersPath(projectDir)) : this.getGlobalServers()) };
     if (oldName !== name) {
       delete servers[oldName];
     }
@@ -122,7 +128,7 @@ export class McpConfigManager {
   }
 
   public async removeServer(projectDir: string | undefined, name: string): Promise<void> {
-    const servers = { ...(projectDir ? this.getProjectServers(projectDir) : this.getGlobalServers()) };
+    const servers = { ...(projectDir ? await this.loadServersFromFile(getProjectMcpServersPath(projectDir)) : this.getGlobalServers()) };
     delete servers[name];
     await this.saveServers(projectDir, servers);
   }
@@ -133,10 +139,10 @@ export class McpConfigManager {
 
   private async saveServers(projectDir: string | undefined, servers: Record<string, McpServerConfig>): Promise<void> {
     const filePath = projectDir ? getProjectMcpServersPath(projectDir) : getGlobalMcpServersPath();
-    await this.writeServersToFile(filePath, servers);
+    await this.writeServersToFile(projectDir ? await resolveContainedPath(projectDir, filePath) : filePath, servers);
 
     if (projectDir) {
-      this.projectServers.set(projectDir, servers);
+      this.projectServers.set(projectDir, await getApprovedProjectMcpConfig(projectDir));
     } else {
       this.globalServers = servers;
     }
@@ -214,7 +220,7 @@ export class McpConfigManager {
     } else {
       for (const projectDir of this.projectServers.keys()) {
         if (getProjectMcpServersPath(projectDir) === filePath) {
-          this.projectServers.set(projectDir, servers);
+          this.projectServers.set(projectDir, await getApprovedProjectMcpConfig(projectDir));
           break;
         }
       }

@@ -377,6 +377,10 @@ export const TaskView = forwardRef<TaskViewRef, Props>(
     }, [updateTask, task.id]);
 
     const runPrompt = useEvent((prompt: string, images?: string[]) => {
+      if (/^\/(?:inizia|riprendi|chiudi)$/.test(prompt)) {
+        void api.runPrompt(projectDir, task.id, prompt, 'agent');
+        return;
+      }
       if (/^\/(?:goal|plan)(?:\s|$)/.test(prompt) || (task.metadata?.pendingPlan && currentMode !== 'codex-plan')) {
         void api.runPrompt(projectDir, task.id, prompt, currentMode);
         return;

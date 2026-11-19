@@ -758,3 +758,11 @@ export const execWithShellPath = async (
   }
   return execAsync(command, execOptions);
 };
+
+export const canPreapproveShellCommand = (command: string, patterns: string[]): boolean => {
+  // Only literal unquoted tokens can be pre-approved. Every other shell form goes through the normal permission flow.
+  if (!/^[A-Za-z0-9_./\\:-]+(?: +[A-Za-z0-9_./\\:-]+)*$/.test(command)) {
+    return false;
+  }
+  return patterns.some((pattern) => new RegExp(`^(?:${pattern})$`).test(command));
+};

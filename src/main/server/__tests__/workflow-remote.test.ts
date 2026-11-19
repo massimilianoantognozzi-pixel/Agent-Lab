@@ -64,6 +64,11 @@ describe('workflow remote', () => {
       expect((await request('/api/action', { action: 'approve', id: 'outside', revision: 'b'.repeat(64) })).status).toBe(404);
       expect((await request('/api/action', { action: 'approve', id: 'task-1', revision: 'b'.repeat(64) })).status).toBe(202);
       expect(run).toHaveBeenCalledWith('task-1', '/workflow approve ' + 'b'.repeat(64));
+      expect((await request('/api/action', { action: 'run', id: 'outside', prompt: '/riprendi' })).status).toBe(404);
+      expect((await request('/api/action', { action: 'run', id: 'task-1', prompt: '/inizia' })).status).toBe(202);
+      expect(run).toHaveBeenCalledWith('task-1', '/inizia');
+      expect((await request('/api/action', { action: 'run', id: 'task-1', prompt: '/riprendi' })).status).toBe(202);
+      expect(run).toHaveBeenCalledWith('task-1', '/riprendi');
       for (const prompt of ['Avvia il lavoro', 'Riprendi il lavoro', 'Riprendi le validazioni', 'Conferma passaggio V-03 1', 'Registra esito V-03 superata']) {
         expect((await request('/api/action', { action: 'run', id: 'task-1', prompt })).status).toBe(202);
         expect(run).toHaveBeenCalledWith('task-1', prompt);
@@ -132,6 +137,7 @@ describe('workflow remote', () => {
       expect(await association.json()).toEqual({ project: 'demo' });
       const setCookie = association.headers.get('set-cookie')!;
       expect(setCookie).toContain('HttpOnly; Secure; SameSite=Strict');
+      expect(setCookie).toContain('Max-Age=31536000');
       expect(deviceReady).not.toHaveBeenCalled();
       cookie = setCookie.split(';')[0];
       const stored = await fs.readFile(path.join(directory, 'remote-device.json'), 'utf8');
@@ -139,6 +145,14 @@ describe('workflow remote', () => {
       expect(stored).not.toContain(originalCode);
       await close();
       await start();
+      expect((await send('/api/tasks')).status).toBe(200);
+      const expiry = JSON.parse(stored).device.expiresAt as number;
+      expect(expiry - Date.now()).toBeGreaterThan(364 * 24 * 60 * 60_000);
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(expiry);
+      try {
+        expect((await send('/api/tasks')).status).toBe(401);
+        expect((await send('/api/action', { action: 'create' })).status).toBe(401);
+      } finally { clock.mockRestore(); }
       expect((await send('/api/tasks')).status).toBe(200);
       expect(deviceReady).not.toHaveBeenCalled();
       expect((await send('/api/action', { action: 'device-ready' }, 'https://wrong.example')).status).toBe(403);

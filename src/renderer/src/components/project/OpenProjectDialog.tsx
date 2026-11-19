@@ -183,10 +183,26 @@ export const OpenProjectDialog = ({ onClose, onAddProject, openProjects }: Props
     onClose();
   };
 
-  const handleTrust = () => {
-    if (pendingTrust) {
-      onAddProject(pendingTrust.path);
-      onClose();
+  const handleTrust = async () => {
+    if (!pendingTrust || isChecking) {
+      return;
+    }
+    setIsChecking(true);
+    try {
+      if (pendingTrust.inventory.extensions.length && api.approveProjectExtensions) {
+        await api.approveProjectExtensions(pendingTrust.path);
+      }
+      if (pendingTrust.inventory.mcpServers.length && api.approveProjectMcp) {
+        await api.approveProjectMcp(pendingTrust.path);
+      }
+      if (!cancelled.current) {
+        onAddProject(pendingTrust.path);
+        onClose();
+      }
+    } catch {
+      setCheckError(true);
+    } finally {
+      setIsChecking(false);
     }
   };
 
@@ -254,7 +270,15 @@ export const OpenProjectDialog = ({ onClose, onAddProject, openProjects }: Props
   const isConfirmDisabled = mode === OpenProjectMode.Clone ? !isRepoUrlValid || isCloning : !projectPath || !isValidPath || isProjectAlreadyOpen;
 
   if (pendingTrust) {
-    return <ProjectTrustDialog projectPath={pendingTrust.path} inventory={pendingTrust.inventory} onTrust={handleTrust} onCancel={handleCancel} />;
+    return (
+      <ProjectTrustDialog
+        projectPath={pendingTrust.path}
+        inventory={pendingTrust.inventory}
+        onTrust={handleTrust}
+        onCancel={handleCancel}
+        approvalError={checkError}
+      />
+    );
   }
 
   if (isChecking && !isCloning) {

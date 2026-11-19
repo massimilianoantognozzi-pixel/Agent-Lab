@@ -22,7 +22,9 @@ import { LlmProviderName } from '@common/agent';
 import { delay } from '@common/utils';
 import { TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
+import { authorizeProjectMcpProcess, getProjectMcpAuthority, validateProjectMcpLaunch } from './project-mcp-trust';
 import { ApprovalManager } from './tools/approval-manager';
+import { authorizeUnconfinedHostExecution } from './tools/host-execution';
 import { McpOAuthManager } from './mcp-oauth-manager';
 import { truncateToolResult } from './utils';
 
@@ -50,7 +52,11 @@ const MCP_CLIENT_TIMEOUT = 600_000;
 
 export class McpAuthenticationRequiredError extends Error {
   constructor(serverName: string, language?: string) {
-    super(translate(language, 'mcp.oauth.authenticationRequiredMessage', { serverName }));
+    super(
+      translate(language, 'mcp.oauth.authenticationRequiredMessage', {
+        serverName,
+      }),
+    );
     this.name = 'McpAuthenticationRequiredError';
   }
 }
@@ -61,6 +67,9 @@ interface McpConnector {
   tools: McpTool[];
   toolDefinitions: ListToolsResult;
   serverConfig: McpServerConfig;
+  approvalConfig?: McpServerConfig;
+  revoked?: boolean;
+  revoke?: () => Promise<void>;
 }
 
 type McpClientTransport = Parameters<typeof createMCPClient>[0]['transport'];
@@ -69,7 +78,10 @@ export class McpManager {
   private mcpConnectors: Map<string, Promise<McpConnector>> = new Map();
   private connectorServerUrls: Map<string, string> = new Map();
   private currentInitId: string | null = null;
-  private toolsCache: McpToolsCache = { version: MCP_TOOLS_CACHE_VERSION, servers: {} };
+  private toolsCache: McpToolsCache = {
+    version: MCP_TOOLS_CACHE_VERSION,
+    servers: {},
+  };
 
   constructor(
     private readonly oauthManager = new McpOAuthManager(),
@@ -171,6 +183,7 @@ export class McpManager {
           mcpTool,
           approvalManager,
           lastToolCallTimeRef,
+          mcpConnector,
           promptContext,
         );
       }
@@ -187,6 +200,7 @@ export class McpManager {
     toolDef: Tool,
     approvalManager: ApprovalManager,
     lastToolCallTimeRef: { value: number },
+    connector: McpConnector,
     promptContext?: PromptContext,
   ): Tool {
     const toolId = `${serverName}${TOOL_GROUP_NAME_SEPARATOR}${toolName}`;
@@ -219,9 +233,35 @@ export class McpManager {
       }
 
       try {
+        if (toolName === 'execute_shell_command' && !(await authorizeUnconfinedHostExecution(task))) {
+          return this.createMcpErrorResult('Host command execution was not authorized for this task.');
+        }
+        if (connector.revoked) {
+          throw new Error('Project MCP process authorization was revoked.');
+        }
+        const approvalConfig = connector.approvalConfig ?? connector.serverConfig;
+        if (getProjectMcpAuthority(approvalConfig)) {
+          try {
+            await validateProjectMcpLaunch(approvalConfig, task.getProjectDir(), task.getTaskDir());
+          } catch (error) {
+            connector.revoked = true;
+            if (connector.revoke) {
+              await connector.revoke();
+            } else {
+              await connector.client.close();
+            }
+            throw error;
+          }
+        }
+        if (connector.revoked) {
+          throw new Error('Project MCP process authorization was revoked.');
+        }
         const timeoutSignal = AbortSignal.timeout(MCP_CLIENT_TIMEOUT);
         const abortSignal = options.abortSignal ? AbortSignal.any([options.abortSignal, timeoutSignal]) : timeoutSignal;
-        const response = await originalExecute(args, { ...options, abortSignal });
+        const response = await originalExecute(args, {
+          ...options,
+          abortSignal,
+        });
 
         logger.debug(`Tool ${toolName} returned response`, this.describeToolResponse(response));
 
@@ -422,6 +462,12 @@ export class McpManager {
       if (!serverConfig) {
         continue;
       }
+      try {
+        await validateProjectMcpLaunch(serverConfig, projectDir, taskDir);
+      } catch (error) {
+        logger.warn(`MCP server '${serverName}' needs renewed project approval`, { error });
+        continue;
+      }
       const scope = this.calculateServerScope(serverConfig, projectDir, taskDir, serverName);
       const existingConnector = this.getPooledConnector(scope, serverName);
       if (!existingConnector || forceReload) {
@@ -463,6 +509,11 @@ export class McpManager {
       if (!serverConfig) {
         continue;
       }
+      try {
+        await validateProjectMcpLaunch(serverConfig, projectDir, taskDir);
+      } catch {
+        continue;
+      }
       const scope = this.calculateServerScope(serverConfig, projectDir, taskDir, serverName);
       const connector = this.getPooledConnector(scope, serverName);
       if (connector) {
@@ -497,6 +548,9 @@ export class McpManager {
   ): Promise<McpConnector> {
     const oldConnectorPromise = this.getPooledConnector(scope, serverName);
 
+    await validateProjectMcpLaunch(config, projectDir, taskDir);
+
+    const approvalConfig = config;
     config = this.interpolateServerConfig(config, projectDir, taskDir);
 
     let oldConnector: McpConnector | null = null;
@@ -528,10 +582,17 @@ export class McpManager {
       return oldConnector;
     }
 
-    return this.createMcpConnector(serverName, config, projectDir, taskDir).catch((error) => {
-      logger.error(`MCP Client creation failed for server during init: ${serverName}`, error);
-      throw error;
-    });
+    if (!(await authorizeProjectMcpProcess(approvalConfig, config, serverName))) {
+      throw new Error('Project MCP process launch denied. Headless operators must explicitly allow mutable project MCP processes.');
+    }
+    // The configuration can change while the native consent dialog is open.
+    await validateProjectMcpLaunch(approvalConfig, projectDir, taskDir);
+    return this.createMcpConnector(serverName, config, projectDir, taskDir)
+      .then((connector) => ({ ...connector, approvalConfig }))
+      .catch((error) => {
+        logger.error(`MCP Client creation failed for server during init: ${serverName}`, error);
+        throw error;
+      });
   }
 
   async close(): Promise<void> {
@@ -605,6 +666,10 @@ export class McpManager {
   }
 
   private calculateServerScope(serverConfig: McpServerConfig, projectDir: string | null, taskDir: string | null, serverName: string): string {
+    const authority = getProjectMcpAuthority(serverConfig);
+    if (authority) {
+      return JSON.stringify([authority.project, authority.revision, authority.sourceRevision, taskDir]);
+    }
     const hasProjectDirInterpolation = this.configHasInterpolation(serverConfig, '${projectDir}');
     const hasTaskDirInterpolation = this.configHasInterpolation(serverConfig, '${taskDir}');
 
@@ -787,6 +852,14 @@ export class McpManager {
     return null;
   }
 
+  async getRunningProjectTools(serverName: string, config: McpServerConfig, projectDir: string): Promise<McpTool[] | null> {
+    if (isGovernedWorkflow(projectDir)) {
+      return null;
+    }
+    const scope = this.calculateServerScope(config, projectDir, projectDir, serverName);
+    return (await this.getPooledConnector(scope, serverName))?.tools ?? null;
+  }
+
   async getOAuthStatus(config: McpServerConfig): Promise<McpOAuthStatusData> {
     if (!config.url) {
       return { status: McpOAuthStatus.NotRequired };
@@ -918,6 +991,19 @@ export class McpManager {
   private setPooledConnector(scope: string, serverName: string, connector: Promise<McpConnector>, config: McpServerConfig): void {
     const poolKey = this.getPoolKey(scope, serverName);
     this.mcpConnectors.set(poolKey, connector);
+    const forgetCurrent = () => {
+      if (this.mcpConnectors.get(poolKey) === connector) {
+        this.mcpConnectors.delete(poolKey);
+        this.connectorServerUrls.delete(poolKey);
+      }
+    };
+    void connector.then((value) => {
+      value.revoke = async () => {
+        value.revoked = true;
+        forgetCurrent();
+        await value.client.close();
+      };
+    }, forgetCurrent);
     if (config.url) {
       this.connectorServerUrls.set(poolKey, new URL(config.url).toString());
     } else {
@@ -946,10 +1032,10 @@ export class McpManager {
     logger.debug('All pooled connectors closed');
   }
 
-  async reloadAllServers(mcpServers: Record<string, McpServerConfig>, force: boolean): Promise<void> {
+  async reloadAllServers(mcpServers: Record<string, McpServerConfig>, force: boolean, projectDir: string | null = null): Promise<void> {
     logger.info('Reloading all MCP servers');
     this.toolsCache.servers = {};
-    await this.initMcpConnectors(mcpServers, null, null, force);
+    await this.initMcpConnectors(mcpServers, projectDir, projectDir, force);
     logger.info('All MCP servers reloaded');
   }
 

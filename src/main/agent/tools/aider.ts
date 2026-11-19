@@ -21,6 +21,7 @@ import type { ToolSet } from 'ai';
 
 import { coerceBoolean } from '@/agent/utils';
 import { Task } from '@/task';
+import { resolveProjectToolPath } from '@/utils/contained-path';
 
 export const createAiderToolset = (task: Task, profile: AgentProfile, promptContext?: PromptContext): ToolSet => {
   const approvalManager = new ApprovalManager(task, profile);
@@ -62,9 +63,7 @@ export const createAiderToolset = (task: Task, profile: AgentProfile, promptCont
   const addContextFilesTool = tool({
     description: AIDER_TOOL_DESCRIPTIONS[TOOL_ADD_CONTEXT_FILES],
     inputSchema: z.object({
-      paths: z
-        .array(z.string())
-        .describe('One or more file paths to add to context. Relative to task directory (e.g. "src/file.ts") or absolute (e.g. "/tmp/log.txt" for read-only).'),
+      paths: z.array(z.string()).describe('One or more paths inside the current task directory to add to context.'),
       readOnly: coerceBoolean.optional().describe('Whether the file(s) are read-only. Applies to all paths if true.'),
     }),
     execute: async (input, { toolCallId }) => {
@@ -85,7 +84,11 @@ export const createAiderToolset = (task: Task, profile: AgentProfile, promptCont
       const toolName = `${TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${TOOL_ADD_CONTEXT_FILES}`;
       const results: string[] = [];
       for (const filePath of paths) {
-        const absolutePath = path.resolve(task.getTaskDir(), filePath);
+        const absolutePath = await resolveProjectToolPath(task.getTaskDir(), filePath).catch(() => undefined);
+        if (!absolutePath) {
+          results.push(`Path outside the project scope: ${filePath}`);
+          continue;
+        }
         let fileExists = false;
         try {
           await fs.access(absolutePath);

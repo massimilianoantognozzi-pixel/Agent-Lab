@@ -75,11 +75,13 @@ describe('General AiderDesk capability restoration', () => {
     expect(files).toContain('.github/workflows/check.yml');
   });
   it('executes the ordinary native command tool and returns real output/status', async () => {
+    vi.stubEnv('AIDER_DESK_ALLOW_HOST_SHELL', 'true');
     const tools = createPowerToolset(task(directory) as never, profile as never);
     const result = await tools['power---bash'].execute!(
       { command: 'node -e "process.stdout.write(\'general-native-ok\')"', timeout: 10000 },
       { toolCallId: 'native-command', messages: [], context: {} },
     );
     expect(result).toMatchObject({ exitCode: 0, stdout: 'general-native-ok' });
+    vi.unstubAllEnvs();
   }, 15000);
 });

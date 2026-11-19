@@ -1,10 +1,11 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'node:child_process';
 import { join } from 'path';
 import os from 'os';
 
 import icon from '../../../resources/icon.png?asset';
 
 import { isElectron } from '@/app';
+import { desktopExternalUrl } from '@/desktop-boundary';
 import logger from '@/logger';
 
 /**
@@ -16,7 +17,7 @@ import logger from '@/logger';
  * @param title - Window title (only used when opening in a new window)
  */
 export const openUrl = async (url: string, target: 'external' | 'window' = 'window', title?: string): Promise<Electron.BrowserWindow | null> => {
-  logger.debug(`[openUrl] Opening URL: ${url} (position: ${target})`);
+  logger.debug('[openUrl] Opening URL.', { position: target });
 
   if (isElectron()) {
     const { shell, BrowserWindow } = await import('electron');
@@ -47,7 +48,7 @@ export const openUrl = async (url: string, target: 'external' | 'window' = 'wind
         await win.loadURL(loadUrl);
         return win;
       } catch (error) {
-        logger.error('[openUrl] Failed to create BrowserWindow:', error);
+        logger.error('[openUrl] Failed to open the requested browser window.');
         throw error;
       }
     } else {
@@ -69,27 +70,41 @@ export const openUrl = async (url: string, target: 'external' | 'window' = 'wind
  */
 const openInExternalBrowser = (url: string): void => {
   try {
+    const destination = desktopExternalUrl(url);
+    if (!destination) {
+      throw new Error('External browser URLs must use HTTP, HTTPS or mailto.');
+    }
     const browser = process.env.PLANNOTATOR_BROWSER || process.env.BROWSER;
     const platform = process.platform;
     const wsl = platform === 'linux' && os.release().toLowerCase().includes('microsoft');
+    const options = { stdio: 'ignore' as const, windowsHide: true };
 
     if (browser) {
       if (process.env.PLANNOTATOR_BROWSER && platform === 'darwin') {
-        execSync(`open -a ${JSON.stringify(browser)} ${JSON.stringify(url)}`, { stdio: 'ignore' });
-      } else if (platform === 'win32' || wsl) {
-        execSync(`cmd.exe /c start "" ${JSON.stringify(browser)} ${JSON.stringify(url)}`, { stdio: 'ignore' });
+        execFileSync('open', ['-a', browser, destination], options);
       } else {
-        execSync(`${JSON.stringify(browser)} ${JSON.stringify(url)}`, { stdio: 'ignore' });
+        // Browser overrides identify an executable, never shell command text.
+        execFileSync(browser, [destination], options);
       }
     } else if (platform === 'win32' || wsl) {
-      execSync(`cmd.exe /c start "" ${JSON.stringify(url)}`, { stdio: 'ignore' });
+      // Feed the URL as data, including across WSL's Windows interop boundary.
+      // No part of it is inserted into PowerShell source or a cmd.exe command.
+      execFileSync(
+        'powershell.exe',
+        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference = "Stop"; Start-Process -FilePath ([Console]::In.ReadToEnd())'],
+        {
+          ...options,
+          input: destination,
+          stdio: ['pipe', 'ignore', 'ignore'],
+        },
+      );
     } else if (platform === 'darwin') {
-      execSync(`open ${JSON.stringify(url)}`, { stdio: 'ignore' });
+      execFileSync('open', [destination], options);
     } else {
-      execSync(`xdg-open ${JSON.stringify(url)}`, { stdio: 'ignore' });
+      execFileSync('xdg-open', [destination], options);
     }
   } catch (error) {
-    logger.error('[openUrl] Failed to open URL in external browser:', error);
+    logger.error('[openUrl] Failed to open the requested external URL.');
     throw error;
   }
 };

@@ -21,12 +21,14 @@ The Docker image is published to the GitHub Container Registry (ghcr.io):
 docker pull ghcr.io/hotovo/aider-desk:latest
 ```
 
-Run the container with persistent data and configuration volumes:
+Set `AIDER_DESK_USERNAME` and `AIDER_DESK_PASSWORD` in the launching environment. Run the container with persistent data and configuration volumes.
 
 ```bash
 docker run -d \
   --name aiderdesk \
-  -p 24337:24337 \
+  -p 127.0.0.1:24337:24337 \
+  -e AIDER_DESK_USERNAME \
+  -e AIDER_DESK_PASSWORD \
   -v /path/to/your/data:/app/data \
   -v ~/.aider-desk:/root/.aider-desk \
   ghcr.io/hotovo/aider-desk:latest
@@ -95,14 +97,16 @@ Set `AIDER_DESK_READONLY=true` together with `AIDER_DESK_PROJECTS` to expose a s
 
 ```bash
 docker run -d \
-  -p 24337:24337 \
+  -p 127.0.0.1:24337:24337 \
   -v ~/projects:/projects \
+  -e AIDER_DESK_USERNAME \
+  -e AIDER_DESK_PASSWORD \
   -e AIDER_DESK_READONLY=true \
   -e AIDER_DESK_PROJECTS="/projects/public-app,/projects/public-api" \
   ghcr.io/hotovo/aider-desk:latest
 ```
 
-The setting is immutable for the process lifetime. Readonly mode requires at least one configured project, rejects the normal REST API and direct Socket.IO mutations, and automatically redirects browser routes to `/#/readonly`. Optional `AIDER_DESK_USERNAME` and `AIDER_DESK_PASSWORD` credentials continue to protect the deployment. Installed extension UI actions remain enabled and trusted; they can modify state by design. Set `AIDER_DESK_READONLY_EXTENSION_UI=false` to disable extension UI components and block their readonly API endpoints entirely.
+The setting is immutable for the process lifetime. Readonly mode requires at least one configured project, rejects the normal REST API and direct Socket.IO mutations, and automatically redirects browser routes to `/#/readonly`. The same server authentication is required for readonly browser sessions. Installed extension UI actions remain enabled and trusted; they can modify state by design. Set `AIDER_DESK_READONLY_EXTENSION_UI=false` to disable extension UI components and block their readonly API endpoints entirely.
 
 :::info[Learn More]
 See the [Readonly View Mode](../integrations/readonly-view.md) documentation for a complete guide covering use cases, extension-powered interactions, security considerations, and the full readonly API reference.
@@ -191,7 +195,7 @@ Now access AiderDesk at `http://localhost:8080`.
 
 ### Authentication
 
-For production environments, you may want to enable authentication. AiderDesk supports Basic Auth via environment variables.
+The HTTP application and event stream require server authentication. Provide both credentials via the launching environment or the desktop server settings. Use HTTPS at the reverse proxy before allowing clients outside the host.
 
 **Example:**
 
@@ -206,6 +210,12 @@ docker run -d \
 ```
 
 When you access `http://localhost:24337`, you'll be prompted for username and password.
+
+### Project MCP processes
+
+Project approval does not certify ignored scripts, imports or installed dependencies. Each new local MCP process declared by a project requires a separate desktop confirmation. Reusing that process does not repeat the confirmation. Configuration changes invalidate previously wrapped project tools.
+
+In headless mode, project MCP processes are denied unless the operator explicitly sets `AIDER_DESK_ALLOW_PROJECT_MCP=true`. This grants those approved definitions permission to execute mutable code with the account's OS permissions, including access outside the project. It is separate from server authentication and from `AIDER_DESK_ALLOW_HOST_SHELL` for ordinary agent shell commands. Enable it only for project MCP processes you intend to run.
 
 ## Complete Examples
 

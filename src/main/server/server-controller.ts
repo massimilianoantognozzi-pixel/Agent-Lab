@@ -23,7 +23,7 @@ import {
   SkillsApi,
   ReadonlyApi,
 } from '@/server/rest-api';
-import { AUTH_PASSWORD, AUTH_USERNAME, MCP_OAUTH_CALLBACK_PATH, READONLY_MODE, SERVER_PORT } from '@/constants';
+import { MCP_OAUTH_CALLBACK_PATH, READONLY_MODE, SERVER_PORT } from '@/constants';
 import logger from '@/logger';
 import { ProjectManager } from '@/project';
 import { EventsHandler } from '@/events-handler';
@@ -31,11 +31,13 @@ import { Store } from '@/store';
 import { isDev, isElectron } from '@/app';
 import { PythonDependenciesInstaller } from '@/python-dependencies-installer';
 import { createCorsOriginValidator } from '@/server/cors';
+import { type BrowserSession, ServerAccess } from '@/server/server-access';
 
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export class ServerController {
   private readonly app = express();
+  readonly access: ServerAccess;
   private isStarted = false;
   private readonlyReady = !READONLY_MODE;
 
@@ -50,17 +52,18 @@ export class ServerController {
     private readonly store: Store,
     private readonly pythonInstaller: PythonDependenciesInstaller,
   ) {
+    this.access = new ServerAccess(store, () => this.store.getSettings().server.enabled);
     this.init();
   }
 
   private serverGuardMiddleware(req: Request, res: Response, next: NextFunction): void {
     // Always allow health check and OAuth callback regardless of server.enabled setting
-    if (req.path === '/api/health' || req.path === MCP_OAUTH_CALLBACK_PATH) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && (req.path === '/api/health' || req.path === MCP_OAUTH_CALLBACK_PATH)) {
       next();
       return;
     }
     // In headless mode, always allow requests regardless of server.enabled setting
-    if (process.env.AIDER_DESK_HEADLESS === 'true' || this.isStarted) {
+    if (this.access.enabled) {
       next();
     } else {
       res.status(503).json({
@@ -86,40 +89,22 @@ export class ServerController {
   }
 
   private basicAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
-    if (req.path === MCP_OAUTH_CALLBACK_PATH) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && (req.path === '/api/health' || req.path === MCP_OAUTH_CALLBACK_PATH)) {
       next();
       return;
     }
 
-    const settings = this.store.getSettings().server;
-
-    // Check if environment variables for auth are provided, which overrides settings
-    const useEnvAuth = !!(AUTH_USERNAME && AUTH_PASSWORD);
-    if (useEnvAuth) {
-      logger.info('Using Basic Auth credentials from environment variables AIDER_DESK_USERNAME and AIDER_DESK_PASSWORD');
+    if (!this.access.hasCredentials) {
+      res.status(503).json({ error: 'Configure server authentication before accessing the web interface.' });
+      return;
     }
-
-    if (useEnvAuth || settings.basicAuth.enabled) {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Basic ')) {
-        res.setHeader('WWW-Authenticate', 'Basic realm="AiderDesk"');
-        res.status(401).send('Authentication required');
-        return;
-      }
-
-      const base64Credentials = authHeader.split(' ')[1];
-      const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
-      const [username, password] = credentials.split(':');
-
-      const expectedUsername = useEnvAuth ? (AUTH_USERNAME as string) : settings.basicAuth.username;
-      const expectedPassword = useEnvAuth ? (AUTH_PASSWORD as string) : settings.basicAuth.password;
-
-      if (username !== expectedUsername || password !== expectedPassword) {
-        res.status(401).send('Invalid credentials');
-        return;
-      }
+    const session = this.access.authorize(req.headers);
+    if (!session) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="AiderDesk", charset="UTF-8"');
+      res.status(401).send('Authentication required');
+      return;
     }
-
+    res.locals.browserSession = session;
     next();
   }
 
@@ -129,7 +114,7 @@ export class ServerController {
     this.app.use('/api/readonly', readonlyRouter);
 
     this.app.use('/api', (req, res, next) => {
-      if (req.path === '/health' || req.path === '/mcp/oauth/callback' || req.path.startsWith('/readonly')) {
+      if (req.path === '/health' || req.path === '/mcp/oauth/callback' || req.path === '/readonly' || req.path.startsWith('/readonly/')) {
         next();
         return;
       }
@@ -169,11 +154,10 @@ export class ServerController {
   }
 
   private setupCors(): void {
-    this.app.use(cors({ origin: createCorsOriginValidator(this.store) }));
+    this.app.use(cors({ origin: createCorsOriginValidator(this.store), credentials: true }));
   }
 
   private init() {
-    this.app.use(express.json({ limit: '50mb' }));
     this.setupCors();
 
     // Add server guard middleware as the first middleware
@@ -184,7 +168,26 @@ export class ServerController {
 
     // Add Basic Auth
     this.app.use(this.basicAuthMiddleware.bind(this));
+    this.app.use(express.json({ limit: '50mb' }));
+    this.app.use((_req, res, next) => {
+      const session = res.locals.browserSession as BrowserSession | undefined;
+      if (session && !session.authorized()) {
+        res.sendStatus(401);
+        return;
+      }
+      next();
+    });
 
+    this.app.post('/api/socket-ticket', (req, res) => {
+      const session = res.locals.browserSession as BrowserSession;
+      const ticket = this.access.issueSocketTicket(req.headers, session);
+      res.setHeader('Cache-Control', 'no-store');
+      if (!ticket) {
+        res.sendStatus(403);
+        return;
+      }
+      res.json({ ticket });
+    });
     this.setupApiRoutes();
 
     // Serve static renderer files in production (for browser access)
@@ -220,12 +223,13 @@ export class ServerController {
   }
 
   async close() {
+    this.access.revoke();
     // No need to stop server anymore - it's always attached
     this.server.off('request', this.app);
   }
 
   async startServer() {
-    if (this.isStarted) {
+    if (this.isStarted && this.store.getSettings().server.enabled && this.access.hasCredentials) {
       logger.info('Server already started');
       return false;
     }
@@ -236,12 +240,13 @@ export class ServerController {
   }
 
   async stopServer() {
-    if (!this.isStarted) {
+    if (!this.isStarted && !this.store.getSettings().server.enabled) {
       logger.info('Server already stopped');
       return false;
     }
 
     this.isStarted = false;
+    this.access.revoke();
     logger.info('Server stopped');
     return true;
   }

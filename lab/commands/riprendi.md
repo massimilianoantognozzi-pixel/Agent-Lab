@@ -1,0 +1,11 @@
+---
+description: Ricostruisci il punto di ripresa dalle fonti del progetto e continua il lavoro autorizzato.
+includeContext: true
+---
+Riprendi autonomamente il lavoro nel repository aperto, anche in una chat nuova. Ricostruisci il punto di partenza dalle fonti persistenti del progetto.
+
+1. Verifica repository, worktree, ramo, commit corrente e modifiche locali. Leggi le regole AGENTS e individua i documenti attivi nei percorsi indicati dal progetto. Leggi stato corrente, coda delle task, piano di ripresa o handoff. Segui i riferimenti alla milestone, al blueprint, alle decisioni, alle prove e ai file necessari per il passo corrente.
+2. Stabilisci qual era la task in corso, l’ultimo passaggio comprovato, il prossimo passo, le dipendenze e le eventuali attese. Confronta quanto scritto con commit, diff, file e risultati disponibili. Se una modifica è già presente, verifica la parte ancora aperta. Se è cambiata la versione da cui dipende una prova, riesegui il controllo pertinente. Conserva le modifiche locali e quelle altrui. Se le fonti divergono, risolvi la discrepanza con le prove disponibili o indica il preciso punto da chiarire.
+3. Quando la task, un file coinvolto o un errore richiama una correzione precedente, consulta autonomamente la Knowledge Base. Se lo strumento accetta il parametro scope, usa project. Cerca per componente, sintomo o comportamento atteso. Usa una lezione solo dopo averne controllato ambito, prova e applicabilità attuale. Se i risultati sono estranei, scartali e continua. Le decisioni approvate del progetto restano il riferimento.
+4. Continua dal primo passo ancora da eseguire. Se la task è conclusa, passa alla prossima autorizzata e pronta secondo la coda. Applica i metodi già integrati: Superpowers per piano e diagnosi, Spec Kit/OpenSpec per scenari e criteri, Compound Engineering per le lezioni verificate. Esegui le verifiche, usa la review prevista e aggiorna stato, coda e punto di ripresa dopo progressi verificabili.
+5. Un errore recuperabile richiede diagnosi e un nuovo tentativo motivato. Se serve una decisione umana, registra la domanda, sospendi la parte interessata e continua i lavori indipendenti già autorizzati. Se non ne restano, lascia un punto di ripresa preciso. Non attendere altri comandi per scegliere modalità, strumenti o fonti.

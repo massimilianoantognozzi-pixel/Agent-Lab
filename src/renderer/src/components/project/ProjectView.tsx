@@ -1,4 +1,5 @@
 import { AutonomyMode, InputHistoryData, ProjectStartMode, TaskCreatedData, TaskData, DefaultTaskState } from '@common/types';
+import { latestResumableWork } from '@common/work-commands';
 import { useTranslation } from 'react-i18next';
 import { startTransition, useCallback, useEffect, useOptimistic, useRef, useState } from 'react';
 import { useLocalStorage } from '@reactuses/core';
@@ -712,6 +713,15 @@ export const ProjectView = ({ projectDir, isProjectActive = false, initialTaskId
 
     const actions: Record<string, () => void> = {
       'task.new': () => void createNewTask(),
+      'task.resumeWork': () => {
+        const current = tasks.find((task) => task.id === activeTaskId);
+        const target = current?.createdAt ? current : (latestResumableWork(tasks) ?? current);
+        if (!target) {
+          return;
+        }
+        activateTask(target.id);
+        void api.runPrompt(projectDir, target.id, '/riprendi');
+      },
       'task.newSubtask': () => {
         if (activeTaskId) {
           void createNewTask(activeTaskId);
@@ -862,6 +872,9 @@ export const ProjectView = ({ projectDir, isProjectActive = false, initialTaskId
   }, [
     isProjectActive,
     createNewTask,
+    activateTask,
+    tasks,
+    t,
     focusActiveTaskPrompt,
     openEditor,
     projectDir,

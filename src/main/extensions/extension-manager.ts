@@ -84,6 +84,8 @@ import type { ToolExecutionOptions, ToolSet } from 'ai';
 import { shouldUsePolling } from '@/utils/file-watch';
 import logger from '@/logger';
 import { AIDER_DESK_EXTENSIONS_DIR, AIDER_DESK_GLOBAL_EXTENSIONS_DIR } from '@/constants';
+import { getApprovedProjectExtension } from '@/extensions/project-extension-trust';
+import { resolveContainedPath } from '@/utils/contained-path';
 import { isGovernedWorkflow } from '@/task/workflow-policy';
 import { ApprovalManager } from '@/agent/tools/approval-manager';
 import { contentArrayHasNonTextParts, stringifyWithBudget, truncateToolResult } from '@/agent/utils';
@@ -212,6 +214,7 @@ export class ExtensionManager {
   private fetcher: ExtensionFetcher;
   private globalWatcher: FSWatcher | null = null;
   private projectWatchers: Map<string, FSWatcher> = new Map();
+  private projectWatcherOwners = new Map<string, Project>();
   private initialized = false;
   private listeners: ExtensionsChangeListener[] = [];
   private extensionMtimes: Map<string, number> = new Map();
@@ -301,6 +304,14 @@ export class ExtensionManager {
       for (const filePath of newlyEnabled) {
         const loaded = this.registry.getExtension(filePath);
         if (!loaded) {
+          for (const project of this.projectWatcherOwners.values()) {
+            const dir = path.join(project.baseDir, AIDER_DESK_EXTENSIONS_DIR);
+            const relative = path.relative(dir, filePath);
+            if (relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+              await this.loadAndInitializeExtension(filePath, project);
+              break;
+            }
+          }
           continue;
         }
 
@@ -467,14 +478,27 @@ export class ExtensionManager {
       return { success: false, hasUIComponents: false };
     }
     try {
-      const result = await this.loader.loadExtension(filePath);
+      const relative = path.relative(AIDER_DESK_GLOBAL_EXTENSIONS_DIR, filePath);
+      const validGlobalEntry = relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+      const trustedEntry = project
+        ? this.isExtensionDisabled(filePath)
+          ? undefined
+          : await getApprovedProjectExtension(project.baseDir, filePath)
+        : validGlobalEntry
+          ? filePath
+          : undefined;
+      if (!trustedEntry) {
+        logger.debug('[Extensions] Project extension requires approval before loading', { filePath });
+        return { success: false, hasUIComponents: false };
+      }
+      const result = await this.loader.loadExtension(trustedEntry);
       if (!result) {
         logger.error(`[Extensions] Failed to load extension from ${filePath}${project ? ` for project ${project.baseDir}` : ''}`);
         return { success: false, hasUIComponents: false };
       }
 
       const { extension, metadata } = result;
-      await this.registry.register(extension, metadata, filePath, project?.baseDir);
+      await this.registry.register(extension, metadata, filePath, project?.baseDir, trustedEntry);
 
       const loaded = this.registry.getExtension(filePath);
       if (!loaded) {
@@ -772,7 +796,7 @@ export class ExtensionManager {
 
   async reloadExtension(filePath: string, project?: Project): Promise<boolean> {
     const extension = this.findExtensionByPath(filePath);
-    if (!extension) {
+    if (!extension || extension.projectDir !== project?.baseDir) {
       logger.warn(`[Extensions] Cannot reload: extension not found at ${filePath}`);
       return false;
     }
@@ -900,6 +924,27 @@ export class ExtensionManager {
     }
   }
 
+  private async safeProjectExtensionPath(projectDir: string, candidate: string): Promise<string> {
+    const project = await fs.realpath(projectDir);
+    const intended = path.resolve(project, path.relative(projectDir, candidate));
+    const directory = path.join(project, AIDER_DESK_EXTENSIONS_DIR);
+    const relative = path.relative(directory, intended);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error('The extension path is outside the project extension directory.');
+    }
+    const actual = await resolveContainedPath(project, intended);
+    if (path.relative(actual, intended)) {
+      throw new Error('Project extension operations do not follow linked directories or files.');
+    }
+    return actual;
+  }
+
+  async listProjectExtensionPaths(projectDir: string): Promise<string[]> {
+    const directory = path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR);
+    await this.safeProjectExtensionPath(projectDir, directory);
+    return await this.scanDirectory(directory);
+  }
+
   private async setupWatcherForDir(dir: string, onChange: () => Promise<void>): Promise<FSWatcher | null> {
     if (process.env.AIDER_DESK_LAB_MODE === 'true') {
       return null;
@@ -1006,11 +1051,13 @@ export class ExtensionManager {
 
     if (!this.projectWatchers.has(projectDir)) {
       const watcher = await this.setupWatcherForDir(projectExtensionsDir, async () => {
-        logger.debug(`[Extensions] Project extensions changed for ${projectDir}, reloading...`);
-        await this.reloadChangedExtensions(projectExtensionsDir, project);
+        if (this.projectWatcherOwners.get(projectDir) === project) {
+          await this.reloadChangedExtensions(projectExtensionsDir, project);
+        }
       });
 
       if (watcher) {
+        this.projectWatcherOwners.set(projectDir, project);
         this.projectWatchers.set(projectDir, watcher);
         logger.debug(`[Extensions] Started watching project extensions: ${projectDir}`);
       }
@@ -1021,31 +1068,26 @@ export class ExtensionManager {
 
   async stopProjectWatcher(projectDir: string): Promise<void> {
     const watcher = this.projectWatchers.get(projectDir);
+    this.projectWatcherOwners.delete(projectDir);
     if (watcher) {
       await watcher.close();
       this.projectWatchers.delete(projectDir);
       logger.debug(`[Extensions] Stopped watching project extensions: ${projectDir}`);
     }
+    await this.unloadExtensionsForDir(path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR));
   }
 
   private async restartWatchers(): Promise<void> {
-    const projectDirs = Array.from(this.projectWatchers.keys());
+    const projects = Array.from(this.projectWatcherOwners.values());
 
     await this.stopGlobalWatcher();
-    for (const dir of projectDirs) {
-      await this.stopProjectWatcher(dir);
+    for (const project of projects) {
+      await this.stopProjectWatcher(project.baseDir);
     }
 
     await this.startHotReloadWatcher();
-    for (const dir of projectDirs) {
-      const projectExtensionsDir = path.join(dir, AIDER_DESK_EXTENSIONS_DIR);
-      const watcher = await this.setupWatcherForDir(projectExtensionsDir, async () => {
-        logger.debug(`[Extensions] Project extensions changed for ${dir}, reloading...`);
-        await this.reloadChangedExtensions(projectExtensionsDir);
-      });
-      if (watcher) {
-        this.projectWatchers.set(dir, watcher);
-      }
+    for (const project of projects) {
+      await this.reloadProjectExtensions(project);
     }
   }
 
@@ -1620,7 +1662,7 @@ export class ExtensionManager {
     for (const loaded of extensions) {
       const { instance, initialized, metadata } = loaded;
 
-      if (!initialized || !instance.getUIComponentsLibraries) {
+      if (loaded.projectDir || !initialized || !instance.getUIComponentsLibraries) {
         continue;
       }
 
@@ -1982,9 +2024,14 @@ export class ExtensionManager {
   async installExtension(extensionId: string, repositoryUrl: string, project?: Project): Promise<ExtensionOperationResult> {
     const projectDir = project?.baseDir;
     try {
+      if (projectDir && isGovernedWorkflow(projectDir)) {
+        throw new Error('Project extensions are unavailable inside the governed workflow.');
+      }
       logger.debug(`[Extensions] Installing extension '${extensionId}' from ${repositoryUrl} into ${projectDir ?? 'global'}`);
 
-      const targetDir = projectDir ? path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR) : AIDER_DESK_GLOBAL_EXTENSIONS_DIR;
+      const targetDir = projectDir
+        ? await this.safeProjectExtensionPath(projectDir, path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR))
+        : AIDER_DESK_GLOBAL_EXTENSIONS_DIR;
 
       await fs.mkdir(targetDir, { recursive: true });
 
@@ -2010,6 +2057,9 @@ export class ExtensionManager {
 
         const code = await response.text();
         const targetPath = path.join(targetDir, extension.file);
+        if (projectDir) {
+          await this.safeProjectExtensionPath(projectDir, targetPath);
+        }
         await fs.writeFile(targetPath, code, 'utf-8');
 
         logger.debug(`[Extensions] Installed single-file extension: ${extension.file}`);
@@ -2018,6 +2068,9 @@ export class ExtensionManager {
 
         const extensionsPath = this.fetcher.getExtensionsPath(repositoryUrl, repoDir);
         const targetPath = path.join(targetDir, extension.folder);
+        if (projectDir) {
+          await this.safeProjectExtensionPath(projectDir, targetPath);
+        }
 
         // For repo-root extensions (entire repo is the extension), use extensionsPath directly
         // For subdirectory extensions, join with the folder name
@@ -2046,7 +2099,7 @@ export class ExtensionManager {
 
           if (extension.hasDependencies) {
             logger.debug(`[Extensions] Installing dependencies for ${extension.name} in temp dir...`);
-            await this.installDependencies(tempExtPath);
+            await this.installDependencies(tempExtPath, Boolean(project));
           }
 
           // Copy to final location — node_modules is ignored by the watcher
@@ -2072,11 +2125,11 @@ export class ExtensionManager {
   /**
    * Install npm dependencies for a folder extension
    */
-  private async installDependencies(extensionPath: string): Promise<void> {
+  private async installDependencies(extensionPath: string, projectScoped = false): Promise<void> {
     const { spawn } = await import('child_process');
 
     return new Promise((resolve, reject) => {
-      const child = spawn('npm', ['install'], {
+      const child = spawn('npm', projectScoped ? ['install', '--ignore-scripts'] : ['install'], {
         cwd: extensionPath,
         stdio: 'inherit',
         shell: true,
@@ -2107,37 +2160,46 @@ export class ExtensionManager {
       logger.debug(`[Extensions] Uninstalling extension '${extensionId}'`);
 
       const extension = this.registry.getExtension(extensionId);
-      if (!extension) {
+      const inactive = !extension && projectDir && (await this.listProjectExtensionPaths(projectDir)).includes(extensionId) ? extensionId : undefined;
+      if (!extension && !inactive) {
         throw new Error(`Extension '${extensionId}' not found`);
       }
 
-      if (projectDir && extension.projectDir !== projectDir) {
+      if (extension && extension.projectDir !== projectDir) {
         throw new Error(`Extension '${extensionId}' does not belong to project ${projectDir}`);
       }
 
-      if (!extension.filePath) {
+      const entryPath = extension?.filePath ?? inactive;
+      if (!entryPath) {
         throw new Error(`Extension '${extensionId}' has no file path`);
+      }
+      if (projectDir) {
+        await this.safeProjectExtensionPath(projectDir, entryPath);
       }
 
       // Unload (dispose + onUnload) before removing files
-      await this.unloadExtension(extension.filePath);
+      await this.unloadExtension(entryPath);
 
-      const parsedPath = path.parse(extension.filePath);
-      const isFolderExtension = parsedPath.name === 'index';
+      const directory = projectDir ? path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR) : AIDER_DESK_GLOBAL_EXTENSIONS_DIR;
+      const parsedPath = path.parse(entryPath);
+      const isFolderExtension = parsedPath.name === 'index' && Boolean(path.relative(directory, parsedPath.dir));
 
       if (isFolderExtension) {
         const folderPath = parsedPath.dir;
+        if (projectDir) {
+          await this.safeProjectExtensionPath(projectDir, folderPath);
+        }
         await fs.rm(folderPath, { recursive: true, force: true });
         logger.debug(`[Extensions] Removed folder: ${folderPath}`);
       } else {
-        await fs.unlink(extension.filePath);
-        logger.debug(`[Extensions] Removed file: ${extension.filePath}`);
+        await fs.unlink(entryPath);
+        logger.debug(`[Extensions] Removed file: ${entryPath}`);
       }
 
-      this.registry.unregister(extension.filePath);
+      this.registry.unregister(entryPath);
 
       logger.info(`[Extensions] Successfully uninstalled ${extensionId}`);
-      this.telemetryManager.captureExtensionUninstalled(extensionId, extension.projectDir ? 'project' : 'global');
+      this.telemetryManager.captureExtensionUninstalled(extensionId, projectDir ? 'project' : 'global');
       return true;
     } catch (error) {
       logger.error(`[Extensions] Failed to uninstall extension '${extensionId}':`, error);
@@ -2155,10 +2217,13 @@ export class ExtensionManager {
   async updateExtension(extensionId: string, repositoryUrl: string, project?: Project): Promise<ExtensionOperationResult> {
     const projectDir = project?.baseDir;
     try {
+      if (projectDir && isGovernedWorkflow(projectDir)) {
+        throw new Error('Project extensions are unavailable inside the governed workflow.');
+      }
       logger.debug(`[Extensions] Updating extension '${extensionId}' from ${repositoryUrl}`);
 
       const existingExtension = this.registry.getExtension(extensionId);
-      if (!existingExtension) {
+      if (!existingExtension || existingExtension.projectDir !== projectDir) {
         throw new Error(`Extension '${extensionId}' not found`);
       }
 
@@ -2166,7 +2231,12 @@ export class ExtensionManager {
         throw new Error(`Extension '${extensionId}' has no file path`);
       }
 
-      const targetDir = projectDir ? path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR) : AIDER_DESK_GLOBAL_EXTENSIONS_DIR;
+      const targetDir = projectDir
+        ? await this.safeProjectExtensionPath(projectDir, path.join(projectDir, AIDER_DESK_EXTENSIONS_DIR))
+        : AIDER_DESK_GLOBAL_EXTENSIONS_DIR;
+      if (projectDir) {
+        await this.safeProjectExtensionPath(projectDir, existingExtension.filePath);
+      }
 
       const availableExtensions = await this.getAvailableExtensions([repositoryUrl]);
       const extension = availableExtensions.find((ext) => ext.id === existingExtension.id);
@@ -2185,7 +2255,7 @@ export class ExtensionManager {
 
       // Clean up old extension if the type changed (file → folder or folder → file)
       const parsedExistingPath = path.parse(existingExtension.filePath);
-      const existingIsFolder = parsedExistingPath.name === 'index';
+      const existingIsFolder = parsedExistingPath.name === 'index' && Boolean(path.relative(targetDir, parsedExistingPath.dir));
 
       if (extension.type === 'folder' && !existingIsFolder) {
         // Previous version was a single file, new version is a folder — remove old file
@@ -2209,6 +2279,9 @@ export class ExtensionManager {
 
         const code = await response.text();
         entryPath = path.join(targetDir, extension.file);
+        if (projectDir) {
+          await this.safeProjectExtensionPath(projectDir, entryPath);
+        }
         await fs.writeFile(entryPath, code, 'utf-8');
 
         logger.debug(`[Extensions] Updated single-file extension: ${extension.file}`);
@@ -2217,6 +2290,9 @@ export class ExtensionManager {
 
         const extensionsPath = this.fetcher.getExtensionsPath(repositoryUrl, repoDir);
         const targetPath = path.join(targetDir, extension.folder);
+        if (projectDir) {
+          await this.safeProjectExtensionPath(projectDir, targetPath);
+        }
 
         // For repo-root extensions (entire repo is the extension), use extensionsPath directly
         let sourcePath = path.join(extensionsPath, extension.folder);
@@ -2244,7 +2320,7 @@ export class ExtensionManager {
           const packageJsonPath = path.join(tempExtPath, 'package.json');
           if (await this.fileExists(packageJsonPath)) {
             logger.debug(`[Extensions] Installing dependencies for ${extension.name} in temp dir...`);
-            await this.installDependencies(tempExtPath);
+            await this.installDependencies(tempExtPath, Boolean(project));
           }
 
           // Copy on top of existing directory — merges files, overwriting source

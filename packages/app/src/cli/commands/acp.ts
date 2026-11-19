@@ -7,6 +7,7 @@ import * as acp from '@agentclientprotocol/sdk';
 import { Command } from 'commander';
 
 import { DEFAULT_HOST, DEFAULT_PORT, pkgRoot, resolvePort } from '../constants';
+import { getApiAuthHeaders } from '../api-auth';
 
 function getVersion(): string {
   try {
@@ -73,7 +74,7 @@ function fetchJSON(host: string, port: number, path: string, method: string, bod
       port,
       path,
       method,
-      headers: body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : undefined,
+      headers: { ...getApiAuthHeaders(), ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}) },
     };
 
     const req = httpRequest(options, (res: IncomingMessage) => {
@@ -120,6 +121,7 @@ function requestSSEStream(host: string, port: number, body: string): Promise<SSE
       path: '/api/run-prompt',
       method: 'POST',
       headers: {
+        ...getApiAuthHeaders(),
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
         'Cache-Control': 'no-cache',

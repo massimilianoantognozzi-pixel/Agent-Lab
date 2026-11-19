@@ -2,12 +2,15 @@
 /* eslint-disable func-style,@typescript-eslint/no-explicit-any */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import axios from 'axios';
-import { z } from 'zod/v3';
+import axiosClient from 'axios';
+import { z } from 'zod/v4';
 
 const projectDir = process.argv[2] || '.';
 
 const AIDER_DESK_API_BASE_URL = process.env.AIDER_DESK_API_BASE_URL || 'http://localhost:24337/api';
+const username = process.env.AIDER_DESK_USERNAME;
+const password = process.env.AIDER_DESK_PASSWORD;
+const axios = axiosClient.create({ auth: username && password ? { username, password } : undefined, maxRedirects: 0 });
 
 // eslint-disable-next-line no-console
 console.error(`Using AiderDesk API at: ${AIDER_DESK_API_BASE_URL} for project directory: ${projectDir}`);
@@ -48,7 +51,7 @@ server.tool(
         params: { projectDir },
       });
 
-      let tasks: any[] = response.data;
+      const tasks: any[] = response.data;
 
       tasks.sort((a, b) => {
         const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
@@ -224,10 +227,7 @@ server.tool(
   'Get context messages (conversation history) for an AiderDesk task with pagination. Use negative offset to retrieve messages from the end (e.g., -1 for the last message, -5 for the last 5).',
   {
     taskId: taskIdSchema,
-    offset: z
-      .number()
-      .optional()
-      .describe('Number of messages to skip. Negative values count from the end (e.g., -1 = last message). Default: 0'),
+    offset: z.number().optional().describe('Number of messages to skip. Negative values count from the end (e.g., -1 = last message). Default: 0'),
     limit: z.number().optional().describe('Maximum number of messages to return'),
   },
   async (params) => {

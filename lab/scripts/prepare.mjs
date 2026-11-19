@@ -31,6 +31,9 @@ const writeInitial = (file, value) => {
 };
 
 export function prepare() {
+  for (const name of ['inizia.md', 'riprendi.md', 'chiudi.md']) {
+    writeInitial(path.join(homeDir, 'commands', name), fs.readFileSync(path.join(labRoot, 'commands', name), 'utf8'));
+  }
   for (const dir of [homeDir, dataDir, serenaDir, workspaceRoot, sampleDir, path.join(labRoot, 'work')]) fs.mkdirSync(dir, { recursive: true });
   const manifestFile=path.join(profileRoot,'knowledge-manifest.json');
   const previousSnapshot=fs.existsSync(manifestFile)?JSON.parse(fs.readFileSync(manifestFile,'utf8')):null;

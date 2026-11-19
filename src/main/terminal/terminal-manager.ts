@@ -135,7 +135,7 @@ export class TerminalManager {
       return false;
     }
 
-    logger.debug('Writing to terminal:', { terminalId, data });
+    logger.debug('Writing to terminal:', { terminalId });
 
     try {
       terminal.ptyProcess.write(data);

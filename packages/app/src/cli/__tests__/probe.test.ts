@@ -7,6 +7,7 @@ import { ensureProbeBinary, isProbeBinaryPresent } from '../probe';
 vi.mock('child_process', () => ({
   spawnSync: vi.fn(),
 }));
+vi.mock('fs', () => ({ existsSync: vi.fn() }));
 
 const mockedSpawnSync = vi.mocked(spawnSync);
 const mockedExistsSync = vi.mocked(existsSync);
@@ -55,10 +56,11 @@ describe('probe.ts', () => {
   });
 
   describe('ensureProbeBinary', () => {
-    it('is a no-op when the probe binary is already present', () => {
+    it('verifies a present binary through the pinned installer before using it', () => {
       mockedExistsSync.mockReturnValue(true);
+      mockedSpawnSync.mockReturnValue(makeSuccessResult('verified cache\n', ''));
       expect(ensureProbeBinary()).toBe(true);
-      expect(mockedSpawnSync).not.toHaveBeenCalled();
+      expect(mockedSpawnSync).toHaveBeenCalledOnce();
     });
 
     it('downloads the binary when missing and returns true on success', () => {
@@ -138,7 +140,7 @@ describe('probe.ts', () => {
       expect(allText).toContain('Probe binary not found');
       expect(allText).toContain('downloading...');
       expect(allText).toContain('warning: rate limit');
-      expect(allText).toContain('Probe binary downloaded successfully.');
+      expect(allText).toContain('Probe binary verified successfully.');
 
       const errorLines = lines.filter((l) => l.isError).map((l) => l.text);
       expect(errorLines).toContain('warning: rate limit');

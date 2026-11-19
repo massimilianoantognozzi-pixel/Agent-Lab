@@ -14,12 +14,12 @@ export class CloudflareTunnelManager {
       throw new Error('Tunnel is already running');
     }
 
-    if (!isDev()) {
-      // set cloudflared binary path only in production app
-      setCloudflaredBinary(CLOUDFLARED_BINARY_PATH);
+    if (isDev()) {
+      throw new Error('A development renderer cannot be exposed as the authenticated application server.');
     }
+    setCloudflaredBinary(CLOUDFLARED_BINARY_PATH);
 
-    const port = isDev() ? 5173 : SERVER_PORT;
+    const port = SERVER_PORT;
     logger.info('Starting tunnel...', { port });
     this.tunnel = Tunnel.quick(`http://localhost:${port}`);
 

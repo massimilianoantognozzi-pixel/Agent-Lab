@@ -45,10 +45,9 @@ import {
   AiderConnectorStatus,
   InputPromptData,
 } from '@common/types';
-import { electronAPI } from '@electron-toolkit/preload';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { ApplicationAPI } from '@common/api';
-import { compareBaseDirs } from '@common/utils';
+import { compareBaseDirs } from '@common/base-dirs';
 
 import './index.d';
 
@@ -88,6 +87,8 @@ const api: ApplicationAPI = {
   getPathForFile: (file) => webUtils.getPathForFile(file),
   getOpenProjects: () => ipcRenderer.invoke('get-open-projects'),
   checkProject: (baseDir) => ipcRenderer.invoke('check-project', baseDir),
+  approveProjectExtensions: (baseDir) => ipcRenderer.invoke('approve-project-extensions', baseDir),
+  approveProjectMcp: (baseDir) => ipcRenderer.invoke('approve-project-mcp', baseDir),
   addOpenProject: (baseDir) => ipcRenderer.invoke('add-open-project', baseDir),
   setActiveProject: (baseDir) => ipcRenderer.invoke('set-active-project', baseDir),
   removeOpenProject: (baseDir) => ipcRenderer.invoke('remove-open-project', baseDir),
@@ -854,13 +855,9 @@ const api: ApplicationAPI = {
 
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI);
     contextBridge.exposeInMainWorld('api', api);
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error(error);
   }
-} else {
-  window.electron = electronAPI;
-  window.api = api;
 }

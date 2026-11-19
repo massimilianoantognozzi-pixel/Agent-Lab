@@ -1,9 +1,13 @@
 import path from 'path';
+import { realpathSync } from 'node:fs';
+import { registerHooks } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 import { createJiti, type JitiOptions } from 'jiti';
 import { Extension, ExtensionMetadata } from '@common/extensions';
 
 import logger from '@/logger';
+import { getProjectAuthorityRoot } from '@/extensions/project-extension-trust';
 
 // Define the interface for the loaded module
 interface ExtensionModule {
@@ -21,6 +25,49 @@ const baseJitiOptions: JitiOptions = {
     zod: require.resolve('zod'),
     '@aiderdesk/extensions': require.resolve('@aiderdesk/extensions'),
   },
+};
+
+const projectSnapshotRoots = new Set<string>();
+let installedResolutionGuard = false;
+
+const pathWithin = (root: string, candidate: string): boolean => {
+  const relative = path.relative(root, candidate);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+
+const guardApprovedDependencies = (entry: string): void => {
+  const storage = path.join(getProjectAuthorityRoot(), 'approved-project-extensions');
+  if (!pathWithin(storage, entry)) {
+    return;
+  }
+  const [project, version] = path.relative(storage, entry).split(path.sep);
+  if (!/^[0-9a-f]{64}$/.test(project) || !/^[0-9a-f]{64}-[0-9a-f-]{36}$/.test(version)) {
+    throw new Error('Invalid approved project extension identity.');
+  }
+  projectSnapshotRoots.add(realpathSync(path.join(storage, project, version)));
+  if (installedResolutionGuard) {
+    return;
+  }
+  const appModules = new Set([require.resolve('zod'), require.resolve('@aiderdesk/extensions')].map((file) => realpathSync(file)));
+  registerHooks({
+    resolve(specifier, context, nextResolve) {
+      const parent = context.parentURL?.startsWith('file:') ? fileURLToPath(context.parentURL) : undefined;
+      const root = parent && [...projectSnapshotRoots].find((candidate) => pathWithin(candidate, parent));
+      const resolved = nextResolve(specifier, context);
+      if (!root || resolved.url.startsWith('node:')) {
+        return resolved;
+      }
+      if (!resolved.url.startsWith('file:')) {
+        throw new Error('Project extension modules must come from reviewed files.');
+      }
+      const file = realpathSync(fileURLToPath(resolved.url));
+      if (!pathWithin(root, file) && !appModules.has(file)) {
+        throw new Error('Project extension dependency is outside the approved snapshot.');
+      }
+      return resolved;
+    },
+  });
+  installedResolutionGuard = true;
 };
 
 export class ExtensionLoader {
@@ -63,6 +110,7 @@ export class ExtensionLoader {
 
   async loadExtension(filePath: string): Promise<{ extension: Extension; metadata: ExtensionMetadata } | null> {
     try {
+      guardApprovedDependencies(filePath);
       // Use extension-specific jiti instance for proper module resolution
       const jiti = this.getJitiForExtension(filePath);
 

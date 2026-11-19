@@ -1,7 +1,8 @@
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, type ChildProcess, type StdioOptions } from 'child_process';
 
 import { resourcesDir, rendererDir, runnerPath, DEFAULT_PORT } from './constants';
 import { ensureProbeBinary, type ProbeOutputSink } from './probe';
+import { createOwnedRunnerAuth } from './api-auth';
 
 export function getRunnerEnv(port: number): Record<string, string> {
   const env: Record<string, string> = {
@@ -22,8 +23,9 @@ export function getRunnerEnv(port: number): Record<string, string> {
 
 export function spawnRunnerProcess(
   port: number,
-  stdio: 'inherit' | ['pipe', 'pipe', 'pipe'],
+  stdio: StdioOptions,
   onEnsureProbeOutput?: ProbeOutputSink,
+  ownSession = false,
 ): ChildProcess {
   if (!ensureProbeBinary(onEnsureProbeOutput)) {
     throw new Error(
@@ -32,7 +34,7 @@ export function spawnRunnerProcess(
     );
   }
   return spawn(process.execPath, [runnerPath], {
-    env: getRunnerEnv(port),
+    env: { ...getRunnerEnv(port), ...(ownSession ? createOwnedRunnerAuth() : {}) },
     stdio,
   });
 }

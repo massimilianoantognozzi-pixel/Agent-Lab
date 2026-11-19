@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { labRoot } from './prepare.mjs';
-import { generalEnvironment,atomicProfileWrite,restoreGeneralSerenaTools } from './configure-general-gui.mjs';
+import { generalEnvironment,atomicProfileWrite,restoreGeneralSerenaTools,restoreGeneralToolApprovals } from './configure-general-gui.mjs';
 import { ensureLocalFallback, localBaseModel, localFallbackModel } from './local-fallback.mjs';
 
 test('general launch preserves the normal toolchain and drops Codex IPC',()=>{
@@ -68,4 +68,25 @@ test('Serena restores the imposed exclusion and preserves user choices on later 
   fs.writeFileSync(file,'excluded_tools:\n- execute_shell_command\n');
   restoreGeneralSerenaTools({file,marker});
   assert.ok(fs.readFileSync(file,'utf8').includes('execute_shell_command'));
+});
+
+test('manual approval migration restores missing safeguards and preserves explicit choices and model settings',()=>{
+  const dir=fs.mkdtempSync(path.join(labRoot,'work','general-approvals-'));
+  try {
+    const file=path.join(dir,'config.json'),marker=path.join(dir,'migration.json');
+    const profile={provider:'chosen-provider',model:'chosen-model',maxIterations:0,toolApprovals:{'power---bash':'never','power---file_edit':'always','custom---tool':'never'}};
+    fs.writeFileSync(file,JSON.stringify(profile));
+    restoreGeneralToolApprovals({file,marker});
+    const migrated=JSON.parse(fs.readFileSync(file,'utf8'));
+    assert.equal(migrated.toolApprovals['power---file_write'],'ask');
+    assert.equal(migrated.toolApprovals['serena---execute_shell_command'],'ask');
+    assert.equal(migrated.toolApprovals['aider---run_prompt'],'ask');
+    assert.equal(migrated.toolApprovals['power---bash'],'never');
+    assert.equal(migrated.toolApprovals['power---file_edit'],'always');
+    assert.equal(migrated.toolApprovals['custom---tool'],'never');
+    assert.equal(migrated.provider,profile.provider);assert.equal(migrated.model,profile.model);assert.equal(migrated.maxIterations,0);
+    migrated.toolApprovals['power---file_write']='never';fs.writeFileSync(file,JSON.stringify(migrated));
+    restoreGeneralToolApprovals({file,marker});
+    assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).toolApprovals['power---file_write'],'never');
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });

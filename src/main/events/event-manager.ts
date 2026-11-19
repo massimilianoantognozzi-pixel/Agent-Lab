@@ -55,6 +55,7 @@ export interface EventsConnectorConfig {
   eventTypes?: string[];
   baseDirs?: string[];
   readonly?: boolean;
+  authorized?: () => boolean;
 }
 
 export interface EventsConnector extends EventsConnectorConfig {
@@ -423,6 +424,7 @@ export class EventManager {
       eventTypes: config.eventTypes,
       baseDirs: config.baseDirs,
       readonly: config.readonly,
+      authorized: config.authorized,
     });
   }
 
@@ -471,6 +473,11 @@ export class EventManager {
     }
 
     this.eventsConnectors.forEach((connector) => {
+      if (connector.authorized && !connector.authorized()) {
+        this.unsubscribe(connector.socket, log);
+        connector.socket.disconnect(true);
+        return;
+      }
       // Filter by event types if specified
       if (connector.eventTypes && !connector.eventTypes.includes(eventType)) {
         if (log) {

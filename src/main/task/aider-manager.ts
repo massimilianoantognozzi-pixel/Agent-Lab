@@ -11,7 +11,7 @@ import { DEFAULT_AIDER_MAIN_MODEL, isCodexAgentModel } from '@common/agent';
 
 import { AIDER_DESK_CONNECTOR_DIR, AIDER_DESK_PROJECT_RULES_DIR, AIDER_DESK_TASKS_DIR, PID_FILES_DIR, PYTHON_COMMAND, SERVER_PORT } from '@/constants';
 import { Connector } from '@/connector';
-import { CONNECTOR_TOKEN } from '@/connector/connector-auth';
+import { registerConnectorAuthorization } from '@/connector/connector-auth';
 import logger from '@/logger';
 import { Store } from '@/store';
 import { ModelManager } from '@/models';
@@ -23,6 +23,7 @@ import { getNetworkEnvVars } from '@/network-manager';
 
 export class AiderManager {
   private aiderProcess: ChildProcessWithoutNullStreams | null = null;
+  private revokeConnectorAuthorization?: () => void;
   private aiderStarting: boolean = false;
   private aiderStartPromise: Promise<void> | null = null;
   private aiderStartResolve: (() => void) | null = null;
@@ -171,6 +172,8 @@ export class AiderManager {
 
     const networkEnvVars = getNetworkEnvVars(settings, this.store.getProviders());
 
+    const connector = registerConnectorAuthorization(this.task.getProjectDir(), this.task.task.id);
+    this.revokeConnectorAuthorization = connector.revoke;
     const env = {
       ...process.env,
       ...environmentVariables,
@@ -183,16 +186,17 @@ export class AiderManager {
       TASK_ID: this.task.task.id,
       TASK_DIR: this.task.getTaskDir(),
       CONNECTOR_SERVER_URL: `http://localhost:${SERVER_PORT}`,
-      AIDER_DESK_CONNECTOR_TOKEN: CONNECTOR_TOKEN,
+      AIDER_DESK_CONNECTOR_TOKEN: connector.token,
       CONNECTOR_CONFIRM_BEFORE_EDIT: settings.aider.confirmBeforeEdit ? '1' : '0',
     };
 
     // Spawn without shell to have direct process control
-    this.aiderProcess = spawn(PYTHON_COMMAND, args, {
-      cwd: this.task.getTaskDir(),
-      detached: false,
-      env,
-    });
+    try {
+      this.aiderProcess = spawn(PYTHON_COMMAND, args, { cwd: this.task.getTaskDir(), detached: false, env });
+    } catch (error) {
+      connector.revoke();
+      throw error;
+    }
 
     logger.info('Starting Aider...', {
       baseDir: this.task.getTaskDir(),
@@ -230,13 +234,21 @@ export class AiderManager {
     });
 
     const aiderProcess = this.aiderProcess;
-    aiderProcess.on('close', (code) => this.handleAiderProcessExit(aiderProcess, code));
+    aiderProcess.once('error', (error) => {
+      connector.revoke();
+      logger.error('Aider process failed to start:', error);
+    });
+    aiderProcess.on('close', (code) => {
+      connector.revoke();
+      this.handleAiderProcessExit(aiderProcess, code);
+    });
 
     void this.writeAiderProcessPidFile();
   }
 
   public async kill(): Promise<void> {
     if (this.aiderProcess) {
+      this.revokeConnectorAuthorization?.();
       logger.info('Killing Aider...', {
         baseDir: this.task.getTaskDir(),
         taskId: this.task.task.id,

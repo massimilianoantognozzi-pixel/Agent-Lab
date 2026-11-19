@@ -236,7 +236,7 @@ export default class PlannotatorExtension implements Extension {
             }
 
             context.log('Starting code review server...', 'info');
-            const server = startReviewServer({
+            const server = await startReviewServer({
               rawPatch: patch,
               gitRef: label,
               htmlContent: reviewHtmlContent,
@@ -246,13 +246,17 @@ export default class PlannotatorExtension implements Extension {
               cwd,
             });
 
-            context.log(`Opening code review UI at ${server.url}`, 'info');
-            void context.openUrl(server.url, 'modal-overlay');
-
-            const result = await server.waitForDecision();
-
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-            server.stop();
+            context.log('Opening code review UI', 'info');
+            const result = await (async () => {
+              try {
+                await context.openUrl(server.url, 'window');
+                const decision = await server.waitForDecision();
+                await new Promise((resolve) => setTimeout(resolve, 1500));
+                return decision;
+              } finally {
+                server.stop();
+              }
+            })();
 
             if (result.feedback) {
               void context.getTaskContext()?.runPrompt(`\`\`\`\n${result.feedback}\`\`\`\n\nAddress the Core Review Feedback.`);
@@ -321,15 +325,24 @@ export default class PlannotatorExtension implements Extension {
 
           // Start review server
           context.log('Starting plan review server...', 'info');
-          const server = startPlanReviewServer({
+          const server = await startPlanReviewServer({
             plan: planContent,
             htmlContent: planHtmlContent,
             origin: 'aiderdesk',
           });
 
           // Open browser
-          context.log(`Opening modal-overlay with ${server.url}`, 'info');
-          void context.openUrl(server.url, 'modal-overlay');
+          context.log('Opening plan review UI', 'info');
+          if (signal?.aborted) {
+            server.stop();
+            return 'Interrupted by user';
+          }
+          try {
+            await context.openUrl(server.url, 'window');
+          } catch {
+            server.stop();
+            return 'Unable to open plan review';
+          }
 
           // Wait for user decision or abort signal
           const result = await new Promise<{ approved: boolean; feedback?: string } | 'aborted'>((resolve) => {
@@ -338,6 +351,10 @@ export default class PlannotatorExtension implements Extension {
               resolve('aborted');
             };
 
+            if (signal?.aborted) {
+              abortHandler();
+              return;
+            }
             signal?.addEventListener('abort', abortHandler);
 
             server.waitForDecision().then((decision) => {

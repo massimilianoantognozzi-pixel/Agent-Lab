@@ -1,3 +1,5 @@
+import { newWorkRequestPattern, workCommandPattern } from '@common/work-commands';
+
 import { projectWorkflowCommandPattern } from '@/task/workflow-project-commands';
 
 const styles = String.raw`
@@ -255,9 +257,9 @@ const labels = {
   kind: { bug: 'Bug', change: 'Modifica', feature: 'Funzionalità' },
 };
 const autonomyHelp = {
-  manual: 'Chiede conferma per strumenti e piano.',
-  guided: 'Usa gli strumenti consentiti e chiede di approvare il piano.',
-  autonomous: 'Procede con gli strumenti consentiti.',
+  manual: 'Preferenza salvata nel task. Nel flusso governato strumenti, controlli e approvazioni seguono il piano autorizzato.',
+  guided: 'Preferenza salvata nel task. Non modifica le approvazioni del flusso governato né abilita comandi sul PC.',
+  autonomous: 'Preferenza salvata nel task. Il flusso governato mantiene il proprio perimetro e i controlli del piano.',
 };
 let token = storage.getItem(keys.token) || '';
 let authenticated = false;
@@ -414,7 +416,10 @@ function fitPrompt() {
   const prompt = ui('prompt');
   prompt.style.height = 'auto';
   prompt.style.height = Math.min(prompt.scrollHeight, 122) + 'px';
-  ui('run').disabled = !prompt.value.trim() || busy || Boolean(current?.running) || (view === 'chat' && !current);
+  const showStop = Boolean(current?.running) && !/^\/?chiudi$/i.test(prompt.value.trim());
+  ui('run').hidden = showStop;
+  ui('stop').hidden = !showStop;
+  ui('run').disabled = !prompt.value.trim() || busy || showStop || (view === 'chat' && !current);
 }
 
 function renderTasks() {
@@ -469,8 +474,6 @@ function renderChat() {
   ui('effort-label').textContent = modelLabel + ' · ' + (labels.reasoning[effort] || labels.reasoning.default);
   ui('work-kind').setAttribute('aria-label', 'Tipo di lavoro: ' + labels.kind[kind]);
   ui('prompt').placeholder = view === 'new' ? 'Cosa programmiamo adesso?' : 'Lavora su PC Agent-Lab';
-  ui('run').hidden = Boolean(current?.running);
-  ui('stop').hidden = !current?.running;
 
   const scroll = ui('chat-scroll');
   const atEnd = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 75;
@@ -482,7 +485,7 @@ function renderChat() {
     ui('messages').replaceChildren(...messageNodes(messages));
     changed = true;
   }
-  const eventKey = JSON.stringify([flow?.phase, flow?.revision, flow?.plan?.questions, current?.running, current?.failed, current?.state]);
+  const eventKey = JSON.stringify([flow?.phase, flow?.revision, flow?.plan?.questions, current?.running, current?.failed, current?.failureReason, current?.state]);
   if (renderedEvents !== eventKey) {
     renderedEvents = eventKey;
     const events = [];
@@ -495,7 +498,7 @@ function renderChat() {
         await action('resume', { id: selected });
       })));
     }
-    if ((current?.failed || current?.state === 'INTERRUPTED') && !current?.running) events.push(element('p', 'sheet-note', 'Operazione interrotta.'));
+    if ((current?.failed || current?.state === 'INTERRUPTED') && !current?.running) events.push(element('p', 'sheet-note', current?.failureReason || 'Operazione interrotta.'));
     ui('chat-events').replaceChildren(...events);
     if (openedSheet === 'plan' || (openedSheet === 'checks' && deliveryAtOpen !== flow?.revision)) renderSheet(openedSheet);
     changed = true;
@@ -588,7 +591,7 @@ async function refresh() {
       const data = await request('/api/tasks/' + encodeURIComponent(id));
       if (snapshot !== generation || id !== selected) return;
       if (!current && Object.hasOwn(labels.kind, data.task?.workflow?.kind)) kind = data.task.workflow.kind;
-      current = { ...data.task, failed: data.failed };
+      current = { ...data.task, failed: data.failed, failureReason: data.failureReason };
       renderChat();
     }
   } catch (error) {
@@ -839,16 +842,60 @@ ui('prompt').addEventListener('input', fitPrompt);
 ui('composer').addEventListener('submit', event => {
   event.preventDefault();
   const text = ui('prompt').value.trim();
-  if (!text || current?.running || (view === 'chat' && !current)) return;
+  if (!text || (current?.running && !/^\/?chiudi$/i.test(text)) || (view === 'chat' && !current)) return;
   void perform(async () => {
     const origin = generation;
-    const isNew = view === 'new';
-    const workKind = kind;
-    const options = { reasoning: draft.reasoning };
-    if (!projectSettings.autonomyLocked) options.autonomy = draft.autonomy;
+    const workCommand = ${workCommandPattern}.exec(text);
+    if (workCommand) {
+      const command = '/' + workCommand[1].toLowerCase();
+      if (command !== '/riprendi') {
+        const source = command === '/chiudi' ? selected : '';
+        if (command === '/chiudi' && current?.running) {
+          const id = selected;
+          await action('stop', { id });
+          const deadline = Date.now() + 60000;
+          while ((await request('/api/tasks/' + encodeURIComponent(id))).task?.running) {
+            if (generation !== origin) return;
+            if (Date.now() >= deadline) throw new Error('Il lavoro si sta fermando. La chiusura può proseguire quando le scritture sono terminate.');
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        }
+        if (generation !== origin) return;
+        const options = { reasoning: view === 'new' ? draft.reasoning : 'default' };
+        if (!projectSettings.autonomyLocked) options.autonomy = view === 'new' ? draft.autonomy : projectSettings.defaultAutonomy;
+        const { id } = await action('create', options);
+        if (generation === origin) selectTask(id);
+        await action('run', { id, prompt: source ? command + ' ' + source : command });
+        return;
+      }
+      const data = await request('/api/tasks');
+      if (generation !== origin) return;
+      loadTaskList(data);
+      const target = view === 'new' ? tasks.find(task => task.latestResumable) : tasks.find(task => task.id === selected && task.resumable);
+      const id = target?.id || (view === 'chat' ? selected : (await action('create', {})).id);
+      await action('run', { id, prompt: '/riprendi' });
+      if (generation === origin) selectTask(id);
+      return;
+    }
+    const initialRequest = ${newWorkRequestPattern}.exec(text)?.[1].trim();
+    if (/^\/riprendi\s+\S/i.test(text)) throw new Error('Usa /riprendi senza argomenti.');
+    const isNew = view === 'new' || Boolean(initialRequest);
+    const workKind = initialRequest && view === 'chat' ? 'feature' : kind;
+    const prompt = initialRequest ? '/inizia ' + initialRequest : ${projectWorkflowCommandPattern}.test(text) ? text : '/workflow ' + workKind + ' ' + text;
+    if (prompt.length > 1500) throw new Error('La richiesta supera la lunghezza consentita.');
+    const options = { reasoning: view === 'new' ? draft.reasoning : 'default' };
+    if (!projectSettings.autonomyLocked) options.autonomy = view === 'new' ? draft.autonomy : projectSettings.defaultAutonomy;
     const id = isNew ? (await action('create', options)).id : selected;
-    const prompt = ${projectWorkflowCommandPattern}.test(text) ? text : '/workflow ' + workKind + ' ' + text;
-    await action('run', { id, prompt });
+    try {
+      await action('run', { id, prompt });
+    } catch (error) {
+      if (isNew && generation === origin) {
+        selectTask(id);
+        ui('prompt').value = initialRequest || text;
+        fitPrompt();
+      }
+      throw error;
+    }
     if (generation !== origin) return;
     if (isNew) selectTask(id);
     ui('prompt').value = '';

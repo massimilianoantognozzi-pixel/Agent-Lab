@@ -3,6 +3,8 @@ import { BrowserBootstrap, ExtensionUIComponent, ExtensionUIRefreshData, TaskDat
 import { type AxiosInstance, create } from 'axios';
 import { io, Socket } from 'socket.io-client';
 
+import { getBrowserSocketAuth } from './browser-socket-auth';
+
 export type ReadonlyEvent = {
   type: string;
   data: unknown;
@@ -37,7 +39,7 @@ const getBaseUrl = (): string => {
 };
 
 export const loadBrowserBootstrap = async (): Promise<BrowserBootstrap> => {
-  const response = await create().get<BrowserBootstrap>(`${getBaseUrl()}/api/readonly/bootstrap`);
+  const response = await create({ withCredentials: true }).get<BrowserBootstrap>(`${getBaseUrl()}/api/readonly/bootstrap`);
   return response.data;
 };
 
@@ -51,9 +53,9 @@ export class ReadonlyBrowserApi implements ExtensionDisplayAPI {
 
   constructor(private readonly projectDir: string) {
     const baseUrl = getBaseUrl();
-    this.client = create({ baseURL: `${baseUrl}/api/readonly` });
+    this.client = create({ baseURL: `${baseUrl}/api/readonly`, withCredentials: true });
     this.socket = io(baseUrl, {
-      auth: { readonly: true },
+      auth: getBrowserSocketAuth(baseUrl),
       autoConnect: true,
       forceNew: true,
       reconnection: true,
@@ -64,6 +66,11 @@ export class ReadonlyBrowserApi implements ExtensionDisplayAPI {
         projectDir: this.projectDir,
         eventTypes: EVENT_TYPES,
       });
+    });
+    this.socket.on('disconnect', (reason) => {
+      if (reason === 'io server disconnect') {
+        window.location.reload();
+      }
     });
     // 'reconnect' is only emitted on the Manager (socket.io does not forward it to the Socket)
     this.socket.io.on('reconnect', () => {

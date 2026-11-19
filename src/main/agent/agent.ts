@@ -70,6 +70,7 @@ import { extractProposedPlan, planResponseText, ProposedPlanParser } from './pro
 import { createMemoryToolset } from './tools/memory';
 import { createSkillsToolset } from './tools/skills';
 import { createGeneralKnowledgeTools } from './tools/general-knowledge';
+import { DesktopStopBoundary, checkoutIsClosing } from './desktop-stop';
 import { McpManager } from './mcp-manager';
 import { ApprovalManager } from './tools/approval-manager';
 import { convertImageToolResults } from './message-preparation/provider-compatibility';
@@ -93,6 +94,7 @@ import {
 } from './compaction';
 import { createLabProjectTools } from './tools/lab-project';
 import { createRecordedInput, TurnSettingsMismatch, workerToolFingerprint, type RecordedModelSettings, type WorkerProgress } from './worker-checkpoint';
+import { AgentNoProgress, AgentProgress } from './agent-progress';
 import { recoverCompletedToolStep } from './recover-completed-tool-step';
 
 import type { ToolsetToolEntry } from '@common/extensions';
@@ -106,9 +108,9 @@ import { PromptsManager } from '@/prompts';
 import { AIDER_DESK_PROJECT_RULES_DIR } from '@/constants';
 import { Task } from '@/task';
 import { assertWorkflowText, isGovernedWorkflow } from '@/task/workflow-policy';
-import { uncachedGoalTokens } from '@/task/agent-goal';
+import { uncachedGoalTokens, goalVerificationBinding } from '@/task/agent-goal';
 import { AgentDesignReviewPending } from '@/task/agent-design-review';
-import { NATIVE_EMPTY_TEST_REPORT, NATIVE_VERIFICATION_RESEARCH_QUERY } from '@/task/goal-verification';
+import { goalWorktreeRevision, NATIVE_EMPTY_TEST_REPORT, NATIVE_VERIFICATION_RESEARCH_QUERY } from '@/task/goal-verification';
 import { Store } from '@/store';
 import logger from '@/logger';
 import { prepareMessagesForModel } from '@/agent/message-preparation';
@@ -212,6 +214,10 @@ const isContextOverflow = (error: unknown): boolean => {
 };
 
 export class Agent {
+  readonly desktopStop = new DesktopStopBoundary();
+  get hasDesktopProcesses() {
+    return this.pendingCommands.size > 0;
+  }
   private abortControllers: Map<string, AbortController> = new Map();
   private pendingCommands = new Set<Promise<unknown>>();
   private commandSession = {
@@ -605,7 +611,17 @@ export class Agent {
             signal: this.commandSession.controller.signal,
             commands: this.commandSession.commands,
           };
-      const powerTools = createPowerToolset(task, profile, promptContext, abortSignal, knowledgeRunId, this.pendingCommands, commandSession, turnSignal);
+      const powerTools = createPowerToolset(
+        task,
+        profile,
+        promptContext,
+        abortSignal,
+        knowledgeRunId,
+        this.pendingCommands,
+        commandSession,
+        turnSignal,
+        this.desktopStop,
+      );
       nativeShell = powerTools['power---bash'];
       nativeShellPoll = powerTools['power---bash_poll'];
       nativeShellPollExecute = nativeShellPoll?.execute ?? null;
@@ -972,6 +988,16 @@ export class Agent {
           }
         },
       };
+      const execute = wrappedToolSet[toolName].execute!;
+      // Delegation can wait on another model. Its actual tool calls share this
+      // barrier; waiting on the outer call as well would postpone cancellation.
+      const protect = !toolName.startsWith('subagents---') && toolName !== 'request_user_input';
+      wrappedToolSet[toolName].execute = (input, options) => {
+        if (task.getTaskDir && checkoutIsClosing(task.getTaskDir())) {
+          throw new Error('Chiusura desktop in corso.');
+        }
+        return this.desktopStop.run(async () => await execute(input, options), protect);
+      };
       if (isNativePoll) {
         Object.defineProperty(wrappedToolSet[toolName], NATIVE_BASH_POLL_CAPABILITY, { value: true });
       }
@@ -1009,6 +1035,9 @@ export class Agent {
     },
     reviewRootChanges?: (signal: AbortSignal, usage?: AgentGoalUsage) => Promise<string | undefined>,
   ): Promise<ContextMessage[]> {
+    if (this.desktopStop.requested || (task.getTaskDir && checkoutIsClosing(task.getTaskDir()))) {
+      throw new Error('Sessione sospesa dal desktop.');
+    }
     const sessionSignal = this.commandSession.controller.signal;
     sessionSignal.throwIfAborted();
     if (isGovernedWorkflow(task.getProjectDir())) {
@@ -1208,7 +1237,7 @@ export class Agent {
             canSample: () => (goalTurn?.goal.tokenBudget === undefined ? true : goalTurn.canExecute()),
           }
         : descendantGoalUsage;
-    const canSampleWithinGoalBudget = () => goalUsage?.canSample() ?? true;
+    const canSampleWithinGoalBudget = () => !this.desktopStop.requested && (goalUsage?.canSample() ?? true);
     const reviewBeforeCompletion = async () => {
       if (!reviewRootChanges || !(await canSampleWithinGoalBudget())) {
         return undefined;
@@ -1451,6 +1480,8 @@ export class Agent {
       });
 
       let retryGuidance: string | undefined;
+      let noProgressGuidance: string | undefined;
+      const progressTracker = mode === 'agent' && !profile.isSubagent && workerProgress ? new AgentProgress() : undefined;
       let recoveryResearch: string | undefined;
       let repeatedGoalReads = 0;
       const editToolName = `${POWER_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${POWER_TOOL_FILE_EDIT}`;
@@ -1544,6 +1575,7 @@ export class Agent {
                 ? 'Use the current file read to choose a short, unique search fragment, copied exactly. Make a different replacement, then run the original verification again.'
                 : undefined,
             retryGuidance,
+            noProgressGuidance,
           ]
             .filter(Boolean)
             .join('\n\n'),
@@ -1580,6 +1612,8 @@ export class Agent {
         if (!inputs.length) {
           return;
         }
+        progressTracker?.reset();
+        noProgressGuidance = undefined;
         repeatedGoalReads = 0;
         recoverGoalReadLoop = false;
         editReadTarget = undefined;
@@ -1609,6 +1643,8 @@ export class Agent {
         const steering = [...queuedSteering, ...(takeSteering?.() ?? [])];
         queuedSteering = [];
         if (steering.length) {
+          progressTracker?.reset();
+          noProgressGuidance = undefined;
           repeatedGoalReads = 0;
           recoverGoalReadLoop = false;
           previousFailedQuery = undefined;
@@ -1635,6 +1671,7 @@ export class Agent {
         let iterationError: unknown | null = null;
         let finishReason: null | FinishReason = null;
         let currentStepMessages: ContextMessage[] = [];
+        let progressResults: { toolName: string; input?: unknown; output: unknown }[] = [];
         let verificationOutcome: { query: string; failed: boolean } | undefined;
         let toolExecutionStarted = false;
         let completionReceived = false;
@@ -1752,6 +1789,7 @@ export class Agent {
             }
 
             const toolResults = stepResult.toolResults ?? [];
+            progressResults = toolResults;
             if (mode === 'agent' && !profile.isSubagent) {
               for (const { toolName, output } of toolResults) {
                 if (
@@ -2190,6 +2228,36 @@ export class Agent {
           effectiveAbortSignal.throwIfAborted();
         }
 
+        const activeCommands =
+          task.hasPendingWorkerRuns ||
+          [...this.commandSession.commands.values()].some(
+            (command) => command.directory === task.getTaskDir() && command.profileId === profile.id && this.pendingCommands.has(command.completion),
+          );
+        if (activeCommands) {
+          progressTracker?.reset();
+        }
+        const observedProgress = !activeCommands
+          ? await progressTracker?.observe(progressResults, () => goalWorktreeRevision(task.getTaskDir()).catch(() => undefined))
+          : undefined;
+        noProgressGuidance = observedProgress
+          ? 'Le stesse operazioni concluse hanno restituito gli stessi risultati senza modifiche osservate ai sorgenti. Cambia strategia o acquisisci una nuova evidenza: ripetere la stessa sequenza fermerà il lavoro con un punto di ripresa.'
+          : undefined;
+        if (observedProgress?.action === 'stop') {
+          if (rootSteering && (await rootSteering.hasPendingOrClose())) {
+            await appendRootSteering(await rootSteering.take());
+            progressTracker?.reset();
+            noProgressGuidance = undefined;
+            continue;
+          }
+          await workerProgress!({
+            messages: [...contextMessages, ...resultMessages],
+            noProgress: { ...observedProgress.checkpoint, ...(goalTurn ? { goalBinding: goalVerificationBinding(goalTurn.goal) } : {}) },
+          });
+          throw new AgentNoProgress(
+            'Tentativi ripetuti senza progresso osservabile. Punto di ripresa conservato; il lavoro resta da completare. Riprendi esplicitamente o modifica le condizioni prima di continuare.',
+          );
+        }
+
         if (retryAfterRecordedTools !== undefined && continueGoal && (await canSampleWithinGoalBudget())) {
           task.addLogMessage('loading', `Tentativo di riconnessione al provider (${providerRetryCount}/${maxProviderRetries})…`, false, promptContext);
           await wait(Math.min(retryAfterRecordedTools, 2_147_483_647), undefined, { signal: effectiveAbortSignal });
@@ -2427,7 +2495,7 @@ export class Agent {
       if (goalTurn && isProviderUsageLimit(error)) {
         await goalTurn.reportUsageLimit();
       } else {
-        if (goalTurn && !(error instanceof AgentDesignReviewPending) && !canRetryProvider(error)) {
+        if (goalTurn && !(error instanceof AgentDesignReviewPending) && !(error instanceof AgentNoProgress) && !canRetryProvider(error)) {
           await goalTurn.reportTerminalError();
         }
         await task.updateTask({
@@ -2962,6 +3030,16 @@ export class Agent {
     await Promise.allSettled(this.pendingCommands);
     this.commandSession.commands.clear();
     this.commandSession.controller = new AbortController();
+  }
+
+  async stopAtDesktopBoundary(): Promise<void> {
+    this.desktopStop.request();
+    await this.desktopStop.drain();
+    // A yielded shell call has already left the tool wrapper, but the owned
+    // process can still be writing to disk.
+    await Promise.allSettled(this.pendingCommands);
+    await this.stopAndDrainCommands();
+    this.desktopStop.assertQuiescent();
   }
 
   isRunning() {

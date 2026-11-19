@@ -3,6 +3,8 @@ import { Server as HttpServer } from 'http';
 import { ModelsData, QuestionData, TokensInfoData } from '@common/types';
 import { Server, Socket } from 'socket.io';
 
+import type { BrowserSession, ServerAccess } from '@/server/server-access';
+
 import logger from '@/logger';
 import {
   isAddFileMessage,
@@ -32,8 +34,7 @@ import { EventManager } from '@/events';
 import { EventsHandler } from '@/events-handler';
 import { Store } from '@/store';
 import { createCorsOriginValidator } from '@/server/cors';
-import { READONLY_MODE } from '@/constants';
-import { CONNECTOR_TOKEN } from '@/connector/connector-auth';
+import { getConnectorAuthorization } from '@/connector/connector-auth';
 
 export const READONLY_EVENT_TYPES = [
   'task-created',
@@ -67,12 +68,9 @@ export class ConnectorManager {
     private readonly eventManager: EventManager,
     private readonly store: Store,
     private readonly eventsHandler: EventsHandler,
+    private readonly access: ServerAccess,
   ) {
     this.init(httpServer);
-  }
-
-  private get isReadonlyMode(): boolean {
-    return READONLY_MODE || this.store.getSettings().server.readonly === true;
   }
 
   public init(httpServer: HttpServer): void {
@@ -86,18 +84,15 @@ export class ConnectorManager {
     });
 
     this.io.use((socket, next) => {
-      if (!this.isReadonlyMode) {
+      const connector = getConnectorAuthorization(socket.handshake.auth.connectorToken);
+      if (connector?.authorized()) {
+        socket.data.connectorAuthorization = connector;
         next();
         return;
       }
-      const connectorToken = socket.handshake.auth.connectorToken;
-      if (typeof connectorToken === 'string' && connectorToken === CONNECTOR_TOKEN) {
-        socket.data.clientRole = 'connector';
-        next();
-        return;
-      }
-      if (socket.handshake.auth.readonly === true) {
-        socket.data.clientRole = 'readonly';
+      const browser = this.access.takeSocketTicket(socket.handshake.auth.ticket, socket.handshake.headers);
+      if (browser) {
+        socket.data.browserSession = browser;
         next();
         return;
       }
@@ -111,6 +106,12 @@ export class ConnectorManager {
     });
 
     this.io.on('connection', (socket) => {
+      const authorization = socket.data.connectorAuthorization as ReturnType<typeof getConnectorAuthorization>;
+      if (authorization && !authorization.authorized()) {
+        socket.disconnect(true);
+        return;
+      }
+      const unsubscribeRevocation = authorization?.onRevoke(() => socket.disconnect(true));
       logger.info('Socket.IO client connected', {
         socketId: socket.id,
         handshake: {
@@ -121,7 +122,8 @@ export class ConnectorManager {
 
       socket.on('message', (message) => this.processMessage(socket, message));
       socket.on('log', (message) => {
-        if (this.isReadonlyMode && socket.data.clientRole !== 'connector') {
+        const connector = socket.data.connectorAuthorization as ReturnType<typeof getConnectorAuthorization>;
+        if (!connector?.authorized() || !this.findConnectorBySocket(socket)) {
           socket.disconnect(true);
           return;
         }
@@ -129,6 +131,7 @@ export class ConnectorManager {
       });
 
       socket.on('disconnect', (reason) => {
+        unsubscribeRevocation?.();
         const connector = this.findConnectorBySocket(socket);
         logger.info('Socket.IO client disconnected', {
           baseDir: connector?.baseDir,
@@ -151,27 +154,50 @@ export class ConnectorManager {
     await this.io?.close();
   }
 
-  private processMessage = (socket: Socket, message: Message) => {
-    try {
-      if (this.isReadonlyMode && socket.data.clientRole === 'readonly') {
-        if (isReadonlySubscribeEventsMessage(message)) {
-          const project = this.projectManager.getOpenProject(message.projectDir);
-          const validEventTypes = message.eventTypes.every((eventType) => readonlyEventTypes.has(eventType));
-          if (!project || project.baseDir !== message.projectDir || !validEventTypes) {
-            socket.disconnect(true);
-            return;
-          }
+  private processBrowserMessage(socket: Socket, message: Message, session: BrowserSession): void {
+    if (!session.authorized()) {
+      socket.disconnect(true);
+      return;
+    }
+    if (session.role === 'readonly') {
+      if (isReadonlySubscribeEventsMessage(message)) {
+        const project = this.projectManager.getOpenProject(message.projectDir);
+        const validEventTypes = message.eventTypes.every((eventType) => readonlyEventTypes.has(eventType));
+        if (project?.baseDir === message.projectDir && validEventTypes) {
           this.eventManager.subscribe(socket, {
             eventTypes: message.eventTypes,
             baseDirs: [message.projectDir],
             readonly: true,
+            authorized: session.authorized,
           });
           return;
         }
-        if (isReadonlyUnsubscribeEventsMessage(message)) {
-          this.eventManager.unsubscribe(socket);
-          return;
-        }
+      } else if (isReadonlyUnsubscribeEventsMessage(message)) {
+        this.eventManager.unsubscribe(socket);
+        return;
+      }
+    } else if (isSubscribeEventsMessage(message)) {
+      this.eventManager.subscribe(socket, { eventTypes: message.eventTypes, baseDirs: message.baseDirs, authorized: session.authorized });
+      return;
+    } else if (isUnsubscribeEventsMessage(message)) {
+      this.eventManager.unsubscribe(socket);
+      return;
+    } else if (isWriteToTerminalMessage(message)) {
+      this.eventsHandler.writeToTerminal(message.terminalId, message.data);
+      return;
+    }
+    socket.disconnect(true);
+  }
+
+  private processMessage = (socket: Socket, message: Message) => {
+    try {
+      const browser = socket.data.browserSession as BrowserSession | undefined;
+      if (browser) {
+        this.processBrowserMessage(socket, message, browser);
+        return;
+      }
+      const authorization = socket.data.connectorAuthorization as ReturnType<typeof getConnectorAuthorization>;
+      if (!authorization?.authorized()) {
         socket.disconnect(true);
         return;
       }
@@ -181,6 +207,13 @@ export class ConnectorManager {
       });
 
       if (isInitMessage(message)) {
+        if (message.source !== 'aider' || message.baseDir !== authorization.baseDir || message.taskId !== authorization.taskId) {
+          socket.disconnect(true);
+          return;
+        }
+        if (this.findConnectorBySocket(socket)) {
+          return;
+        }
         logger.info('Initializing connector for base directory:', {
           baseDir: message.baseDir,
           taskId: message.taskId,
@@ -195,7 +228,7 @@ export class ConnectorManager {
             baseDir: message.baseDir,
             taskId: message.taskId,
           });
-          this.removeConnector(existingConnector.socket);
+          existingConnector.socket.disconnect(true);
         }
 
         const connector = new Connector(socket, message.baseDir, message.taskId, message.source, message.listenTo, message.inputHistoryFile);
@@ -356,17 +389,6 @@ export class ConnectorManager {
           .getProject(connector.baseDir)
           .getTask(connector.taskId)
           ?.addRoleContextMessage(message.role, message.content, message.usageReport);
-      } else if (isSubscribeEventsMessage(message)) {
-        logger.info('Subscribing to events', { eventTypes: message.eventTypes, baseDirs: message.baseDirs });
-        this.eventManager.subscribe(socket, {
-          eventTypes: message.eventTypes,
-          baseDirs: message.baseDirs,
-        });
-      } else if (isUnsubscribeEventsMessage(message)) {
-        logger.info('Unsubscribing from events');
-        this.eventManager.unsubscribe(socket);
-      } else if (isWriteToTerminalMessage(message)) {
-        this.eventsHandler.writeToTerminal(message.terminalId, message.data);
       } else {
         logger.warn('Unknown message type: ', message);
       }
@@ -376,10 +398,6 @@ export class ConnectorManager {
   };
 
   private processLogMessage = (socket: Socket, message: LogMessage) => {
-    if (this.isReadonlyMode && socket.data.clientRole !== 'connector') {
-      socket.disconnect(true);
-      return;
-    }
     logger.debug('Received log message from connector', { message });
     const connector = this.findConnectorBySocket(socket);
     if (!connector) {

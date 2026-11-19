@@ -127,8 +127,9 @@ RUN git config --global --add safe.directory "*"
 
 # Optional: Set default port (can be overridden at runtime)
 ENV AIDER_DESK_PORT=24337
+ENV AIDER_DESK_SERVER_HOST=0.0.0.0
 
-# Optional: Set default auth (can be overridden at runtime)
+# Supply server credentials at runtime to enable the authenticated interface.
 # ENV AIDER_DESK_USERNAME=
 # ENV AIDER_DESK_PASSWORD=
 
@@ -140,7 +141,7 @@ EXPOSE ${AIDER_DESK_PORT}
 
 # Health check - check if server is responding
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:${AIDER_DESK_PORT}/', (r) => {process.exit(r.statusCode === 200 || r.statusCode === 404 ? 0 : 1)}).on('error', () => process.exit(1))"
+    CMD node -e "require('http').get('http://127.0.0.1:${AIDER_DESK_PORT}/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))"
 
 # Start the server
 CMD ["node", "out/server/runner.js"]

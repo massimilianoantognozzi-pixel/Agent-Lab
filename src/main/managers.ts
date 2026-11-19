@@ -166,10 +166,14 @@ export const initManagers = async (store: Store, windowManager?: WindowManager):
   const serverController = new ServerController(httpServer, projectManager, eventsHandler, store, pythonInstaller);
 
   // Initialize connector manager with the server
-  const connectorManager = new ConnectorManager(httpServer, projectManager, eventManager, store, eventsHandler);
+  const connectorManager = new ConnectorManager(httpServer, projectManager, eventManager, store, eventsHandler, serverController.access);
 
   // Start listening
-  httpServer.listen(SERVER_PORT, process.env.AIDER_DESK_WORKFLOW_PILOT_DIR || process.env.AIDER_DESK_WORKFLOW_CONFIG ? '127.0.0.1' : getLabServerHost());
+  const serverHost =
+    process.env.AIDER_DESK_WORKFLOW_PILOT_DIR || process.env.AIDER_DESK_WORKFLOW_CONFIG
+      ? '127.0.0.1'
+      : (getLabServerHost() ?? process.env.AIDER_DESK_SERVER_HOST ?? '127.0.0.1');
+  httpServer.listen(SERVER_PORT, serverHost);
   const workflowRemote = process.env.AIDER_DESK_WORKFLOW_REMOTE_PAIRING
     ? await (await import('./server/workflow-remote')).startWorkflowRemote(eventsHandler).catch(() => {
         logger.error('Il controllo remoto Agent-Lab non è disponibile.');

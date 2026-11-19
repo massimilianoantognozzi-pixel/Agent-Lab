@@ -226,12 +226,14 @@ export const McpSettings = ({ mcpServers, setMcpServers, openProjects = [], sele
         ...prev,
         [name]: { tools: null, loading: true, error: null },
       }));
-      void api
-        .reloadMcpServer(name, config)
+      const reload = projectDir
+        ? api.reloadMcpServers(projectDir, true).then(() => api.loadMcpServerTools(name, config, projectDir))
+        : api.reloadMcpServer(name, config);
+      void reload
         .then((loadedTools) => {
           setServersTools((prev) => ({
             ...prev,
-            [name]: { tools: loadedTools, loading: false, error: null },
+            [name]: { tools: Array.isArray(loadedTools) ? loadedTools : null, loading: false, error: typeof loadedTools === 'string' ? loadedTools : null },
           }));
         })
         .catch((reloadError) => {
@@ -242,7 +244,7 @@ export const McpSettings = ({ mcpServers, setMcpServers, openProjects = [], sele
           }));
         });
     },
-    [api, servers],
+    [api, servers, projectDir],
   );
 
   const handleReload = () => {
@@ -357,6 +359,22 @@ export const McpSettings = ({ mcpServers, setMcpServers, openProjects = [], sele
 
       {/* Sidebar actions */}
       <div className="p-2 border-t border-border-default flex items-center justify-center gap-1">
+        {projectDir && api.approveProjectMcp && (
+          <Button
+            variant="text"
+            size="sm"
+            onClick={() => {
+              void api.approveProjectMcp?.(projectDir).catch((error: unknown) =>
+                setServersTools((previous) => ({
+                  ...previous,
+                  [activeServerName ?? 'project']: { tools: null, loading: false, error: extractIpcErrorMessage(error) },
+                })),
+              );
+            }}
+          >
+            {t('settings.agent.reviewProjectMcp', { defaultValue: 'Review project MCP' })}
+          </Button>
+        )}
         <Button onClick={() => setIsAddingServer(true)} variant="text" size="sm" color="primary" className="text-xs">
           <FaPlus className="mr-1.5 w-3 h-3" /> {t('settings.agent.addMcpServer')}
         </Button>

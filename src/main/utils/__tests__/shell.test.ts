@@ -53,6 +53,14 @@ const importShellModule = async () => {
   return await import('@/utils/shell');
 };
 
+it('preapproves a whole literal command and leaves shell forms to normal approval', async () => {
+  const { canPreapproveShellCommand } = await importShellModule();
+  expect(canPreapproveShellCommand('git status', ['git status'])).toBe(true);
+  expect(canPreapproveShellCommand('git status --short', ['git status'])).toBe(false);
+  expect(canPreapproveShellCommand('ls ./docs', ['ls .*'])).toBe(true);
+  expect(canPreapproveShellCommand('ls "Docs and Examples"', ['ls .*'])).toBe(false);
+});
+
 const setupShell = async (shellName: 'bash' | 'zsh' | 'fish' | 'cmd' | 'pwsh' | 'powershell') => {
   const isWindows = shellName === 'cmd' || shellName === 'pwsh' || shellName === 'powershell';
   Object.defineProperty(process, 'platform', { configurable: true, value: isWindows ? 'win32' : 'linux' });

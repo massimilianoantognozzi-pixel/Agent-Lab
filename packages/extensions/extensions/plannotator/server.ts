@@ -7,7 +7,8 @@
  */
 
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
@@ -38,10 +39,57 @@ const html = (res: import('node:http').ServerResponse, content: string): void =>
   res.end(content);
 };
 
-const listenOnRandomPort = (server: Server): number => {
-  server.listen(0);
-  const addr = server.address() as { port: number };
-  return addr.port;
+const LISTEN_HOST = '127.0.0.1';
+
+const listenOnRandomPort = (server: Server): Promise<number> =>
+  new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, LISTEN_HOST, () => {
+      server.off('error', reject);
+      const addr = server.address() as { port: number };
+      resolve(addr.port);
+    });
+  });
+
+const createReviewAccess = () => {
+  const ticket = randomBytes(32).toString('hex');
+  const auth = randomBytes(32).toString('hex');
+  const cookie = `agentlab_review_${randomBytes(8).toString('hex')}`;
+  let claimed = false;
+  return {
+    url: (port: number) => `http://${LISTEN_HOST}:${port}/?review=${ticket}`,
+    authorize: (req: IncomingMessage, res: import('node:http').ServerResponse): URL | undefined => {
+      const host = `${LISTEN_HOST}:${req.socket.localPort}`;
+      const origin = `http://${host}`;
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      if (req.headers.host !== host || (req.headers.origin && req.headers.origin !== origin)) {
+        res.writeHead(403).end();
+        return undefined;
+      }
+      let url: URL;
+      try {
+        url = new URL(req.url ?? '/', origin);
+      } catch {
+        res.writeHead(400).end();
+        return undefined;
+      }
+      if (url.origin !== origin) {
+        res.writeHead(403).end();
+        return undefined;
+      }
+      if (!claimed && req.method === 'GET' && url.pathname === '/' && url.searchParams.get('review') === ticket) {
+        claimed = true;
+        res.writeHead(303, { Location: '/', 'Set-Cookie': `${cookie}=${auth}; Path=/; HttpOnly; SameSite=Strict` }).end();
+        return undefined;
+      }
+      if (!(req.headers.cookie ?? '').split(';').some((value) => value.trim() === `${cookie}=${auth}`)) {
+        res.writeHead(401).end();
+        return undefined;
+      }
+      return url;
+    },
+  };
 };
 
 /**
@@ -261,7 +309,7 @@ export interface PlanServerResult {
   stop: () => void;
 }
 
-export const startPlanReviewServer = (options: { plan: string; htmlContent: string; origin?: string }): PlanServerResult => {
+export const startPlanReviewServer = async (options: { plan: string; htmlContent: string; origin?: string }): Promise<PlanServerResult> => {
   // Version history
   const slug = generateSlug(options.plan);
   const project = detectProjectName();
@@ -278,8 +326,10 @@ export const startPlanReviewServer = (options: { plan: string; htmlContent: stri
     resolveDecision = r;
   });
 
+  const access = createReviewAccess();
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url!, 'http://localhost');
+    const url = access.authorize(req, res);
+    if (!url) return;
 
     if (url.pathname === '/api/plan/version') {
       const vParam = url.searchParams.get('v');
@@ -317,11 +367,11 @@ export const startPlanReviewServer = (options: { plan: string; htmlContent: stri
     }
   });
 
-  const port = listenOnRandomPort(server);
+  const port = await listenOnRandomPort(server);
 
   return {
     port,
-    url: `http://localhost:${port}`,
+    url: access.url(port),
     waitForDecision: () => decisionPromise,
     stop: () => server.close(),
   };
@@ -350,9 +400,9 @@ export interface ReviewServerResult {
 }
 
 /** Run a git command and return stdout (empty string on error). */
-const git = (cmd: string, cwd?: string): string => {
+const git = (args: string[], cwd?: string): string => {
   try {
-    return execSync(`git ${cmd}`, { 
+    return execFileSync('git', args, {
       encoding: 'utf-8', 
       stdio: ['pipe', 'pipe', 'pipe'], 
       cwd,
@@ -364,15 +414,15 @@ const git = (cmd: string, cwd?: string): string => {
 };
 
 export const getGitContext = (cwd?: string): GitContext => {
-  const currentBranch = git('rev-parse --abbrev-ref HEAD', cwd) || 'HEAD';
+  const currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd) || 'HEAD';
 
   let defaultBranch = '';
-  const symRef = git('symbolic-ref refs/remotes/origin/HEAD', cwd);
+  const symRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], cwd);
   if (symRef) {
     defaultBranch = symRef.replace('refs/remotes/origin/', '');
   }
   if (!defaultBranch) {
-    const hasMain = git('show-ref --verify refs/heads/main', cwd);
+    const hasMain = git(['show-ref', '--verify', 'refs/heads/main'], cwd);
     defaultBranch = hasMain ? 'main' : 'master';
   }
 
@@ -390,24 +440,26 @@ export const getGitContext = (cwd?: string): GitContext => {
 export const runGitDiff = (diffType: DiffType, defaultBranch = 'main', cwd?: string): { patch: string; label: string } => {
   switch (diffType) {
     case 'uncommitted':
-      return { patch: git('diff HEAD --src-prefix=a/ --dst-prefix=b/', cwd), label: 'Uncommitted changes' };
+      return { patch: git(['diff', 'HEAD', '--src-prefix=a/', '--dst-prefix=b/'], cwd), label: 'Uncommitted changes' };
     case 'staged':
-      return { patch: git('diff --staged --src-prefix=a/ --dst-prefix=b/', cwd), label: 'Staged changes' };
+      return { patch: git(['diff', '--staged', '--src-prefix=a/', '--dst-prefix=b/'], cwd), label: 'Staged changes' };
     case 'unstaged':
-      return { patch: git('diff --src-prefix=a/ --dst-prefix=b/', cwd), label: 'Unstaged changes' };
+      return { patch: git(['diff', '--src-prefix=a/', '--dst-prefix=b/'], cwd), label: 'Unstaged changes' };
     case 'last-commit':
-      return { patch: git('diff HEAD~1..HEAD --src-prefix=a/ --dst-prefix=b/', cwd), label: 'Last commit' };
-    case 'branch':
+      return { patch: git(['diff', 'HEAD~1..HEAD', '--src-prefix=a/', '--dst-prefix=b/'], cwd), label: 'Last commit' };
+    case 'branch': {
+      const base = git(['rev-parse', '--verify', '--end-of-options', `${defaultBranch}^{commit}`], cwd);
       return {
-        patch: git(`diff ${defaultBranch}..HEAD --src-prefix=a/ --dst-prefix=b/`, cwd),
+        patch: /^[0-9a-f]{40,64}$/.test(base) ? git(['diff', `${base}..HEAD`, '--src-prefix=a/', '--dst-prefix=b/'], cwd) : '',
         label: `Changes vs ${defaultBranch}`,
       };
+    }
     default:
       return { patch: '', label: 'Unknown diff type' };
   }
 };
 
-export const startReviewServer = (options: {
+export const startReviewServer = async (options: {
   rawPatch: string;
   gitRef: string;
   htmlContent: string;
@@ -415,7 +467,7 @@ export const startReviewServer = (options: {
   diffType?: DiffType;
   gitContext?: GitContext;
   cwd?: string;
-}): ReviewServerResult => {
+}): Promise<ReviewServerResult> => {
   let currentPatch = options.rawPatch;
   let currentGitRef = options.gitRef;
   let currentDiffType: DiffType = options.diffType || 'uncommitted';
@@ -425,8 +477,10 @@ export const startReviewServer = (options: {
     resolveDecision = r;
   });
 
+  const access = createReviewAccess();
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url!, 'http://localhost');
+    const url = access.authorize(req, res);
+    if (!url) return;
 
     if (url.pathname === '/api/diff' && req.method === 'GET') {
       json(res, {
@@ -458,11 +512,11 @@ export const startReviewServer = (options: {
     }
   });
 
-  const port = listenOnRandomPort(server);
+  const port = await listenOnRandomPort(server);
 
   return {
     port,
-    url: `http://localhost:${port}`,
+    url: access.url(port),
     waitForDecision: () => decisionPromise,
     stop: () => server.close(),
   };
@@ -477,14 +531,16 @@ export interface AnnotateServerResult {
   stop: () => void;
 }
 
-export const startAnnotateServer = (options: { markdown: string; filePath: string; htmlContent: string; origin?: string }): AnnotateServerResult => {
+export const startAnnotateServer = async (options: { markdown: string; filePath: string; htmlContent: string; origin?: string }): Promise<AnnotateServerResult> => {
   let resolveDecision!: (result: { feedback: string }) => void;
   const decisionPromise = new Promise<{ feedback: string }>((r) => {
     resolveDecision = r;
   });
 
+  const access = createReviewAccess();
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url!, 'http://localhost');
+    const url = access.authorize(req, res);
+    if (!url) return;
 
     if (url.pathname === '/api/plan' && req.method === 'GET') {
       json(res, {
@@ -502,11 +558,11 @@ export const startAnnotateServer = (options: { markdown: string; filePath: strin
     }
   });
 
-  const port = listenOnRandomPort(server);
+  const port = await listenOnRandomPort(server);
 
   return {
     port,
-    url: `http://localhost:${port}`,
+    url: access.url(port),
     waitForDecision: () => decisionPromise,
     stop: () => server.close(),
   };

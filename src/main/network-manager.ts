@@ -116,7 +116,7 @@ export class NetworkManager implements TlsPolicyRegistrar {
 
     if (oldProxy?.enabled !== newProxy?.enabled || oldProxy?.url !== newProxy?.url || oldProxy?.noProxy !== newProxy?.noProxy) {
       if (newProxy?.enabled && newProxy?.url) {
-        logger.info(`[NetworkManager] Applying proxy: ${newProxy.url}`);
+        logger.info('[NetworkManager] Applying configured proxy');
         this.applyProxy(newProxy.url, newProxy.noProxy);
       } else if (this.currentUrl !== null) {
         logger.info('[NetworkManager] Clearing proxy');
@@ -204,9 +204,9 @@ export class NetworkManager implements TlsPolicyRegistrar {
       this.currentNoProxy = noProxy;
       this.rebuildDispatchers();
 
-      logger.info(`[NetworkManager] Proxy initialized: ${url}`);
-    } catch (error) {
-      logger.error('[NetworkManager] Failed to initialize proxy', { error: error instanceof Error ? error.message : String(error) });
+      logger.info('[NetworkManager] Proxy initialized');
+    } catch {
+      logger.error('[NetworkManager] Failed to initialize proxy');
     }
   }
 

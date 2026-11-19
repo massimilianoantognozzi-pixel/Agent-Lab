@@ -69,6 +69,7 @@ import {
   parseSkillCommand,
   parseUsageReport,
 } from '@common/utils';
+import { canResumeWork, WorkResumeError } from '@common/work-commands';
 import {
   COMPACT_CONVERSATION_AGENT_PROFILE,
   CONFLICT_RESOLUTION_PROFILE,
@@ -104,6 +105,8 @@ import { readDevelopmentFiles, readDevelopmentHead } from './workflow-developmen
 import { workflowServiceRetryable } from './workflow-docker';
 import { isGovernedWorkflow, snapshotWorkflowFiles, workflowProjectFor } from './workflow-policy';
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
+import { sessionPrompt } from './session-prompts';
+import { beginDesktopWork, recordDesktopWrite, recordDesktopIntegration, collectDesktopEvidence } from './desktop-close';
 import { projectContinuationRevision, readWorkflowValidationRevision } from './workflow-project-run';
 import { readShadcnReferences } from './workflow-shadcn';
 import {
@@ -145,6 +148,7 @@ import type { SmartCompactionPassSelection } from '@/agent/smart-compaction';
 import type { SmartCompactionOptions } from '@common/extensions';
 import type { RecordedModelSettings, RootTurnRecord, WorkerProgress, WorkerRecord } from '@/agent/worker-checkpoint';
 
+import { checkoutIsClosing } from '@/agent/desktop-stop';
 import { ExtensionEventMap, ExtensionManager } from '@/extensions/extension-manager';
 import {
   createRecordedInput,
@@ -158,6 +162,15 @@ import {
 } from '@/agent/worker-checkpoint';
 import { defaultAgentReasoning } from '@/models/agent-reasoning';
 import { CODEX_PLAN_MODE } from '@/agent/codex-plan-mode';
+import { canResumeNoProgress } from '@/agent/agent-progress';
+import {
+  amendHostExecutionWork,
+  clearHostExecutionWork,
+  revokeHostExecutionGrant,
+  setHostExecutionWork,
+  withHostExecutionWork,
+  withRootHostExecutionWork,
+} from '@/agent/tools/host-execution';
 import { getAllFiles, isValidProjectFile } from '@/utils/file-system';
 import { isFreelanceEnabled } from '@/lab-projects/policy';
 import { isGeneralMode, isLabMode } from '@/lab-mode';
@@ -280,6 +293,49 @@ export class Task {
   private fileWatchGeneration = 0;
   private workflowRun?: AbortController;
   private workflowRunSettled?: Promise<void>;
+  private desktopCloseState?: 'closing' | 'paused';
+  private desktopJournal?: Promise<void>;
+
+  public beginNativeDesktopWork() {
+    return (this.desktopJournal ??= beginDesktopWork(
+      this.getTaskDir(),
+      this.taskId,
+      AIDER_DESK_DATA_DIR,
+      workflowProjectFor(this.getProjectDir())?.branches?.development,
+    ).catch((error) => {
+      this.desktopJournal = undefined;
+      logger.debug('Desktop work baseline unavailable', { taskId: this.taskId, error });
+    }));
+  }
+
+  public get recordsDesktopWrites() {
+    return Boolean(this.desktopJournal);
+  }
+
+  public async recordDesktopWrite(file: string, before: Buffer | null, after: Buffer) {
+    if (!this.desktopJournal) {
+      return;
+    }
+    await this.desktopJournal;
+    await recordDesktopWrite(this.getTaskDir(), this.taskId, AIDER_DESK_DATA_DIR, file, before, after).catch((error) =>
+      logger.warn('Could not attribute the file to the desktop session.', { taskId: this.taskId, error }),
+    );
+  }
+
+  public async desktopCloseEvidence() {
+    const history = await this.getContextMessages();
+    const checkpoint = typeof this.task.metadata?.recoverableRootTurn === 'string' ? this.task.metadata.recoverableRootTurn : undefined;
+    const root = checkpoint ? await this.readRootTurn() : undefined;
+    const evidence = collectDesktopEvidence(this.getTaskDir(), this.task, history, root?.turnId === checkpoint ? root : undefined);
+    if (workflowProjectFor(this.getProjectDir())) {
+      const state = await this.readGovernedTaskStatus();
+      evidence.messages += '\nFlusso governato: ' + JSON.stringify(state.workflow).slice(0, 5000);
+      if ('commit' in state.workflow && state.workflow.commit && state.workflow.phase === 'done') {
+        evidence.verifiedCommits = [state.workflow.commit];
+      }
+    }
+    return evidence;
+  }
   private workflowWakeTimer?: ReturnType<typeof setTimeout>;
   private workflowWakeGeneration = 0;
   private agentGoalWakeTimer?: ReturnType<typeof setTimeout>;
@@ -1128,6 +1184,97 @@ export class Task {
     }
   }
 
+  public async pauseForGovernedSessionClose(): Promise<void> {
+    const goal = this.governedContinuation();
+    if (this.workflowRun || goal?.state === 'active' || goal?.state === 'waiting') {
+      await this.interruptResponse();
+      await this.waitForIdle();
+    }
+  }
+
+  public async stopForDesktopClose(): Promise<void> {
+    this.desktopCloseState = 'closing';
+    this.agent.desktopStop.request();
+    this.stopAgentGoalWake();
+    this.stopGovernedWake();
+    // Do not let an interrupted turn rewrite its recoverable record as a
+    // completed answer while draining already admitted tools.
+    if (this.rootTurnInUse) {
+      this.rootTurnClosed = true;
+    }
+    const active = this.isPromptRunning();
+    if (this.currentQuestion) {
+      await this.answerQuestion('n', 'Chiusura della sessione desktop.');
+    }
+    if (this.workflowRun) {
+      const settled = this.workflowRunSettled;
+      await this.agent.desktopStop.drain();
+      this.workflowRun.abort();
+      await settled;
+    }
+    const connectors = this.findMessageConnectors('desktop-safe-stop');
+    if (active && this.currentPromptContext && AIDER_MODES.includes(this.getCurrentMode()) && !connectors.length) {
+      throw new Error('Il connettore Aider attivo non può confermare un arresto sicuro. Pubblicazione sospesa.');
+    }
+    let stopError: unknown;
+    const drained = await Promise.allSettled([this.agent.stopAtDesktopBoundary(), ...connectors.map((connector) => connector.requestDesktopSafeStop())]);
+    for (const result of drained) {
+      if (result.status === 'rejected') {
+        stopError = result.reason;
+      }
+    }
+    if (isGovernedWorkflow(this.getProjectDir())) {
+      const goal = this.governedContinuation();
+      if (goal && (goal.state === 'active' || goal.state === 'waiting')) {
+        await this.saveTask({ metadata: { ...this.task.metadata, governedContinuation: { ...goal, state: 'paused' } } });
+      }
+    } else {
+      await this.changeAgentGoalStatus('paused');
+    }
+    if (active && (this.task.state === DefaultTaskState.InProgress || this.task.state === DefaultTaskState.ReadyForReview)) {
+      await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
+    }
+    for (const controller of Object.values(this.resolutionAbortControllers)) {
+      controller.abort();
+    }
+    while (this.isPromptRunning() || this.workerRuns.size || Object.keys(this.resolutionAbortControllers).length) {
+      if (this.workerRuns.size) {
+        await Promise.allSettled([...this.workerRuns]);
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+    await this.rootTurnWrites;
+    if (stopError) {
+      throw stopError;
+    }
+  }
+
+  public finishDesktopClose() {
+    this.desktopCloseState = 'paused';
+    this.desktopJournal = undefined;
+  }
+
+  public hasDesktopActivity() {
+    return (
+      this.isPromptRunning() ||
+      this.hasPendingWorkerRuns ||
+      this.agent.hasDesktopProcesses ||
+      this.hasQueuedPrompts() ||
+      !!this.workflowWakeTimer ||
+      !!this.agentGoalWakeTimer ||
+      !!this.currentQuestion ||
+      Object.keys(this.resolutionAbortControllers).length > 0
+    );
+  }
+
+  private reopenDesktopSession() {
+    if (this.desktopCloseState === 'paused') {
+      this.desktopCloseState = undefined;
+      this.agent.desktopStop.reopen();
+    }
+  }
+
   private managedPilotStatePath(): string {
     return managedWorkflowStatePath(AIDER_DESK_DATA_DIR, this.getProjectDir(), this.taskId);
   }
@@ -1201,7 +1348,16 @@ export class Task {
     return readRemoteRepositoryPatch(policy, this.managedPilotStatePath(), revision);
   }
 
-  public async runManagedDesktopPrompt(prompt: string, continuation = false): Promise<ResponseCompletedData[]> {
+  public async runManagedDesktopPrompt(prompt: string, continuation = false, sessionInstruction?: string): Promise<ResponseCompletedData[]> {
+    if (checkoutIsClosing(this.getTaskDir())) {
+      return [];
+    }
+    if (!continuation) {
+      this.reopenDesktopSession();
+    }
+    if (this.desktopCloseState) {
+      return [];
+    }
     if (!isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il progetto non è il pilota governato.');
     }
@@ -1288,7 +1444,18 @@ export class Task {
       }
       const statePath = this.managedPilotStatePath();
       const generate = async (_phase: string, instructions: string, input: string) =>
-        this.agent.generateText(providerModel, instructions, input, this.getProjectDir(), [], false, controller.signal, uuidv4(), true, reasoning);
+        this.agent.generateText(
+          providerModel,
+          instructions,
+          sessionInstruction ? sessionInstruction + '\n\nDati della task e contratto del flusso\n' + input : input,
+          this.getProjectDir(),
+          [],
+          false,
+          controller.signal,
+          uuidv4(),
+          true,
+          reasoning,
+        );
       if (policy && (!command || command.kind === 'start') && (!profile || profile.provider !== policy.provider || profile.model !== policy.model)) {
         throw new Error('Il task deve usare il provider e il modello autorizzati nel profilo del progetto.');
       }
@@ -1317,6 +1484,8 @@ export class Task {
             signal: controller.signal,
             generate,
             continueRecovery: true,
+            protectPublication: (write) => this.agent.desktopStop.run(write, true),
+            onDesktopCommit: this.desktopJournal ? (sha) => recordDesktopIntegration(this.getTaskDir(), this.taskId, AIDER_DESK_DATA_DIR, sha) : undefined,
             ...(goal?.kind === 'queue' ? { expectedContinuationRevision: goal.revision } : {}),
             ...(expectedApproval ? { expectedApprovedRevision: expectedApproval } : {}),
             search: profile ? this.agent.createTechnicalSearch(this, profile, controller.signal) : undefined,
@@ -1417,6 +1586,15 @@ export class Task {
     images?: string[],
     submittedByUser = false,
   ): Promise<ResponseCompletedData[]> {
+    if (checkoutIsClosing(this.getTaskDir())) {
+      return [];
+    }
+    if (submittedByUser) {
+      this.reopenDesktopSession();
+    }
+    if (this.desktopCloseState) {
+      return [];
+    }
     if (isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il pilota usa il flusso governato della finestra desktop.');
     }
@@ -1663,6 +1841,9 @@ export class Task {
   }
 
   private async runNextQueuedPrompt(): Promise<ResponseCompletedData[]> {
+    if (this.desktopCloseState) {
+      return [];
+    }
     if (this.queuedPrompts.length > 0) {
       const nextPrompt = this.queuedPrompts.shift();
       if (nextPrompt) {
@@ -1683,6 +1864,9 @@ export class Task {
   }
 
   public async runPromptInAider(mode: Mode, prompt: string, promptContext: PromptContext, sendNotification = true): Promise<ResponseCompletedData[]> {
+    if (this.desktopCloseState) {
+      return [];
+    }
     if (isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Il pilota usa il flusso governato della finestra desktop.');
     }
@@ -1690,6 +1874,9 @@ export class Task {
       throw new Error('Resolve the pending plan before running Aider.');
     }
     await this.waitForCurrentPromptToFinish();
+    if (this.desktopCloseState) {
+      return [];
+    }
 
     await this.saveTask({
       name: this.task.name || this.getTaskNameFromPrompt(prompt),
@@ -1731,12 +1918,23 @@ export class Task {
     messages = extensionResult.messages;
     files = extensionResult.files;
 
+    if (this.desktopCloseState) {
+      return [];
+    }
     const effectiveAutonomyMode = extensionResult.autonomyMode ?? this.task.autonomyMode ?? DEFAULT_AUTONOMY_MODE;
     let responses = await this.sendPromptToAider(prompt, promptContext, mode, messages, files, {
       autoApprove: effectiveAutonomyMode === AutonomyMode.Autonomous,
       denyCommands: extensionResult.denyCommands,
     });
     logger.debug('Responses:', { responses });
+
+    if (this.desktopJournal) {
+      for (const response of responses) {
+        if (response.commitHash) {
+          await recordDesktopIntegration(this.getTaskDir(), this.taskId, AIDER_DESK_DATA_DIR, response.commitHash);
+        }
+      }
+    }
 
     const finishedExtensionResult = await this.extensionManager.dispatchEvent('onAiderPromptFinished', { responses }, this.project, this);
 
@@ -1803,7 +2001,7 @@ export class Task {
     approvedPlan?: ProposedPlan,
     goalUserPrompt?: string,
   ): Promise<ResponseCompletedData[]> {
-    if (this.closing) {
+    if (this.closing || this.desktopCloseState || checkoutIsClosing(this.getTaskDir())) {
       throw new Error('Task is closing.');
     }
     if (isGovernedWorkflow(this.getProjectDir())) {
@@ -1814,6 +2012,9 @@ export class Task {
     }
     if (this.closing) {
       throw new Error('Task is closing.');
+    }
+    if (this.desktopCloseState || checkoutIsClosing(this.getTaskDir())) {
+      return [];
     }
     const pendingPlan = this.pendingPlan();
     if ((this.planAdmission || (mode !== CODEX_PLAN_MODE && pendingPlan)) && (!approvedPlanId || pendingPlan?.id !== approvedPlanId || mode !== 'agent')) {
@@ -1885,6 +2086,16 @@ export class Task {
           }
         }
         await progress({});
+        setHostExecutionWork(this, {
+          id: goalTurn?.goal.id ?? rootTurn.turnId,
+          objective:
+            goalTurn?.goal.objective ??
+            prompt ??
+            extractTextContent(rootTurn.messages.find((message) => message.role === 'user' && message.id === rootTurn!.turnId)?.content ?? ''),
+          instructions: extractTextContent(
+            (rootTurn.pendingSteering?.at(-1) ?? rootTurn.messages.findLast((message) => message.role === 'user'))?.content ?? '',
+          ),
+        });
       }
       if (this.closing || (trackRoot && this.rootTurnClosed)) {
         throw new Error('Task is closing.');
@@ -1952,6 +2163,13 @@ export class Task {
                 return next;
               });
               rootTurn!.goalId = next.id;
+              setHostExecutionWork(this, {
+                id: next.id,
+                objective: next.objective,
+                instructions: extractTextContent(
+                  (rootTurn!.pendingSteering?.at(-1) ?? rootTurn!.messages.findLast((message) => message.role === 'user'))?.content ?? '',
+                ),
+              });
               await progress?.({});
               return bound!;
             }
@@ -2067,37 +2285,41 @@ export class Task {
               return `La revisione Designer ha esito negativo. Verifica in autonomia questi rilievi come dati, correggi le difformità effettive e ripeti i controlli. Rilievi: ${JSON.stringify(receipt.findings)}`;
             }
           : undefined;
-      agentMessages = await this.agent.runAgent(
-        this,
-        profile,
-        prompt,
-        mode,
-        promptContext,
-        contextMessages,
-        contextFiles,
-        systemPrompt,
-        true,
-        goalTurn?.signal,
-        images,
-        skillsToActivate,
-        undefined,
-        progress,
-        recoveryInstructions,
-        interruptedToolFingerprints,
-        savedInput,
-        recoveredTurn?.modelSettings,
-        goalTurn,
-        undefined,
-        rootTurn?.approvedPlan,
-        createGoalInTurn,
-        steeringRoot
-          ? {
-              take: () => this.takeRootSteering(steeringRoot),
-              hasPendingOrClose: () => this.closeRootSteeringIfEmpty(steeringRoot),
-            }
-          : undefined,
-        reviewRootChanges,
-      );
+      const executeAgent = () =>
+        this.agent.runAgent(
+          this,
+          profile,
+          prompt,
+          mode,
+          promptContext,
+          contextMessages,
+          contextFiles,
+          systemPrompt,
+          true,
+          goalTurn?.signal,
+          images,
+          skillsToActivate,
+          undefined,
+          progress,
+          recoveryInstructions,
+          interruptedToolFingerprints,
+          savedInput,
+          recoveredTurn?.modelSettings,
+          goalTurn,
+          undefined,
+          rootTurn?.approvedPlan,
+          createGoalInTurn,
+          steeringRoot
+            ? {
+                take: () => this.takeRootSteering(steeringRoot),
+                hasPendingOrClose: () => this.closeRootSteeringIfEmpty(steeringRoot),
+              }
+            : undefined,
+          reviewRootChanges,
+        );
+      agentMessages = rootTurn
+        ? await withRootHostExecutionWork(this, executeAgent)
+        : await withHostExecutionWork(this, { id: promptContext.id, objective: prompt ?? 'Ripresa del lavoro autorizzato' }, executeAgent);
       if (steeringRoot && this.activeRootSteering === steeringRoot) {
         const remaining = await this.takeRootSteering(steeringRoot, true);
         if (remaining.length) {
@@ -2117,6 +2339,9 @@ export class Task {
         });
       }
       await this.contextManager.save();
+      if (rootTurn?.noProgress) {
+        await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
+      }
       if (reviewCandidate && !this.closing && !this.rootTurnClosed && this.task.state !== DefaultTaskState.Interrupted) {
         const current = await reviewCandidate(goalTurn?.signal);
         const receipt = designRoot?.designReview?.receipt;
@@ -2169,6 +2394,10 @@ export class Task {
       }
       throw error;
     } finally {
+      if (trackRoot) {
+        const ongoing = goalTurn ? await goalTurn.canExecute().catch(() => false) : false;
+        clearHostExecutionWork(this, !ongoing);
+      }
       if (createdGoalInTurn && goalTurn) {
         this.agentGoalTurnController = undefined;
         await this.finishAgentGoalTurn(goalTurn.goal.id, promptContext.id);
@@ -2190,7 +2419,7 @@ export class Task {
       await this.runNextQueuedPrompt();
     }
 
-    if (this.task.state === DefaultTaskState.InProgress) {
+    if (this.task.state === DefaultTaskState.InProgress && !this.desktopCloseState) {
       // Determine task state based on the last assistant message
       const settings = this.store.getSettings();
       let state: string | null = DefaultTaskState.ReadyForReview;
@@ -2514,6 +2743,12 @@ export class Task {
     return null;
   }
 
+  private runScopedAgent(...args: Parameters<Agent['runAgent']>): ReturnType<Agent['runAgent']> {
+    return withHostExecutionWork(this, { id: args[4]?.id ?? uuidv4(), objective: args[2] ?? 'Ripresa del lavoro autorizzato' }, () =>
+      this.agent.runAgent(...args),
+    );
+  }
+
   public async runSubagent(
     profile: AgentProfile,
     prompt: string | null,
@@ -2573,7 +2808,7 @@ export class Task {
       systemPrompt = extensionResult.systemPrompt;
       promptContext = recoveryInstructions ? promptContext : extensionResult.promptContext;
 
-      let resultMessages = await this.agent.runAgent(
+      let resultMessages = await this.runScopedAgent(
         this,
         profile,
         prompt,
@@ -2620,6 +2855,9 @@ export class Task {
     files: ContextFile[] = this.contextManager.getContextFiles(),
     options?: AiderRunOptions,
   ): Promise<ResponseCompletedData[]> {
+    if (this.desktopCloseState || checkoutIsClosing(this.getTaskDir())) {
+      throw new Error('Sessione desktop in chiusura.');
+    }
     this.currentPromptResponses = [];
     this.currentPromptContext = promptContext;
 
@@ -3159,8 +3397,11 @@ export class Task {
         this.addLogMessage('loading', undefined, true);
       }
 
-      this.findMessageConnectors('run-command').forEach((connector) =>
-        connector.sendRunCommandMessage(command, this.contextManager.toConnectorMessages(contextMessages), this.contextManager.getContextFiles()),
+      this.findMessageConnectors('run-command').forEach(
+        (connector) =>
+          !this.desktopCloseState &&
+          !checkoutIsClosing(this.getTaskDir()) &&
+          connector.sendRunCommandMessage(command, this.contextManager.toConnectorMessages(contextMessages), this.contextManager.getContextFiles()),
       );
     }
   }
@@ -3329,7 +3570,7 @@ export class Task {
   }
 
   public async askQuestion(questionData: QuestionData, awaitAnswer = true): Promise<[string, string | undefined]> {
-    if (this.closing) {
+    if (this.closing || this.desktopCloseState) {
       return ['n', 'Task is closing'];
     }
     let storedAnswer = this.storedQuestionAnswers.get(this.getQuestionKey(questionData));
@@ -3382,6 +3623,9 @@ export class Task {
 
     // At this point, this.currentQuestion should be null due to the loop above,
     // or it was null initially.
+    if (this.desktopCloseState || this.closing) {
+      return ['n', 'Sessione in chiusura.'];
+    }
     this.currentQuestion = questionData;
 
     if (storedAnswer) {
@@ -4403,6 +4647,7 @@ export class Task {
         pendingSteering: [...(root.pendingSteering ?? []), input],
         goalVerification: undefined,
       };
+      amendHostExecutionWork(this, extractTextContent(input.content));
       await this.saveRootTurn(updated);
       root.pendingSteering = updated.pendingSteering;
       root.goalVerification = undefined;
@@ -4493,6 +4738,9 @@ export class Task {
   }
 
   public applyEdits(edits: FileEdit[]) {
+    if (this.desktopCloseState || checkoutIsClosing(this.getTaskDir())) {
+      throw new Error('Sessione desktop in chiusura.');
+    }
     logger.info('Applying edits:', { baseDir: this.project.baseDir, edits });
     this.findMessageConnectors('apply-edits').forEach((connector) => connector.sendApplyEditsMessage(edits));
   }
@@ -4704,7 +4952,47 @@ export class Task {
     }
   }
 
-  public async resumeTask(wakeGeneration?: number) {
+  private resumingWork = false;
+
+  public async workListData(): Promise<TaskData> {
+    if (this.task.archived || this.task.state !== DefaultTaskState.InProgress || this.closing || this.isPromptRunning() || this.hasQueuedPrompts()) {
+      return this.task;
+    }
+    const interrupted = { ...this.task, state: DefaultTaskState.Interrupted };
+    if (isGovernedWorkflow(this.getProjectDir())) {
+      return this.governedContinuation() && canResumeWork(interrupted) ? interrupted : this.task;
+    }
+    try {
+      return (await this.hasInterruptedRootTurn()) ? interrupted : this.task;
+    } catch (error) {
+      logger.warn('Could not inspect the saved work checkpoint.', { taskId: this.taskId, error });
+      return this.task;
+    }
+  }
+
+  public async resumeWork() {
+    const desktopPaused = this.desktopCloseState === 'paused';
+    if (this.resumingWork || this.isPromptRunning() || (this.hasQueuedPrompts() && !desktopPaused) || checkoutIsClosing(this.getTaskDir())) {
+      throw new WorkResumeError('Il lavoro selezionato non è disponibile per la ripresa.');
+    }
+    this.resumingWork = true;
+    try {
+      if (!canResumeWork(await this.workListData()) || this.isPromptRunning() || (this.hasQueuedPrompts() && !desktopPaused)) {
+        throw new WorkResumeError('Il lavoro selezionato non è disponibile per la ripresa.');
+      }
+      await this.resumeTask(undefined, true, true);
+    } finally {
+      this.resumingWork = false;
+    }
+  }
+
+  public async resumeTask(wakeGeneration?: number, explicit = false, workShortcut = false) {
+    if (explicit) {
+      this.reopenDesktopSession();
+    }
+    if (this.desktopCloseState) {
+      return;
+    }
     logger.info('Resuming task:', {
       baseDir: this.project.baseDir,
       taskId: this.taskId,
@@ -4732,6 +5020,9 @@ export class Task {
             },
           },
         });
+        if (workShortcut) {
+          throw new WorkResumeError('Il piano è cambiato. Verifica la nuova versione prima della ripresa.');
+        }
         return;
       }
       if ((goal?.approval && (!status || !('revision' in status) || status.revision !== goal.approval)) || (!goal && status?.phase === 'empty')) {
@@ -4747,6 +5038,9 @@ export class Task {
             },
           });
         }
+        if (workShortcut) {
+          throw new WorkResumeError('Il punto di ripresa non corrisponde a un lavoro approvato.');
+        }
         return;
       }
       const prompt =
@@ -4755,7 +5049,11 @@ export class Task {
           : goal?.approval && status?.phase === 'plan' && status.revision === goal.approval
             ? '/workflow approve ' + goal.approval
             : '/workflow resume';
-      await this.runManagedDesktopPrompt(prompt, true);
+      if (workShortcut) {
+        await this.runManagedDesktopPrompt(prompt, true, sessionPrompt('/riprendi'));
+      } else {
+        await this.runManagedDesktopPrompt(prompt, true);
+      }
       return;
     }
 
@@ -4792,6 +5090,20 @@ export class Task {
         this.addLogMessage('error', 'The saved agent turn is not recoverable with the current task configuration.');
         return;
       }
+      let clearProgressStop = false;
+      if (record.noProgress) {
+        const goal = record.noProgress.goalBinding ? await this.agentGoalStore.read() : null;
+        const requested = explicit || hasSteeringToRecover(record);
+        const revision = requested ? undefined : await goalWorktreeRevision(this.getTaskDir()).catch(() => undefined);
+        if (!canResumeNoProgress(record.noProgress, revision, goal ? goalVerificationBinding(goal) : undefined, requested)) {
+          this.addLogMessage(
+            'warning',
+            'Il lavoro è fermo dopo tentativi ripetuti senza progresso. Le evidenze sono conservate; riprendi esplicitamente o modifica le condizioni.',
+          );
+          return;
+        }
+        clearProgressStop = true;
+      }
       if (record.state === 'success') {
         this.rootTurnInUse = true;
         try {
@@ -4826,8 +5138,27 @@ export class Task {
             })
           : null;
       let originalGoal = possibleGoal?.id === record.goalId || possibleGoal?.originTurnId === record.turnId ? possibleGoal : null;
+      if (workShortcut && originalGoal?.status === 'budget_limited') {
+        throw new WorkResumeError('Il lavoro ha raggiunto il budget previsto.');
+      }
       if (originalGoal?.originTurnId === record.turnId) {
         record.goalId ??= originalGoal.id;
+      }
+      if (workShortcut && originalGoal?.status === 'paused') {
+        const expectedId = originalGoal.id;
+        const binding = goalVerificationBinding(originalGoal);
+        originalGoal = await this.agentGoalStore.mutate((current) => {
+          if (this.closing || this.task.metadata?.recoverableRootTurn !== record.turnId || this.isPromptRunning()) {
+            return current;
+          }
+          if (current?.id === expectedId && current.status === 'paused' && goalVerificationBinding(current) === binding) {
+            return { ...current, status: 'active', blocker: undefined };
+          }
+          return current;
+        });
+        if (originalGoal?.id !== expectedId || originalGoal.status !== 'active' || goalVerificationBinding(originalGoal) !== binding) {
+          return;
+        }
       }
       const restoredVerification = originalGoal?.status === 'active' ? await this.recoverGoalVerification(originalGoal, record) : [];
       if (originalGoal && record.goalVerification) {
@@ -4837,7 +5168,18 @@ export class Task {
         }
         originalGoal = current;
       }
-      if (this.closing || this.isPromptRunning() || this.rootTurnInUse || this.task.metadata?.recoverableRootTurn !== record.turnId) {
+      const currentProfile = await this.getTaskAgentProfile();
+      if (
+        this.closing ||
+        this.isPromptRunning() ||
+        this.rootTurnInUse ||
+        this.task.metadata?.recoverableRootTurn !== record.turnId ||
+        this.getTaskDir() !== record.directory ||
+        this.workerEpoch() !== record.epoch ||
+        currentProfile?.id !== record.profileId ||
+        currentProfile.provider !== record.provider ||
+        currentProfile.model !== record.model
+      ) {
         return;
       }
       if (record.goalId && (originalGoal?.id !== record.goalId || originalGoal.status !== 'active')) {
@@ -4846,6 +5188,54 @@ export class Task {
       }
       if (record.goalVerification && originalGoal) {
         record.goalVerification = restoredVerification.length ? { binding: goalVerificationBinding(originalGoal), receipts: restoredVerification } : undefined;
+      }
+      if (clearProgressStop) {
+        // Keep admission locked while clearing the old checkpoint's stop.
+        this.rootTurnInUse = true;
+        try {
+          const stillCurrent = async () => {
+            const configured = await this.getTaskAgentProfile();
+            const goal = await this.agentGoalStore.read().catch((error) => {
+              if (record.goalId) {
+                throw error;
+              }
+              return null;
+            });
+            return (
+              !this.closing &&
+              this.task.metadata?.recoverableRootTurn === record.turnId &&
+              this.getTaskDir() === record.directory &&
+              this.workerEpoch() === record.epoch &&
+              configured?.id === record.profileId &&
+              configured.provider === record.provider &&
+              configured.model === record.model &&
+              (originalGoal ? goal?.status === 'active' && goalVerificationBinding(goal) === goalVerificationBinding(originalGoal) : goal?.status !== 'active')
+            );
+          };
+          if (!(await stillCurrent())) {
+            return;
+          }
+          delete record.noProgress;
+          const cleared = this.rootTurnWrites.then(() => this.saveRootTurn(record));
+          this.rootTurnWrites = cleared.catch((error) => {
+            logger.error('Failed to clear the repeated-operation checkpoint.', { error });
+          });
+          await cleared;
+          if (!(await stillCurrent())) {
+            return;
+          }
+          revokeHostExecutionGrant(this);
+        } finally {
+          this.rootTurnInUse = false;
+          this.resolveAgentRunPromises();
+          this.restoreAgentGoal();
+        }
+      }
+      if (workShortcut) {
+        const instruction = sessionPrompt('/riprendi')!;
+        if (!record.pendingSteering?.some(({ content }) => content === instruction)) {
+          record.pendingSteering = [...(record.pendingSteering ?? []), { ...createRecordedInput(instruction, undefined, { id: record.turnId }), id: uuidv4() }];
+        }
       }
       const goalTurn =
         originalGoal?.id === record.goalId && originalGoal?.status === 'active'
@@ -4860,7 +5250,7 @@ export class Task {
           recoveredTurnHistory(record),
           undefined,
           undefined,
-          true,
+          false,
           true,
           undefined,
           undefined,
@@ -4875,6 +5265,16 @@ export class Task {
         this.restoreAgentGoal();
       }
       return;
+    }
+    if (workShortcut && mode === 'agent' && this.agentGoalAllowed()) {
+      const goal = await this.agentGoalStore.read();
+      if (goal?.status === 'paused') {
+        await this.handleAgentGoalCommand('resume', mode);
+        return;
+      }
+      if (goal?.status === 'budget_limited') {
+        throw new WorkResumeError('Il lavoro ha raggiunto il budget previsto.');
+      }
     }
     const contextMessages = await this.contextManager.getContextMessages();
     const lastMessage = contextMessages[contextMessages.length - 1];
@@ -4932,6 +5332,7 @@ export class Task {
     }
     return this.agentGoalStore.mutate((goal) => {
       if (status === 'paused') {
+        revokeHostExecutionGrant(this);
         if (this.activeRootSteering?.goalId === goal?.id && goal) {
           this.activeRootSteering = undefined;
         }
@@ -4977,11 +5378,12 @@ export class Task {
       } else if (command === 'resume') {
         goal = await this.changeAgentGoalStatus('active');
         if (goal?.status === 'active' && this.task.state === DefaultTaskState.Interrupted && this.task.metadata?.recoverableRootTurn) {
-          await this.resumeTask();
+          await this.resumeTask(undefined, true);
         }
         this.restoreAgentGoal();
       } else {
         this.stopAgentGoalWake();
+        revokeHostExecutionGrant(this);
         const budgetEdit = /^edit --token-budget (\d+)$/.exec(command);
         const verifierEdit = /^verify ([\s\S]+)$/.exec(command);
         const create = /^(?:--token-budget (\d+)\s+)?([\s\S]+)$/.exec(command);
@@ -5076,6 +5478,7 @@ export class Task {
 
   private async wakeAgentGoal(generation: number) {
     const canStart = (allowQueuedPrompts = false) =>
+      !this.desktopCloseState &&
       generation === this.agentGoalGeneration &&
       this.initialized &&
       !this.closing &&
@@ -5106,6 +5509,13 @@ export class Task {
         !record ||
         (record.goalId !== goal.id && goal.originTurnId !== record.turnId) ||
         record.state === 'error'
+      ) {
+        return;
+      }
+      if (
+        record.noProgress &&
+        !hasSteeringToRecover(record) &&
+        (!record.noProgress.goalBinding || record.noProgress.goalBinding === goalVerificationBinding(goal))
       ) {
         return;
       }
@@ -5748,7 +6158,7 @@ export class Task {
         }
         const compactPrompt = await this.promptsManager.getCompactConversationPrompt(this, customInstructions);
         compactionSignal?.throwIfAborted();
-        const agentMessages = await this.agent.runAgent(
+        const agentMessages = await this.runScopedAgent(
           this,
           compactConversationAgentProfile,
           compactPrompt,
@@ -6164,14 +6574,14 @@ export class Task {
     }
   }
 
-  private async reconcileInterruptedRootTurn() {
+  private async hasInterruptedRootTurn() {
     const id = this.task.metadata?.recoverableRootTurn;
     if (typeof id !== 'string' || this.task.state !== DefaultTaskState.InProgress || this.isPromptRunning() || isGovernedWorkflow(this.getProjectDir())) {
-      return;
+      return false;
     }
     const record = await this.readRootTurn();
     const profile = await this.getTaskAgentProfile();
-    if (
+    return (
       record?.turnId === id &&
       record.directory === this.getTaskDir() &&
       record.epoch === this.workerEpoch() &&
@@ -6182,7 +6592,12 @@ export class Task {
       this.task.state === DefaultTaskState.InProgress &&
       !this.isPromptRunning() &&
       !this.closing
-    ) {
+    );
+  }
+
+  private async reconcileInterruptedRootTurn() {
+    const turnId = this.task.metadata?.recoverableRootTurn;
+    if ((await this.hasInterruptedRootTurn()) && this.task.metadata?.recoverableRootTurn === turnId && !this.closing && !this.isPromptRunning()) {
       this.rootTurnInUse = true;
       try {
         await this.saveTask({
@@ -6209,6 +6624,10 @@ export class Task {
     this.workerRuns.add(run);
     const release = () => this.workerRuns.delete(run);
     void run.then(release, release);
+  }
+
+  public get hasPendingWorkerRuns(): boolean {
+    return this.workerRuns.size > 0;
   }
 
   public claimWorkerTurn(workerId: string): boolean {
@@ -6426,6 +6845,10 @@ export class Task {
   }
 
   public async runCustomCommand(commandName: string, args: string[], mode: Mode = 'agent', images?: string[]): Promise<void> {
+    if (this.desktopCloseState === 'closing' || checkoutIsClosing(this.getTaskDir())) {
+      return;
+    }
+    this.reopenDesktopSession();
     if (isGovernedWorkflow(this.getProjectDir())) {
       throw new Error('Usa il flusso governato per i comandi di questo progetto.');
     }
@@ -7692,7 +8115,7 @@ ${error.stderr}`,
           });
           const systemPrompt = await this.promptsManager.getConflictResolutionSystemPrompt(this);
 
-          await this.agent.runAgent(
+          await this.runScopedAgent(
             this,
             conflictProfile,
             prompt,
@@ -7838,7 +8261,7 @@ ${error.stderr}`,
     const prompt = await this.promptsManager.getGitErrorResolutionPrompt(this, action, message);
 
     try {
-      await this.agent.runAgent(
+      await this.runScopedAgent(
         this,
         {
           ...CONFLICT_RESOLUTION_PROFILE,

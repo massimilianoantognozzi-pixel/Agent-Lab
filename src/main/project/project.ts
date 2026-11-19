@@ -679,7 +679,7 @@ export class Project {
     this.agentProfileManager.removeProject(this.baseDir);
     this.mcpConfigManager.removeProject(this.baseDir);
     await this.promptsManager.unwatchProject(this.baseDir);
-    this.extensionManager.stopProjectWatcher(this.baseDir);
+    await this.extensionManager.stopProjectWatcher(this.baseDir);
     await Promise.all(Array.from(this.tasks.values()).map((task) => task.close()));
     await this.gitManager.close(this.baseDir);
 

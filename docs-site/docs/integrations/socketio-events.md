@@ -13,13 +13,20 @@ The SocketIO server runs on the same port as the REST API (default: `24337`, con
 
 ### Connection Setup
 
+Use the authenticated web origin to exchange an HTTP request for a single-use Socket.IO ticket. Standalone clients supply the server Basic Auth credentials on that request. Obtain a fresh ticket on reconnect.
+
 ```javascript
 import io from 'socket.io-client';
 
-// Connect to AiderDesk
-const socket = io('http://localhost:24337', {
+const baseUrl = window.location.origin;
+const socket = io(baseUrl, {
   autoConnect: true,
   forceNew: true,
+  auth: (done) => {
+    fetch(`${baseUrl}/api/socket-ticket`, { method: 'POST', credentials: 'include', cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : {})
+      .then(done, () => done({}));
+  },
 });
 
 // Subscribe to events

@@ -5,6 +5,8 @@ import { AutonomyMode, CreateTaskParams } from '@common/types';
 
 import { BaseApi } from './base-api';
 
+import type { BrowserSession } from '@/server/server-access';
+
 import { EventsHandler } from '@/events-handler';
 import logger from '@/logger';
 
@@ -166,6 +168,10 @@ export class PromptApi extends BaseApi {
     } else {
       const taskParams = parseTaskParams(model, agentProfileId, autonomyMode);
       const result = await this.eventsHandler.ensureProjectAndCreateTask(projectDir, taskParams);
+      if (!(res.locals.browserSession as BrowserSession).authorized()) {
+        res.sendStatus(401);
+        return;
+      }
       const responses = await this.eventsHandler.runPrompt(result.projectDir, result.taskId, prompt, mode, images);
       res.setHeader('X-Task-Id', result.taskId);
       res.status(200).json(responses);
@@ -183,12 +189,21 @@ export class PromptApi extends BaseApi {
     agentProfileId?: string,
     autonomyMode?: AutonomyMode,
   ): Promise<void> {
+    const session = res.locals.browserSession as BrowserSession;
+    if (!session.authorized()) {
+      res.sendStatus(401);
+      return;
+    }
     let resolvedTaskId = taskId;
 
     if (!resolvedTaskId) {
       const taskParams = parseTaskParams(model, agentProfileId, autonomyMode);
       const result = await this.eventsHandler.ensureProjectAndCreateTask(projectDir, taskParams);
       resolvedTaskId = result.taskId;
+    }
+    if (!session.authorized()) {
+      res.sendStatus(401);
+      return;
     }
 
     const baseDir = projectDir.endsWith('/') ? projectDir.slice(0, -1) : projectDir;
@@ -212,6 +227,10 @@ export class PromptApi extends BaseApi {
 
     const listener = (event: { type: string; data: unknown }) => {
       if (closed) {
+        return;
+      }
+      if (!session.authorized()) {
+        cleanup();
         return;
       }
 
@@ -261,9 +280,12 @@ export class PromptApi extends BaseApi {
 
     try {
       await this.eventsHandler.waitForTaskIdle(baseDir, resolvedTaskId);
+      if (closed || !session.authorized()) {
+        return;
+      }
       await this.eventsHandler.runPrompt(baseDir, resolvedTaskId, prompt, mode, images);
 
-      if (!closed) {
+      if (!closed && session.authorized()) {
         try {
           res.write(`event: stream-end\ndata: ${JSON.stringify({ type: 'stream-end' })}\n\n`);
         } catch {
@@ -272,7 +294,7 @@ export class PromptApi extends BaseApi {
       }
     } catch (error) {
       logger.error('SSE run-prompt: error running prompt', { error });
-      if (!closed) {
+      if (!closed && session.authorized()) {
         try {
           res.write(`event: error\ndata: ${JSON.stringify({ error: String(error) })}\n\n`);
         } catch {

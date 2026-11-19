@@ -602,6 +602,7 @@
       "about": "Informazioni"
     },
     "extensions": {
+      "reviewProjectCode": "Verifica le estensioni del progetto",
       "uiErrorIn": "Errore in {{component}}",
       "loading": "Caricamento delle estensioni...",
       "tabs": {
@@ -1894,6 +1895,11 @@
     "max": "Massimo"
   },
   "commands": {
+    "inizia": "Avvia il progetto dai blueprint e inizia la prima task",
+    "riprendi": "Riprendi dal piano e dallo stato documentato del progetto",
+    "chiudi": "Chiudi la sessione, aggiorna la ripresa ed esegui commit e push",
+    "noWorkToResume": "In questo progetto non ci sono lavori interrotti da riprendere.",
+    "noWorkInTask": "Questa attività non ha un lavoro interrotto da riprendere.",
     "add": "Aggiungi file al contesto",
     "agent": "Passa alla modalità Agente. Se sei già in modalità Agente, apre il selettore del modello dell'agente. Il testo dopo il comando viene usato come richiesta",
     "architect": "Passa alla modalità Architetto, usata per pianificare ed eseguire modifiche al codice",

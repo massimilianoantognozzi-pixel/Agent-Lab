@@ -16,6 +16,14 @@ dist
 *.log
 .env
 .env.*
+lab/profile
+lab/work
+lab/workspaces
+lab/artifacts
+lab/.cache
+lab/docs/AUTO-HANDOFF.md
+lab/scripts/checkpoint-evidence.mjs
+lab/scripts/export-checkpoint.mjs
 
 # Test files
 coverage

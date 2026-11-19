@@ -9,6 +9,24 @@ import type { TelemetryManager } from '@/telemetry';
 import type { ProjectData } from '@common/types';
 
 describe('EventsHandler', () => {
+  it('keeps the interrupted checkpoint intact when closing an ordinary session', async () => {
+    const data = { state: 'INTERRUPTED', name: 'Lavoro', metadata: { recoverableRootTurn: 'saved-turn' } };
+    const source = { task: data, waitForIdle: vi.fn(), isPromptRunning: () => false, workListData: async () => data, runPrompt: vi.fn() };
+    const closure = { runPrompt: vi.fn().mockResolvedValue([]) };
+    const project = { getTask: (id: string) => (id === 'original' ? source : closure), createNewTask: vi.fn().mockResolvedValue({ id: 'closure' }) };
+    const handler = Object.create(EventsHandler.prototype) as EventsHandler;
+    Object.assign(handler, {
+      projectManager: { getProject: () => project },
+      modelManager: { waitForInit: vi.fn() },
+      extensionManager: { waitForInit: vi.fn() },
+    });
+    await handler.runPrompt('/project', 'original', '/chiudi');
+    expect(source.runPrompt).not.toHaveBeenCalled();
+    expect(project.createNewTask).toHaveBeenCalledWith(expect.objectContaining({ parentId: 'original' }));
+    expect(closure.runPrompt.mock.calls[0][0]).toContain('saved-turn');
+    expect(closure.runPrompt.mock.calls[0][0]).toContain('push');
+  });
+
   it('retains a resume request received before the project and model registry are ready', async () => {
     const ready = Promise.withResolvers<void>();
     const resume = vi.fn(async () => {});

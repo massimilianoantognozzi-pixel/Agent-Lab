@@ -18,6 +18,7 @@ export default defineConfig({
     ],
   },
   preload: {
+    build: { externalizeDeps: false },
     plugins: [
       tsconfigPaths({
         projects: [resolve(__dirname, 'tsconfig.node.json'), resolve(__dirname, 'tsconfig.web.json')],

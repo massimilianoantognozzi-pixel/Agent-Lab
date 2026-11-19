@@ -119,6 +119,10 @@ import { SKILLS_TOOL_ACTIVATE_SKILL, SKILLS_TOOL_GROUP_NAME, TOOL_GROUP_NAME_SEP
 
 import { Task } from '../task';
 import { goalVerificationBinding, newAgentGoal, type AgentGoal, type GoalVerificationUpdate } from '../agent-goal';
+import * as hostExecution from '@/agent/tools/host-execution';
+import * as appRuntime from '@/app';
+import fsNative from 'node:fs/promises';
+import { BrowserWindow, dialog } from 'electron';
 import * as goalVerification from '../goal-verification';
 import {
   describeInterruptedTools,
@@ -380,6 +384,9 @@ describe('Task - findSkillActivationMessages', () => {
       vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue(profile);
       Object.assign(task, { readRootTurn: () => Promise.resolve(record), isPromptRunning: () => false });
       const saveTask = vi.spyOn(task, 'saveTask').mockImplementation(async (updates) => Object.assign(task.task, updates));
+      expect((await task.workListData()).state).toBe(DefaultTaskState.Interrupted);
+      expect(task.task.state).toBe(DefaultTaskState.InProgress);
+      expect(saveTask).not.toHaveBeenCalled();
       await Reflect.get(task, 'reconcileInterruptedRootTurn').call(task);
       expect(saveTask).toHaveBeenCalledWith(expect.objectContaining({ state: DefaultTaskState.Interrupted }));
       expect(task.task.metadata.recoverableRootTurn).toBe(record.turnId);
@@ -1070,6 +1077,334 @@ describe('Task - findSkillActivationMessages', () => {
   });
 
   describe('resumeTask', () => {
+    it.each(['paused', 'budget_limited'] as const)('handles a stopped goal with status %s through the work shortcut', async (status) => {
+      let goal: AgentGoal = { ...newAgentGoal('Finish the assigned work'), status };
+      const record: RootTurnRecord = {
+        turnId: 'stopped-work',
+        directory: baseDir,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        mode: 'agent',
+        messages: [],
+        goalId: goal.id,
+      };
+      task.task.state = DefaultTaskState.Interrupted;
+      task.task.metadata = { recoverableRootTurn: record.turnId };
+      Object.assign(task, {
+        readRootTurn: async () => record,
+        agentGoalStore: { read: async () => goal, mutate: async (update: (value: AgentGoal) => AgentGoal) => (goal = update(goal)) },
+        finishAgentGoalTurn: async () => undefined,
+      });
+      vi.spyOn(task, 'isPromptRunning').mockReturnValue(false);
+      vi.spyOn(task, 'hasQueuedPrompts').mockReturnValue(false);
+      vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue({ id: 'profile', provider: 'provider', model: 'model' } as never);
+      vi.spyOn(task, 'restoreAgentGoal').mockImplementation(() => undefined);
+      const run = vi.spyOn(task, 'runPromptInAgent').mockResolvedValue([]);
+      if (status === 'budget_limited') {
+        await expect(task.resumeWork()).rejects.toThrow('budget');
+      } else {
+        await task.resumeWork();
+      }
+      expect(goal.status).toBe(status === 'paused' ? 'active' : status);
+      expect(run).toHaveBeenCalledTimes(status === 'paused' ? 1 : 0);
+      if (status === 'paused') {
+        expect(record.pendingSteering).toEqual([expect.objectContaining({ content: expect.stringContaining('piano di ripresa') })]);
+      }
+    });
+
+    it('retries a failed checkpoint clear after storage recovers', async () => {
+      vi.spyOn(task, 'isPromptRunning').mockReturnValue(false);
+      const disk: RootTurnRecord = {
+        turnId: 'stopped',
+        directory: baseDir,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        mode: 'agent',
+        messages: [],
+        noProgress: { revision: 'same', fingerprints: ['hash'], tools: ['power---file_read'] },
+      };
+      const save = vi.fn().mockRejectedValueOnce(new Error('Temporary storage failure')).mockResolvedValue(undefined);
+      Object.assign(task, { readRootTurn: async () => structuredClone(disk), saveRootTurn: save, agentGoalStore: { read: async () => null } });
+      task.task.state = DefaultTaskState.Interrupted;
+      task.task.metadata = { recoverableRootTurn: disk.turnId };
+      vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue({ id: 'profile', provider: 'provider', model: 'model' } as never);
+      const run = vi.spyOn(task, 'runPromptInAgent').mockResolvedValue([]);
+      await expect(task.resumeTask(undefined, true)).rejects.toThrow('Temporary storage failure');
+      expect(run).not.toHaveBeenCalled();
+      expect(Reflect.get(task, 'rootTurnInUse')).toBe(false);
+      await task.resumeTask(undefined, true);
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['root', 'directory', 'epoch', 'profile'])('does not resume a stale %s after waiting for a source revision', async (changed) => {
+      vi.spyOn(task, 'isPromptRunning').mockReturnValue(false);
+      const root: RootTurnRecord = {
+        turnId: 'old-turn',
+        directory: baseDir,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        mode: 'agent',
+        messages: [],
+        noProgress: { revision: 'old-source', fingerprints: ['hash'], tools: ['power---file_read'] },
+      };
+      Object.assign(task, { readRootTurn: async () => root, agentGoalStore: { read: async () => null } });
+      task.task.state = DefaultTaskState.Interrupted;
+      task.task.metadata = { recoverableRootTurn: root.turnId };
+      const getProfile = vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue({ id: 'profile', provider: 'provider', model: 'model' } as never);
+      const save = vi.spyOn(task as unknown as { saveRootTurn: (value: unknown) => Promise<void> }, 'saveRootTurn').mockResolvedValue(undefined);
+      const revoke = vi.spyOn(hostExecution, 'revokeHostExecutionGrant');
+      let resolveRevision!: (revision: string) => void;
+      const revision = vi.spyOn(goalVerification, 'goalWorktreeRevision').mockImplementation(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveRevision = resolve;
+          }),
+      );
+      try {
+        const resumed = task.resumeTask();
+        await vi.waitFor(() => expect(resolveRevision).toBeTypeOf('function'));
+        if (changed === 'root') {
+          task.task.metadata.recoverableRootTurn = 'newer-turn';
+        }
+        if (changed === 'directory') {
+          vi.spyOn(task, 'getTaskDir').mockReturnValue('/another-worktree');
+        }
+        if (changed === 'epoch') {
+          task.task.metadata.workerEpoch = 'new-epoch';
+        }
+        if (changed === 'profile') {
+          getProfile.mockResolvedValue({ id: 'other-profile', provider: 'provider', model: 'model' } as never);
+        }
+        resolveRevision('different-source');
+        await resumed;
+        expect(save).not.toHaveBeenCalled();
+        expect(revoke).not.toHaveBeenCalled();
+        expect(root.noProgress).toBeDefined();
+      } finally {
+        revoke.mockRestore();
+        revision.mockRestore();
+      }
+    });
+
+    it('does not run an old goal edited while its stop checkpoint is being cleared', async () => {
+      vi.spyOn(task, 'isPromptRunning').mockImplementation(() => Reflect.get(task, 'rootTurnInUse'));
+      const initial = newAgentGoal('Original objective');
+      let current = initial;
+      const root: RootTurnRecord = {
+        turnId: 'stopped-turn',
+        directory: baseDir,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        mode: 'agent',
+        messages: [],
+        goalId: initial.id,
+        noProgress: { revision: 'same', fingerprints: ['hash'], tools: ['power---file_read'], goalBinding: goalVerificationBinding(initial) },
+      };
+      let finishWrite!: () => void;
+      const save = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishWrite = resolve;
+          }),
+      );
+      Object.assign(task, {
+        readRootTurn: async () => root,
+        saveRootTurn: save,
+        agentGoalStore: { read: async () => current, mutate: async (update: (goal: AgentGoal) => AgentGoal) => (current = update(current)) },
+      });
+      task.task.state = DefaultTaskState.Interrupted;
+      task.task.metadata = { recoverableRootTurn: root.turnId };
+      vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue({ id: 'profile', provider: 'provider', model: 'model' } as never);
+      const run = vi.spyOn(task, 'runPromptInAgent').mockResolvedValue([]);
+      const restore = vi.spyOn(task, 'restoreAgentGoal').mockImplementation(() => undefined);
+      const resumed = task.resumeTask(undefined, true);
+      await vi.waitFor(() => expect(finishWrite).toBeTypeOf('function'));
+      expect(Reflect.get(task, 'rootTurnInUse')).toBe(true);
+      current = { ...initial, objective: 'New objective' };
+      finishWrite();
+      await resumed;
+      expect(run).not.toHaveBeenCalled();
+      expect(Reflect.get(task, 'rootTurnInUse')).toBe(false);
+      expect(restore).toHaveBeenCalled();
+      Object.assign(task, { initialized: true, getCurrentMode: () => 'agent' });
+      await Reflect.get(task, 'wakeAgentGoal').call(task, 0);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(run.mock.calls[0].at(-1)).toMatchObject({ goal: { objective: 'New objective' } });
+    });
+
+    it.each(['subagent', 'git', 'plannotator'])('gives a standalone %s its own native consent while a different parent work is active', async (entry) => {
+      const desktop = vi.spyOn(appRuntime, 'isElectron').mockReturnValue(true);
+      const nativeFs = fsNative as unknown as { realpath: (value: unknown) => Promise<string> };
+      const priorRealpath = nativeFs.realpath;
+      nativeFs.realpath = async (value) => String(value);
+      const priorFocus = BrowserWindow.getFocusedWindow;
+      BrowserWindow.getFocusedWindow = () => null;
+      const priorDialog = dialog.showMessageBox;
+      const confirm = vi.fn<typeof dialog.showMessageBox>(async () => ({ response: 1, checkboxChecked: false }));
+      dialog.showMessageBox = confirm as unknown as typeof dialog.showMessageBox;
+      const profile = { id: 'profile', provider: 'provider', model: 'model' } as never;
+      vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue(profile);
+      vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      vi.spyOn(task, 'addLogMessage').mockImplementation(() => {});
+      mockExtensionManager.dispatchEvent = vi.fn(async (_name, event) => event);
+      mockPromptsManager.getGitErrorResolutionSystemPrompt = vi.fn(async () => 'system');
+      mockPromptsManager.getGitErrorResolutionPrompt = vi.fn(async () => 'Resolve the Git error');
+      mockStore.getSettings.mockReturnValue({ taskSettings: {} });
+      Object.assign(task, { sendRequestContextInfo: vi.fn(), sendTaskGitStatusUpdated: vi.fn(), sendUpdatedFilesUpdated: vi.fn(), sendSkillsUpdated: vi.fn() });
+      const manager = (task as unknown as { contextManager: { save: () => Promise<void> } }).contextManager;
+      vi.spyOn(manager, 'save').mockResolvedValue(undefined);
+      Object.assign(task, {
+        agent: {
+          runAgent: vi.fn(async () => {
+            expect(await hostExecution.authorizeUnconfinedHostExecution(task)).toBe(true);
+            return [];
+          }),
+        },
+        lastGitError: { action: 'pull', message: 'conflict' },
+      });
+      hostExecution.setHostExecutionWork(task, { id: 'parent', objective: 'Different parent objective' });
+      try {
+        expect(await hostExecution.withRootHostExecutionWork(task, () => hostExecution.authorizeUnconfinedHostExecution(task))).toBe(true);
+        if (entry === 'subagent') {
+          await task.runSubagent(profile, 'Independent investigation', [], [], undefined, undefined, { id: 'standalone' });
+        } else if (entry === 'plannotator') {
+          await task.runPromptInAgent(profile, 'plannotator', 'Execute the approved extension plan', { id: 'extension-work' }, [], [], undefined, false, false);
+        } else {
+          await task.resolveGitErrorWithAgent();
+        }
+        expect(confirm).toHaveBeenCalledTimes(2);
+        expect(confirm.mock.calls[1][0]).toMatchObject({
+          detail: expect.stringContaining(
+            entry === 'subagent' ? 'Independent investigation' : entry === 'git' ? 'Resolve the Git error' : 'Execute the approved extension plan',
+          ),
+        });
+        expect(await hostExecution.withRootHostExecutionWork(task, () => hostExecution.authorizeUnconfinedHostExecution(task))).toBe(true);
+        expect(confirm).toHaveBeenCalledTimes(2);
+      } finally {
+        hostExecution.clearHostExecutionWork(task, true);
+        desktop.mockRestore();
+        nativeFs.realpath = priorRealpath;
+        BrowserWindow.getFocusedWindow = priorFocus;
+        dialog.showMessageBox = priorDialog;
+      }
+    });
+
+    it('revokes and amends host authority before persisting accepted steering', async () => {
+      const root: RootTurnRecord = {
+        turnId: 'active-turn',
+        directory: baseDir,
+        profileId: 'profile',
+        provider: 'provider',
+        model: 'model',
+        state: 'running',
+        mode: 'agent',
+        messages: [],
+      };
+      const amend = vi.spyOn(hostExecution, 'amendHostExecutionWork');
+      const save = vi.fn(async () => {
+        expect(amend).toHaveBeenCalledWith(task, 'Use the new test environment');
+      });
+      Object.assign(task, { rootTurnInUse: true, activeRootSteering: root, saveRootTurn: save });
+      try {
+        expect(await task.steerAgentTurn(root.turnId, 'user-change', 'Use the new test environment')).toBe(true);
+        expect(save).toHaveBeenCalledTimes(1);
+      } finally {
+        amend.mockRestore();
+      }
+    });
+
+    it('keeps a repeated-operation checkpoint incomplete even with assistant text', async () => {
+      const goal = newAgentGoal('Fix and verify the bug');
+      const goalTurn = {
+        goal,
+        signal: new AbortController().signal,
+        canExecute: vi.fn(async () => true),
+        readGoal: vi.fn(async () => goal),
+        commitCompletion: vi.fn(async () => true),
+      } as unknown as Parameters<Task['runPromptInAgent']>[12];
+      const checkpoints: RootTurnRecord[] = [];
+      Object.assign(task, {
+        agent: {
+          runAgent: vi.fn(async (...args: unknown[]) => {
+            const progress = args[13] as (event: unknown) => Promise<void>;
+            await progress({
+              noProgress: { revision: 'same', fingerprints: ['repeated'], tools: ['power---file_read'], goalBinding: goalVerificationBinding(goal) },
+            });
+            return [{ id: 'final', role: 'assistant', content: 'A final-looking response' }];
+          }),
+        },
+        saveRootTurn: async (record: RootTurnRecord) => {
+          checkpoints.push(structuredClone(record));
+        },
+        sendRequestContextInfo: vi.fn(),
+        sendTaskGitStatusUpdated: vi.fn(),
+        sendUpdatedFilesUpdated: vi.fn(),
+        sendSkillsUpdated: vi.fn(),
+      });
+      task.task.name = 'Fixture';
+      mockStore.getSettings.mockReturnValue({ taskSettings: {} });
+      vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      const manager = (task as unknown as { contextManager: { save: () => Promise<void> } }).contextManager;
+      vi.spyOn(manager, 'save').mockResolvedValue(undefined);
+      await task.runPromptInAgent(
+        { id: 'profile', provider: 'provider', model: 'model' } as never,
+        'agent',
+        'Fix the bug',
+        { id: 'stopped' },
+        [],
+        [],
+        undefined,
+        false,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        goalTurn,
+      );
+      expect(checkpoints.at(-1)).toMatchObject({ state: 'running', noProgress: { revision: 'same' } });
+      expect(task.task.state).toBe(DefaultTaskState.Interrupted);
+      expect(goalTurn?.commitCompletion).not.toHaveBeenCalled();
+    });
+
+    it('does not restart saved repetitions automatically, but accepts explicit resumption', async () => {
+      vi.spyOn(task, 'isPromptRunning').mockReturnValue(false);
+      const profile = { id: 'profile', provider: 'test-provider', model: 'test-model' } as never;
+      const root: RootTurnRecord = {
+        turnId: 'stopped-turn',
+        directory: baseDir,
+        profileId: 'profile',
+        provider: 'test-provider',
+        model: 'test-model',
+        mode: 'agent',
+        state: 'running',
+        messages: [{ id: 'stopped-turn', role: 'user', content: 'Fix the bug' }],
+        noProgress: { revision: 'same', fingerprints: ['repeated'], tools: ['power---file_read'] },
+      };
+      task.task.state = DefaultTaskState.Interrupted;
+      task.task.metadata = { recoverableRootTurn: root.turnId };
+      vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue(profile);
+      vi.spyOn(task as unknown as { readRootTurn: () => Promise<unknown> }, 'readRootTurn').mockResolvedValue(root);
+      vi.spyOn(task as unknown as { saveRootTurn: (record: unknown) => Promise<void> }, 'saveRootTurn').mockResolvedValue(undefined);
+      vi.spyOn(goalVerification, 'goalWorktreeRevision').mockResolvedValue('same');
+      vi.spyOn(task, 'addLogMessage').mockImplementation(() => undefined);
+      const run = vi.spyOn(task, 'runPromptInAgent').mockResolvedValue([]);
+      await task.resumeTask();
+      expect(run).not.toHaveBeenCalled();
+      expect(root.noProgress).toBeDefined();
+      await task.resumeTask(undefined, true);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(root.noProgress).toBeUndefined();
+    });
+
     it('restores the saved Plan mode after the selector changes', async () => {
       vi.spyOn(task, 'isPromptRunning').mockReturnValue(false);
       const profile = { id: 'profile', provider: 'test-provider', model: 'test-model' } as never;
@@ -1095,7 +1430,20 @@ describe('Task - findSkillActivationMessages', () => {
       expect(run).not.toHaveBeenCalled();
       mockExtensionManager.getModes.mockReturnValue([{ mode: { name: 'plan' } }]);
       await task.resumeTask();
-      expect(run).toHaveBeenCalledWith(profile, 'plan', null, { id: 'plan-turn' }, root.messages, undefined, undefined, true, true, undefined, undefined, root);
+      expect(run).toHaveBeenCalledWith(
+        profile,
+        'plan',
+        null,
+        { id: 'plan-turn' },
+        root.messages,
+        undefined,
+        undefined,
+        false,
+        true,
+        undefined,
+        undefined,
+        root,
+      );
     });
 
     it('keeps the original command fingerprint after a yielded process exits through poll', () => {
@@ -1325,6 +1673,7 @@ describe('Task - findSkillActivationMessages', () => {
         goal,
         signal: new AbortController().signal,
         readGoal: vi.fn(async () => limited),
+        canExecute: vi.fn(async () => false),
         commitCompletion: vi.fn(async () => false),
       } as unknown as Parameters<Task['runPromptInAgent']>[12];
       const checkpoints: RootTurnRecord[] = [];
@@ -1555,7 +1904,7 @@ describe('Task - findSkillActivationMessages', () => {
         root.messages,
         undefined,
         undefined,
-        true,
+        false,
         true,
         undefined,
         undefined,

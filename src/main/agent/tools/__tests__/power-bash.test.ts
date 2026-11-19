@@ -13,6 +13,8 @@ import { spawn } from 'child_process';
 import * as pty from '@homebridge/node-pty-prebuilt-multiarch';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { authorizeUnconfinedHostExecution } from '../host-execution';
+
 import { hasEmptyNodeTestReport, NATIVE_EMPTY_TEST_REPORT, NATIVE_VERIFICATION_RESEARCH_QUERY } from '@/task/goal-verification';
 
 const mockGetShellInitCommand = vi.fn();
@@ -20,6 +22,10 @@ const mockGetShellCommandArgs = vi.fn();
 const mockGetShellPath = vi.fn(() => '/usr/bin:/bin');
 
 vi.mock('@homebridge/node-pty-prebuilt-multiarch', () => ({ spawn: vi.fn() }));
+vi.mock('../host-execution', () => ({ authorizeUnconfinedHostExecution: vi.fn(async () => true) }));
+vi.mock('@/utils/contained-path', () => ({
+  resolveProjectToolPath: vi.fn(async (root: string, input: string) => (await import('path')).resolve(root, input)),
+}));
 
 vi.mock('@/utils/shell', () => ({
   getShellInitCommand: mockGetShellInitCommand,
@@ -150,6 +156,25 @@ describe('Power Tools - bash shell initialization', () => {
       }
     },
   );
+
+  it.each([true, false])('cancels a long check at desktop close only if declared interruptible (%s)', async (interruptibleCheck) => {
+    const { DesktopStopBoundary } = await import('../../desktop-stop');
+    const barrier = new DesktopStopBoundary();
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    vi.mocked(spawn).mockReturnValueOnce(child);
+    const pending = new Set<Promise<unknown>>();
+    const tools = createPowerToolset(mockTask, mockProfile, mockPromptContext, undefined, undefined, pending, undefined, undefined, barrier);
+    const finish = tools['power---bash'].execute({ command: 'node --test', timeout: 5000, interruptibleCheck }, { toolCallId: 'long-test' });
+    await vi.waitFor(() => expect(pending.size).toBe(1));
+    barrier.request();
+    if (!interruptibleCheck) {
+      expect(pending.size).toBe(1);
+      child.emit('close', 0, null);
+    }
+    expect(await finish).toMatchObject({ exitCode: interruptibleCheck ? 130 : 0 });
+  });
 
   it('can yield and later read the completed process without spawning another command', async () => {
     const { NATIVE_PENDING_BASH_PROCESS } = await import('../power');
@@ -306,6 +331,11 @@ describe('Power Tools - bash shell initialization', () => {
     const foreign = createPowerToolset(mockTask, { ...mockProfile, id: 'other' }, mockPromptContext, undefined, undefined, undefined, session);
     await expect(foreign['power---bash_poll'].execute({ processId, yieldMs: 1 })).rejects.toThrow('unavailable');
     const next = createPowerToolset(mockTask, mockProfile, mockPromptContext, undefined, undefined, undefined, session);
+    vi.mocked(authorizeUnconfinedHostExecution).mockResolvedValueOnce(false);
+    expect(await next['power---bash_input'].execute({ processId, input: 'new host command', close: false })).toMatchObject({
+      error: expect.stringContaining('not authorized'),
+    });
+    expect(child.stdin.write).not.toHaveBeenCalled();
     expect(
       await next['power---bash_input'].execute({
         processId,

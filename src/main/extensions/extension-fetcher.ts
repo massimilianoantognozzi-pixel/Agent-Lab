@@ -114,18 +114,23 @@ export class ExtensionFetcher {
     if (dirExists) {
       try {
         logger.debug(`[ExtensionFetcher] Pulling existing repository cache at ${repoDir}`);
-        await execWithShellPath(`git -C "${repoDir}" pull`, { cwd: repoDir });
+        await execWithShellPath(['git', '-C', repoDir, 'pull', '--ff-only'], { cwd: repoDir });
         return repoDir;
       } catch (pullError) {
         logger.warn(`[ExtensionFetcher] git pull failed for ${repoDir}, removing and re-cloning:`, pullError);
-        await fs.rm(repoDir, { recursive: true, force: true });
+        const cache = await fs.realpath(EXTENSIONS_REPOS_CACHE_DIR);
+        const actual = await fs.realpath(repoDir);
+        if (path.relative(path.join(cache, dirName), actual) || path.dirname(actual) !== cache) {
+          throw new Error('The extension repository cache was redirected.');
+        }
+        await fs.rm(actual, { recursive: true, force: true });
       }
     }
 
     await fs.mkdir(EXTENSIONS_REPOS_CACHE_DIR, { recursive: true });
 
     logger.info(`[ExtensionFetcher] Cloning repository to ${repoDir}`);
-    await execWithShellPath(`git clone "${cloneUrl}" "${repoDir}"`, { cwd: EXTENSIONS_REPOS_CACHE_DIR });
+    await execWithShellPath(['git', 'clone', '--', cloneUrl, repoDir], { cwd: EXTENSIONS_REPOS_CACHE_DIR });
 
     return repoDir;
   }
@@ -143,7 +148,10 @@ export class ExtensionFetcher {
       }
 
       const owner = pathParts[0];
-      const repo = pathParts[1];
+      const repo = pathParts[1].replace(/\.git$/, '');
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo) || repo === '.' || repo === '..') {
+        return null;
+      }
       return `https://github.com/${owner}/${repo}.git`;
     } catch {
       return null;

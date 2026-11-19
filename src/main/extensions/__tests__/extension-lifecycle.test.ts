@@ -4,6 +4,7 @@
  */
 
 import { promises as fs } from 'fs';
+import path from 'path';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -14,6 +15,8 @@ import { ExtensionContextImpl } from '../extension-context';
 import type { Project } from '@/project';
 import type { SettingsData } from '@common/types';
 import type { Extension, ExtensionContext, ExtensionMetadata } from '@common/extensions';
+
+import { AIDER_DESK_GLOBAL_EXTENSIONS_DIR } from '@/constants';
 
 vi.mock('@/logger', () => ({
   default: {
@@ -498,17 +501,18 @@ describe('Extension Lifecycle', () => {
     });
 
     it('should skip initialization of disabled extensions during load', async () => {
-      vi.spyOn(mockDeps.store, 'getSettings').mockReturnValue(settingsWithDisabled(['/test/extension.ts']));
+      const fixturePath = path.join(AIDER_DESK_GLOBAL_EXTENSIONS_DIR, 'extension.ts');
+      vi.spyOn(mockDeps.store, 'getSettings').mockReturnValue(settingsWithDisabled([fixturePath]));
       const extension = createMockExtension();
       const metadata = createMockMetadata();
       const loader = (manager as any).loader;
       loader.loadExtension.mockResolvedValue({ extension, metadata });
 
-      const result = await (manager as any).loadAndInitializeExtension('/test/extension.ts');
+      const result = await (manager as any).loadAndInitializeExtension(fixturePath);
 
       expect(result.success).toBe(true);
       expect(extension.onLoad).not.toHaveBeenCalled();
-      expect((manager as any).registry.getExtension('/test/extension.ts')?.initialized).toBe(false);
+      expect((manager as any).registry.getExtension(fixturePath)?.initialized).toBe(false);
     });
   });
 

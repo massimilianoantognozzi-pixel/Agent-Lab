@@ -89,6 +89,8 @@ import { io, Socket } from 'socket.io-client';
 import { compareBaseDirs } from '@common/utils';
 import { v4 as uuidv4 } from 'uuid';
 
+import { getBrowserSocketAuth } from './browser-socket-auth';
+
 type EventDataMap = {
   'settings-updated': SettingsData;
   'response-chunk': ResponseChunkData;
@@ -173,6 +175,7 @@ export class BrowserApi implements ApplicationAPI {
     const baseUrl = `${window.location.protocol}//${window.location.hostname}${port ? `:${port}` : ''}`;
 
     this.socket = io(baseUrl, {
+      auth: getBrowserSocketAuth(baseUrl),
       autoConnect: true,
       forceNew: true,
       reconnection: true,
@@ -230,6 +233,7 @@ export class BrowserApi implements ApplicationAPI {
     };
     this.apiClient = create({
       baseURL: `${baseUrl}/api`,
+      withCredentials: true,
       headers: {
         'Content-Type': 'application/json',
       },
@@ -253,7 +257,10 @@ export class BrowserApi implements ApplicationAPI {
         this.appOS = os;
       });
     });
-    this.socket.on('disconnect', () => {
+    this.socket.on('disconnect', (reason) => {
+      if (reason === 'io server disconnect') {
+        window.location.reload();
+      }
       // eslint-disable-next-line no-console
       console.log('Disconnected from Socket.IO server');
     });

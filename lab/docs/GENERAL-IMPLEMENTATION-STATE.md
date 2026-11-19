@@ -27,6 +27,23 @@ si trovano testi, etichette, punteggi e sorgente del recupero provato.
 Le ricevute del banco sono simulate; il collaudo non ha eseguito una
 correzione automatica su un progetto cliente.
 
+**Checkpoint Git di fine giornata.** Il commit `213b7727` conserva rapporto,
+dati replicabili e punto di ripresa. Massimiliano ha autorizzato anche la
+pubblicazione del candidato completo sul ramo `codex/close-security-review-14`
+di `origin`, inclusa la bonifica del 18 novembre, i comandi di sessione e la
+chiusura desktop. Per la ripresa verificare l'allineamento del ramo con
+`origin/codex/close-security-review-14`. La qualifica del pacchetto di
+distribuzione e le attività aperte del riesame tecnico restano descritte nel
+piano più sotto. La copia di recupero locale del checkout prima dei commit
+è in `lab/work/chiusura-sessione-2026-11-19/`.
+
+Prima del push del candidato completo sono passati il typecheck Node/Web,
+28 test mirati su chiusura, confini di accesso, estensioni e memoria e il
+controllo delle cinque localizzazioni. Gitleaks non ha trovato segreti
+nello snapshot dei file da pubblicare. La replica eseguita dall'archivio
+Git ha restituito gli stessi JSON sia per il test principale sia per la
+prova supplementare.
+
 L'utente ha chiarito il 15 novembre che l'agente deve proseguire
 finché può compiere un'azione tecnica in autonomia. Una review
 o un errore recuperabile non richiedono un nuovo prompt.
@@ -42,6 +59,347 @@ Per le API, il perimetro confermato è limitato ai modelli offerti
 gratuitamente, come GLM sulla piattaforma Standard. Un eventuale
 account Anthropic sarà collegato tramite OAuth autorizzato per il
 client. Il collaudo attuale mantiene i provider del profilo.
+
+## 19 novembre 2026 — Chiusura immediata del desktop da sorgente
+
+La finestra Electron aperta con `Apri-Agent-Lab.cmd` intercetta `/chiudi`
+all’invio. L’ingresso desktop blocca nuove operazioni nel checkout e conserva
+le richieste in coda. Attende le scritture e le ricevute già in corso. I test
+nativi dichiarati interrompibili possono essere fermati durante l’esecuzione;
+per strumenti o comandi dagli effetti incerti aspetta la fine dell’operazione.
+Il connettore Aider aggiornato conferma l’arresto dopo l’uscita dei propri
+worker. Una sessione già ferma conserva il suo checkpoint.
+
+Per la chiusura il desktop usa le evidenze della task e i documenti di
+stato/ripresa del progetto. Se occorre aggiornarli, pubblica la nota insieme
+alle modifiche attribuite alla sessione. Verifica il commit sul ramo remoto
+e indica i file rimasti locali. Se il push viene rifiutato conserva il commit
+per il tentativo successivo. Il flusso governato avviato dal desktop usa il
+ramo di sviluppo configurato. Nel collaudo Git i remoti sono repository bare
+locali. L’icona Agent-Lab del desktop ora apre la build in `out/` tramite
+`lab/scripts/launch.mjs`. L’avvio dall’icona è stato verificato fino alla
+finestra principale. Il collegamento precedente alla r108 è conservato in
+`lab/work/desktop-shortcut-backup/Agent-Lab-r108.lnk`.
+
+La prova nella vera app Electron, con profilo temporaneo e remoto bare, ha
+confrontato i byte di `root-turn.json` prima e dopo l’invio di `/chiudi`.
+Il checkpoint è identico, l’handoff aggiornato è leggibile dal remoto e
+lo staging estraneo è conservato. Altri test coprono il comando duplicato
+durante una scrittura, il test interrompibile, il rifiuto del push con retry
+sullo stesso SHA e il ramo di sviluppo con il checkout principale aperto.
+
+## 19 novembre 2026 — Prompt di sessione e richiamo delle lezioni
+
+I tre prompt concordati sono in [lab/commands](../commands). Nel profilo
+generale desktop sono comandi personalizzati nativi, disponibili anche con
+l’icona r108. `/inizia` avvia dal blueprint, `/riprendi` usa la documentazione
+del progetto, `/chiudi` chiede arresto sicuro, handoff, commit e push. Sulla
+r108 un comando personalizzato inviato durante un turno viene accodato.
+Su questa versione, se la chat custodisce un turno tecnico interrotto,
+si può eseguire il prompt di chiusura da una nuova chat dello stesso
+repository per conservare il checkpoint originale.
+Prima di pubblicare si verifica il lavoro effettivamente pronto.
+
+Nel candidato, il flusso governato usa i testi entro i propri permessi e le
+proprie approvazioni. Le richieste di chiusura governate possono produrre un
+piano per il lavoro consentito. Il motore governato non dispone di un passo
+che esegua il push remoto. Nessuna pubblicazione è stata provata su un
+progetto reale. Per l’icona desktop vale il checkpoint di chiusura immediata
+riportato sopra. Il servizio telefono installato usa la consegna precedente.
+
+La memoria governata confermata e la Knowledge Base generale conservano ruoli
+distinti. Nel candidato, pianificazione, implementazione e debug cercano
+precedenti nel solo checkout pertinente, anche alla ripresa di un piano già
+approvato. Il richiamo automatico richiede una ricevuta shell coerente con
+esito zero. La lezione è consultiva e non cambia la revisione del piano.
+La ricerca lessicale scarta i risultati privi di corrispondenze. Nel profilo
+locale la query di controllo dell’audit è passata da quattro risultati a zero.
+In una prova sintetica «riavvio worker» ha recuperato la lezione corretta.
+«Alla riapertura partono due processi» ha dato zero risultati. Il confronto
+successivo fra ricerca lessicale e semantica è nel rapporto di chiusura
+del 19 novembre in apertura di questo documento.
+
+Le prove isolate coprono la lettura dei tre file da parte del gestore
+nativo, la chiusura inviata dal telefono con il riferimento all’attività
+originale e il recupero della lezione in una ripresa dopo verifica fallita.
+Il collaudo mobile usa Edge headless con servizi simulati.
+
+## Ripresa 18 novembre 2026 — Riesame Claude e lock CLI
+
+Riletto integralmente il PDF del 16 novembre sul commit r108 e confrontati
+gli 11 punti di critica e le quattro sezioni sicurezza con il candidato
+attuale. Il riesame distingue sorgenti, dipendenze installate e consegna:
+il profilo di uso corrente e la build desktop r108 non sono stati aggiornati.
+Il triage statico, gli audit e le prove sono nella raccolta locale collegata
+sotto, directory `artifacts/claude-review-2026-11-18/`.
+
+- Il lock CLI era discordante dal proprio manifest per OpenTelemetry,
+  Glob e Zod. Allineato Undici al pin root 8.12.3 e copiati gli stessi
+  overrides previsti dal generatore; rigenerato il lock in copia isolata,
+  con aggiornamento mirato di body-parser. Conservate le dipendenze
+  esclusive CLI. Manifest e lock applicati coincidono byte per byte con
+  quelli dell'installazione pulita verificata.
+- Review indipendente finale dei due manifest: nessuna regressione statica
+  rilevata e nessuna vecchia copia dei pacchetti coinvolti nel nuovo lock.
+  Il tarball pubblicabile non è stato qualificato: npm esclude il lockfile
+  e il downloader Probe viene copiato nella build. Il risultato sul checkout
+  non prova l'installazione o gli overrides della distribuzione pubblicata.
+- Audit CLI produzione: da 19 segnalazioni (quattro alte) a 13
+  (11 medie, due basse, nessuna alta/critica). Il gate alla soglia alta
+  termina con exit 0; l'audit completo resta non verde. Audit del lock
+  root, senza modificarlo: 11 segnalazioni, sei medie e cinque basse.
+  La raggiungibilità dei rilievi residui resta da valutare.
+- Installazione CLI con `npm ci --ignore-scripts`: PASS. Suite CLI sulla
+  copia isolata: 61 test PASS, con Vitest già disponibile come harness
+  e gli stessi pattern di test/alias; non sono stati eseguiti postinstall,
+  packaging o launcher. Verificate anche le copie realmente installate
+  di Undici, body-parser, systeminformation e Zod.
+- Sul sorgente corrente: 29 test mirati host/MCP/URL/remote e nove test
+  di configurazione PASS; typecheck Node/Web PASS. Corretto solo il
+  formato di open-url e di due test già presenti alla ripresa; lint
+  ristretto PASS e 14 test URL/MCP nuovamente PASS. Gitleaks sul diff
+  selezionato di manifest, lock e open-url: nessun segreto rilevato.
+- Review indipendente del riesame: corretta la distinzione tra dialogo
+  nativo dell'app e autorizzazione OS/UAC; il filtro URL di open-url vale
+  nel ramo headless. I test URL simulano i processi e non provano l'avvio
+  dei browser su Linux/macOS/WSL. Gli override browser sono eseguibili;
+  compatibilità Windows con `.cmd`/associazioni non qualificata.
+- Il preflight trova Semgrep, Gitleaks e OSV, ma Knip manca. Non è stata
+  avviata una nuova scansione generale: il PASS Semgrep finale riguarda
+  solo i sette file runtime del blocco; codice morto/RLS non ricevono
+  un nuovo verdetto. Nessuna modifica a DB o autenticazione di rete.
+
+**Decisione successivamente approvata dall'utente nella stessa ripresa:**
+mantenere autonomia senza tetto fisso e Serena disponibile; arrestare le
+ripetizioni senza progresso con checkpoint, legando il consenso host
+desktop all'incarico/progetto e rinnovandolo al cambio di perimetro.
+La decisione è registrata nel blueprint generale e implementata nel
+candidato in `agent-progress.ts`, ciclo Agent, checkpoint/ripresa Task e
+consenso host. Due review finali separate sono favorevoli dopo i fix a
+stdin, steering, ingressi autonomi e modalità non tracciate, ownership
+delle deleghe, processi/worker pendenti e concorrenza/errori della ripresa.
+Il lavoro fermato rimane incompleto e conserva il contesto. Nessun tetto
+globale: il richiamo alla strategia precede l'arresto delle ripetizioni.
+
+Gate finali sullo stesso sorgente: 1.997 test Node PASS, due esclusi
+opzionali del governato (ricerca reale e immagine Docker non configurate),
+148 file; build con typecheck Node/Web, lint ristretto e diff check PASS.
+Semgrep sui sette file runtime del blocco: zero corrispondenze e zero
+errori di parsing; Gitleaks sullo snapshot: nessun segreto. Questi esiti
+non estendono la copertura all'intero progetto o alla history.
+Impronta aggregata dei 17 file verificati:
+`ca869cf4ba7aa15bae9b39636c920765ba2f2928bc235ae988eb8710debd0ae7`.
+Rapporto finale e log nella raccolta locale citata sotto, file
+`artifacts/claude-review-2026-11-18/esito-blocco.md`.
+L'icona confezionata di uso corrente non è stata aggiornata; `out/`
+contiene la nuova compilazione da sorgente. Qualificazione di consegna
+ancora aperta, incluse le dipendenze desktop locali datate e il tarball.
+
+Restano da concordare la durata/inattività delle credenziali remote,
+il significato di approvazione della coda e l'eventuale revisore con altro
+modello. Il consenso host nel candidato non è una sandbox;
+il controllo MCP per task copre `execute_shell_command`, non ogni possibile
+tool esecutivo di futuri server globali.
+
+Restano i blocchi del piano su feedback Docker, copertura comportamentale,
+portabilità, valutazione CI e prova su progetto reale autorizzato. Nessuna
+modifica a questi flussi, nessun commit/push, deploy o aggiornamento icona.
+
+## Checkpoint 18 novembre 2026 — Verifica dei 14 rilievi originali chiusa
+
+La verifica locale dei 14 rilievi della scansione
+`4863d378-59dd-4d0f-ac55-765cd32aa286` è conclusa sul ramo
+`codex/close-security-review-14`, sopra r108 `7add80a5`. I due revisori
+indipendenti confermano `fixed` per tutti i rilievi originali. La scansione
+storica sigillata resta invariata; questo è un successivo esito di verifica,
+non una certificazione generale di sicurezza e non un penetration test.
+
+- Impronta dei file di codice/configurazione modificati (manifest del
+  checkpoint, Markdown escluso):
+  `77f8278c78461c7b860434b641bbfc4e90180a5bbd8e245229eb98b9ed05cb63`.
+- Corretta l'autorità dei processi MCP di progetto: nuova conferma nativa
+  per ogni nuovo processo stdio, annullamento predefinito e spiegazione di
+  codice/dipendenze mutabili e permessi OS. In headless serve il consenso
+  esplicito `AIDER_DESK_ALLOW_PROJECT_MCP=true`, distinto dal consenso alla
+  shell ordinaria. La configurazione viene ricontrollata dopo il dialogo e
+  prima di ogni invocazione; revoca e diniego non lasciano un client
+  utilizzabile o un'inizializzazione fallita permanentemente nel pool.
+- Corretto il riconoscimento dei nomi con backslash nello ZIP Probe Windows.
+  Dimensioni e digest fissati restano identici. Download reale, cache,
+  ricerca e prove negative di integrità/proxy sono passati.
+- Riallineato solo Handlebars 4.7.10 nel lockfile CLI, già richiesto dal
+  manifest. Installazione pulita senza script e 61 test CLI superati.
+- Suite Node finale: 1.941 superati, 2 esclusi, 144 file; typecheck Node/Web,
+  build Electron, prove mirate e controlli di accesso negato superati.
+  Anche la build MCP è passata; lint sulle modifiche senza errori, con nove
+  warning (file esclusi dalla configurazione e import Axios).
+  La suite renderer precedente (516 test) è riusata: i sorgenti interessati
+  coincidono con il checkpoint del 15 novembre, senza nuove modifiche UI.
+- Launcher `.cmd` reale eseguito su copia isolata, con dipendenze locali,
+  profilo app e home OS sintetici. Due avvii, chiusura ordinata, persistenza
+  al riavvio, API preload e blocco della navigazione estranea superati.
+  Il collaudo abilita CDP solo sull'istanza di prova. I processi di prova
+  sono stati chiusi; build e icona desktop di uso corrente non aggiornate.
+- Docker: sette sentinelle sintetiche escluse dal contesto effettivo del
+  builder, con sorgente legittimo conservato. Nessun profilo reale copiato.
+- Gitleaks sulle modifiche: nessun segreto rilevato. Semgrep: 44 segnali
+  esaminati, con quattro warning di parsing parziale; non è un gate verde.
+  Dipendenze/OSV e codice morto non ricevono un nuovo verdetto da questa prova.
+
+**Rilievo aggiuntivo registrato per il punto 2:** su Unix headless,
+`src/main/utils/open-url.ts:78-89` passa URL a una shell usando
+`JSON.stringify` come quoting. Il percorso Git Log può derivare la URL da
+una remote del checkout e conservare sostituzioni shell. Il problema è
+preesistente, confermato staticamente e condizionale all'estensione e
+all'azione dell'utente; non dimostra esposizione del desktop Windows.
+La patch senza URL interpolata nella shell era già presente alla ripresa
+del riesame Claude; esito e limiti delle prove sono nel checkpoint sopra.
+Anche l'avviso della finestra di progresso nell'avvio da sorgente
+isolato resta una nota funzionale: non ha impedito l'apertura o il riavvio.
+
+Report e prove conservati nella raccolta locale Codex Security di Agent-Lab:
+`C:\Users\Pc Gaming\.codex\state\plugins\codex-security\scans\Agent-Lab\artifacts-288e037fedd7a2bd4d63c0e4982112dce3f1d8e161d462cfb0999189b3aae092\report_validation.md`.
+Nessun commit, push, deploy o pentest. Prossima attività: punto 2 del piano.
+
+## Ripresa 16 novembre 2026 — Bonifica sicurezza locale (storico)
+
+La working tree di Agent-Lab contiene la bonifica dei 14 rilievi sopra
+il commit r108 `7add80a5a38f54359091e28609d725cb5bd6be8d`. L'utente ha
+chiesto la chiusura a questo punto. La ripresa parte dalla working tree
+locale e dal checkpoint verificato, senza commit, push o pentest.
+
+- I quattro rilievi iniziali hanno interventi su ricerca Probe, gestione
+  delle identità Socket.IO, autenticazione REST e approvazione delle
+  estensioni di progetto. Le modifiche successive coprono approvazioni Bash,
+  perimetro dei percorsi, MCP, Plannotator, Electron, Docker, log terminale
+  e integrità di Probe. Le review indipendenti hanno fatto emergere i casi
+  di revoca, ripresa, configurazioni e dipendenze poi affrontati nel diff.
+- I tool sui file verificano il checkout canonico. Il terminale integrato
+  richiede una concessione distinta per eseguire comandi sull'host. In headless
+  l'operatore la dichiara all'avvio tramite `AIDER_DESK_ALLOW_HOST_SHELL=true`.
+  Una shell concessa dall'operatore conserva i permessi dell'account OS.
+- La build Electron è riuscita e il preload compilato è stato aperto in un
+  processo Electron con sandbox, profilo isolato e IPC sintetico. La build
+  di prova e i log sono in `E:\Agent-Lab-remediation-build-5cb69e364ca74471b1bc92fb7b4ffdfb`.
+  La prova usa una finestra di collaudo e la r108 del collegamento desktop
+  resta la build di uso corrente. La build di prova precede la correzione
+  finale del blocco MCP.
+- Typecheck Node/Web superato. Suite renderer 516 test superati. Suite Node
+  completa con 1.923 superati, due esclusi e due timeout nelle integrazioni
+  MCP OAuth e SSE. In isolamento il timeout è ricomparso. Il pool leggeva
+  la Promise della nuova connessione dopo un `await`, finendo per attendere
+  se stessa. La lettura è stata spostata prima dell'attesa. Typecheck Node
+  e i tre retest mirati OAuth, SSE e fiducia MCP sono passati. Il risultato
+  è in `E:\Agent-Lab-remediation-mcp-corrected.log`. Test CLI mirati Probe 10
+  superati. `npm ci` separato per la suite CLI completa resta bloccato
+  dalla discrepanza del lockfile `handlebars` 4.7.9 rispetto a 4.7.10.
+- Probe Windows è stato provato con una ricerca legittima su file sintetico.
+  Il controllo del binario in cache e l'oscuramento del proxy sono passati.
+  Gitleaks sulle modifiche ha esito 0. Semgrep mirato ha elaborato 56 file
+  senza errori e ha restituito 17 corrispondenze da conservare come segnali
+  statici, distinte dai rilievi verificati. I log completi delle suite sono
+  `E:\Agent-Lab-remediation-node-final.log` e `E:\Agent-Lab-remediation-web-final.log`.
+
+### Piano di ripresa
+
+1. **CHIUSO il 18 novembre: verifica dei 14 rilievi originali.** Esiti,
+   impronta, test e limiti sono nel checkpoint sopra e nel report collegato.
+   Prima di una build di consegna o dell'aggiornamento dell'icona desktop,
+   affrontare il rilievo aggiuntivo registrato nel punto 2 e il relativo
+   riesame. L'assenza di rilievi originali aperti non equivale a un via libera
+   generale o a una verifica dell'esposizione online.
+2. **Riesame Claude e blocco generale verificati nel candidato.** Il PDF
+   `Audit approfondito — Agent-Lab.pdf` riguarda il commit r108 `7add80a5`.
+   Consenso host, arresto delle ripetizioni e lock CLI sono stati affrontati
+   nel checkpoint sopra, distinguendo sorgente, dipendenze installate e
+   consegna. Restano i limiti dichiarati per headless, permessi OS e nuovi
+   tool esecutivi MCP globali; il detector copre le operazioni caratterizzate,
+   non ogni progresso esterno. Prima di consegnare, qualificare installazione
+   pulita e artefatto finale. I punti seguenti restano aperti.
+3. **Correggere le criticità confermate del governato e della portabilità.**
+   Dare al correttore l'errore reale dei controlli Docker, limitando l'output
+   e oscurando i dati sensibili. Usare test comportamentali per i criteri
+   funzionali e indicare esplicitamente i controlli di sola sintassi.
+   Verificare la portabilità di Gitleaks e Docker. Valutare una CI minima
+   per typecheck, build e test su Node 24. Chiarire con l'utente quando
+   l'avvio della coda vale come approvazione dei piani dei singoli task.
+4. **Misurare il risultato su un progetto reale autorizzato.** Su una copia
+   isolata confrontare modalità generale e governata con lo stesso modello
+   su un bug, una modifica su più file e una funzionalità. Registrare prove,
+   interventi umani e cause dei blocchi. Usare i risultati per decidere se
+   introdurre modifiche mirate al posto dei file interi, strumenti di sola
+   lettura per l'esplorazione o un revisore con un modello diverso.
+5. **Integrare la generazione di immagini con Sunburst.** Milestone
+   approvata il 16 novembre 2026, da avviare dopo la chiusura della security
+   review e il completamento delle correzioni confermate. Adattare il
+   [tool nativo di OpenCode](https://github.com/anomalyco/opencode/blob/d4e48f54da346bc9f6e530c7111d9cbebc641513/packages/core/src/tool/plugin/image-generate.ts)
+   alla chat e al Designer di Agent-Lab. Un tool dedicato invia prompt e
+   riferimenti autorizzati, segue il lavoro in background e restituisce
+   anteprima e file nel perimetro del progetto. Il modello grafico è
+   `gpt-image-2.6-sunburst` tramite la
+   [Images API ufficiale di OpenAI](https://developers.openai.com/api/docs/guides/image-generation),
+   configurabile separatamente dal modello di coding. Prima del collaudo
+   reale, verificare l'attivazione e il saldo dei
+   [crediti API inclusi in ChatGPT Pro](https://developers.openai.com/api/docs/guides/chatgpt-api-credits).
+   Mostrare la stima e registrare il consumo effettivo. Ogni eventuale spesa
+   oltre i crediti inclusi richiede una decisione separata. La prima prova
+   completa genera un fondale 2D retro dalla chat, lo modifica usando il
+   primo risultato come riferimento e verifica il file dentro una scena
+   giocabile alla risoluzione finale.
+
+   **Regola del Designer approvata il 17 novembre 2026.** Per un mockup di
+   interfaccia, preparare un prototipo navigabile in codice con dati fittizi
+   e componenti già approvati, da validare prima dell'implementazione. Per
+   una richiesta di immagini, consegnare gli asset nei formati richiesti.
+   Per una landing completa, definire nel brief posizione, formato e
+   funzione degli asset, integrarli nel codice e verificare la pagina su
+   desktop e mobile.
+
+   Riutilizzare gli asset già approvati e generare solo quelli mancanti
+   previsti dal brief. Partire da una proposta per asset. Generare una
+   variante quando serve una correzione concreta o l'utente chiede di
+   confrontare due direzioni.
+
+Agent-Lab Remote con app nativa e relay Cloudflare Free resta una milestone
+successiva.
+
+Riepilogo proposto per un eventuale commit autorizzato in seguito.
+`Rafforza i confini di sicurezza di Agent-Lab`. La descrizione dovrebbe
+citare l'autenticazione dei trasporti, il consenso sui tool del progetto,
+l'isolamento desktop e le prove effettivamente superate sulla revisione.
+
+## Evoluzioni future da discutere
+
+Queste proposte saranno discusse ed esplicitate nei rispettivi blueprint
+prima di passare all'implementazione.
+
+### Agent-Lab online con connettore portatile USB
+
+Mantenere online l'orchestratore con profili, memoria e skill. Un connettore
+avviato da USB sul PC ospite mette a disposizione gli strumenti e le
+dipendenze portatili pertinenti al lavoro. Il proprietario autorizza una
+sessione temporanea e sceglie la cartella o il servizio su cui l'agente può
+operare. Le operazioni vengono eseguite sul PC associato e i risultati
+tornano all'orchestratore per diagnosi, correzione e verifica. Il perimetro
+vale anche per terminale e subagenti. Alla chiusura del connettore termina
+l'accesso. Le credenziali dei provider restano sul sistema che ospita
+Agent-Lab. La prima prova proposta usa un secondo PC Windows e gli strumenti
+Git e Node.js portatili.
+
+Prima dell'esposizione online, prevedere una review indipendente dei confini
+di accesso e del controllo delle sessioni, seguita da un penetration test
+autorizzato in ambiente di collaudo.
+
+### Selettore dell'ambiente di lavoro
+
+Scegliere un ambiente come Gestionale, Programmazione web o Videogame per
+predisporre un insieme di strumenti, skill e server MCP. Il blueprint del
+progetto determina lo stack effettivo. L'agente può attivare altre skill
+quando servono e creare una skill di progetto se manca una procedura
+riutilizzabile. In Videogame, la scelta di Godot, Unity o Unreal determina
+quali strumenti caricare, per esempio GDScript o C# per Godot, C# per Unity
+e C++ o Blueprints per Unreal. Blender entra quando servono asset 3D. La
+scelta dell'ambiente si combina con quella della macchina di esecuzione.
 
 ## Revisione Designer in Agent ordinario — r108
 

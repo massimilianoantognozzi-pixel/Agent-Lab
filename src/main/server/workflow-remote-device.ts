@@ -7,12 +7,17 @@ import { atomicWriteJsonFile } from '@/utils/atomic-write';
 
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 const generationId = z.union([z.literal('initial'), z.uuid()]);
+export const REMOTE_DEVICE_LIFETIME_SECONDS = 365 * 24 * 60 * 60;
+const deviceCredential = z.strictObject({ digest: hex, generation: generationId, expiresAt: z.number().int().positive().safe() });
 const ledger = z.strictObject({
-  version: z.literal(1),
+  version: z.literal(2),
   scope: hex,
   usedCode: hex.optional(),
-  device: z.strictObject({ digest: hex, generation: generationId }).optional(),
+  device: deviceCredential.optional(),
 });
+// Old credentials have no trustworthy issuance time. Keep the consumed QR
+// marker, but require one new pairing instead of inventing an expiry date.
+const legacyLedger = ledger.extend({ version: z.literal(1), device: deviceCredential.omit({ expiresAt: true }).optional() });
 const revocation = z.strictObject({ generation: z.uuid() });
 
 export type DeviceLedger = Omit<z.infer<typeof ledger>, 'version' | 'scope'>;
@@ -51,15 +56,15 @@ export const createRemoteDeviceStore = (directory: string, scope: string): Remot
       if (record === undefined) {
         return {};
       }
-      const current = ledger.parse(record);
+      const current = z.union([ledger, legacyLedger]).parse(record);
       if (current.scope !== scope) {
         return {};
       }
       return {
         usedCode: current.usedCode,
-        device: current.device && current.device.generation === (await generation()) ? current.device : undefined,
+        device: current.version === 2 && current.device && current.device.expiresAt > Date.now() && current.device.generation === (await generation()) ? current.device : undefined,
       };
     },
-    write: async (value) => atomicWriteJsonFile(ledgerPath, ledger.parse({ version: 1, scope, ...value })),
+    write: async (value) => atomicWriteJsonFile(ledgerPath, ledger.parse({ version: 2, scope, ...value })),
   };
 };

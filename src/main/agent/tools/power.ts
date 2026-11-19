@@ -28,13 +28,17 @@ import {
 import { isURL } from '@common/utils';
 
 import { ApprovalManager } from './approval-manager';
+import { authorizeUnconfinedHostExecution } from './host-execution';
+
+import type { DesktopStopBoundary } from '../desktop-stop';
 
 import { search } from '@/utils/probe';
 import { Task } from '@/task';
 import logger from '@/logger';
 import { ensureRipgrepBinary, filterIgnoredFiles, scrapeWeb } from '@/utils';
 import { isAbortError, isFileNotFoundError } from '@/utils/errors';
-import { getShellCommandArgs, getShellInitCommand, getShellPath } from '@/utils/shell';
+import { resolveProjectToolPath } from '@/utils/contained-path';
+import { canPreapproveShellCommand, getShellCommandArgs, getShellInitCommand, getShellPath } from '@/utils/shell';
 import { BoundedOutputAccumulator, expandTilde, readFileContent, truncateToolResult, coerceBoolean } from '@/agent/utils';
 import {
   getNpmTestScriptAttribution,
@@ -113,6 +117,7 @@ export const createPowerToolset = (
   pendingCommands?: Set<Promise<unknown>>,
   commandSession?: PowerCommandSession,
   turnSignal?: AbortSignal,
+  desktopStop?: DesktopStopBoundary,
 ): ToolSet => {
   const approvalManager = new ApprovalManager(task, profile);
   const stdinToolId = `${TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${TOOL_BASH_INPUT}`;
@@ -218,17 +223,17 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return `File edit to '${filePath}' denied by user. Reason: ${userInput}`;
       }
 
-      const absolutePath = path.resolve(task.getTaskDir(), expandedPath);
+      const absolutePath = await resolveProjectToolPath(task.getTaskDir(), expandedPath);
 
       return withFileLock(absolutePath, async () => {
         try {
           logger.debug('Reading file content:', { absolutePath });
-          let fileContent = await fs.readFile(absolutePath, {
+          const originalContent = await fs.readFile(absolutePath, {
             encoding: 'utf8',
             signal: abortSignal,
           });
           // Normalize Windows line endings to Unix for consistent matching
-          fileContent = fileContent.replace(/\r\n/g, '\n');
+          const fileContent = originalContent.replace(/\r\n/g, '\n');
           let modifiedContent: string;
           let matched: boolean;
 
@@ -271,6 +276,9 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
             encoding: 'utf8',
             signal: abortSignal,
           });
+          if (task.recordsDesktopWrites) {
+            await task.recordDesktopWrite(absolutePath, Buffer.from(originalContent), Buffer.from(modifiedContent));
+          }
           return `Successfully edited '${filePath}'.`;
         } catch (error) {
           if (isAbortError(error)) {
@@ -325,7 +333,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return `File read of '${filePath}' denied by user. Reason: ${userInput}`;
       }
 
-      const absolutePath = path.resolve(task.getTaskDir(), expandedPath);
+      const absolutePath = await resolveProjectToolPath(task.getTaskDir(), expandedPath);
       try {
         return await readFileContent(absolutePath, withLines, lineOffset, lineLimit);
       } catch (error) {
@@ -386,11 +394,20 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return `File write to '${filePath}' denied by user. Reason: ${userInput}`;
       }
 
-      const absolutePath = path.resolve(task.getTaskDir(), expandedPath);
+      const absolutePath = await resolveProjectToolPath(task.getTaskDir(), expandedPath);
 
       try {
         await fs.mkdir(path.dirname(absolutePath), { recursive: true });
 
+        const previous =
+          task.recordsDesktopWrites && mode !== FileWriteMode.CreateOnly
+            ? await fs.readFile(absolutePath).catch((error) => {
+                if (!isFileNotFoundError(error)) {
+                  throw error;
+                }
+                return null;
+              })
+            : null;
         if (mode === FileWriteMode.CreateOnly) {
           try {
             await fs.writeFile(absolutePath, content, {
@@ -399,6 +416,9 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
               signal: abortSignal,
             });
             await task.addToGit(absolutePath);
+            if (task.recordsDesktopWrites) {
+              await task.recordDesktopWrite(absolutePath, null, Buffer.from(content));
+            }
 
             return `Successfully created '${filePath}'.`;
           } catch (e) {
@@ -409,6 +429,9 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           }
         } else if (mode === FileWriteMode.Append) {
           await fs.appendFile(absolutePath, content, 'utf8');
+          if (task.recordsDesktopWrites) {
+            await task.recordDesktopWrite(absolutePath, previous, Buffer.concat([previous ?? Buffer.alloc(0), Buffer.from(content)]));
+          }
           return `Successfully appended to '${filePath}'.`;
         } else {
           await fs.writeFile(absolutePath, content, {
@@ -416,6 +439,9 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
             signal: abortSignal,
           });
           await task.addToGit(absolutePath);
+          if (task.recordsDesktopWrites) {
+            await task.recordDesktopWrite(absolutePath, previous, Buffer.from(content));
+          }
           return `Successfully written to '${filePath}' (overwritten).`;
         }
       } catch (error) {
@@ -465,7 +491,11 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
       const GLOB_WALK_LIMIT = 5000;
       const GLOB_MAX_RESULTS = 1000;
 
-      const absoluteCwd = expandedCwd ? path.resolve(task.getTaskDir(), expandedCwd) : task.getTaskDir();
+      if (path.isAbsolute(pattern) || pattern.includes('..')) {
+        return 'Glob patterns must stay inside the project directory.';
+      }
+
+      const absoluteCwd = await resolveProjectToolPath(task.getTaskDir(), expandedCwd ?? '.');
       try {
         const files: string[] = [];
         let walkTruncated = false;
@@ -477,7 +507,10 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
           absolute: false, // Keep paths relative to cwd for easier processing
           signal: abortSignal,
         })) {
-          files.push(file);
+          const contained = await resolveProjectToolPath(task.getTaskDir(), path.resolve(absoluteCwd, file)).catch(() => undefined);
+          if (contained) {
+            files.push(contained);
+          }
           if (files.length >= GLOB_WALK_LIMIT) {
             walkTruncated = true;
             break;
@@ -485,8 +518,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         }
 
         // Convert to absolute paths for filtering, then back to relative
-        const absoluteFiles = files.map((file) => path.resolve(absoluteCwd, file));
-        const filteredFiles = await filterIgnoredFiles(task.getTaskDir(), absoluteFiles);
+        const filteredFiles = await filterIgnoredFiles(task.getTaskDir(), files);
 
         // Ensure paths are relative to task.getTaskDir()
         const result = filteredFiles.map((file) => path.relative(task.getTaskDir(), file));
@@ -836,6 +868,12 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         .optional()
         .describe('Return early with a process ID when the command is still running. Use bash_poll to obtain its final output.'),
       interactive: z.boolean().optional().describe('Keep stdin open for bash_input. Requires yieldMs and interactive shell approval.'),
+      interruptibleCheck: z
+        .boolean()
+        .optional()
+        .describe(
+          'Set true only for a verification known to be safe to cancel, with no persistent writes, migrations, snapshot updates or publish steps. Omit for unknown commands.',
+        ),
       tty: z.boolean().optional().describe('Run in a native pseudo-terminal. Requires interactive mode. Send terminal keys with bash_input.'),
     }),
     execute: async (input, options) => {
@@ -882,15 +920,9 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return `Bash command execution denied by settings. Command matches denied pattern: \`${bashSettings?.deniedPattern}\`. If the command is destructive, you must not try to workaround it, inform the user instead.`;
       }
 
-      let approvedBySettings = false;
-      // Check allowed patterns - if matches, skip approval and execute directly
       const allowedPatterns = bashSettings?.allowedPattern?.split(';').filter(Boolean) || [];
-      if (allowedPatterns.length > 0 && allowedPatterns.some((pattern) => new RegExp(pattern).test(command))) {
-        approvedBySettings = true;
-      }
-
       const [isApproved, userInput] =
-        approvedBySettings && !interactive
+        !interactive && allowedPatterns.length > 0 && canPreapproveShellCommand(command, allowedPatterns)
           ? [true, undefined]
           : await approvalManager.handleToolApproval(toolName, input, toolId, questionText, questionSubject);
 
@@ -898,14 +930,26 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
         return `Bash command execution denied by user. Reason: ${userInput}`;
       }
       abortSignal?.throwIfAborted();
-      const commandSignal =
+      const sessionSignal =
         yieldMs !== undefined && commandSession ? (turnSignal ? AbortSignal.any([commandSession.signal, turnSignal]) : commandSession.signal) : abortSignal;
+      const cancellable =
+        input.interruptibleCheck &&
+        !interactive &&
+        !tty &&
+        !/[;&|<>\r\n`$]/.test(command) &&
+        /^(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test(?:\b|:)|(?:vitest|pytest)\b|node\s+--test\b|python(?:3)?\s+-m\s+(?:pytest|unittest)\b)/i.test(command) &&
+        !/(?:--update|--write|--fix|(?:^|\s)-u(?:\s|$))/i.test(command);
+      const commandSignal = cancellable && desktopStop ? AbortSignal.any([desktopStop.signal, ...(sessionSignal ? [sessionSignal] : [])]) : sessionSignal;
       commandSignal?.throwIfAborted();
       if (yieldMs !== undefined && runningCommands.size >= 8) {
         return 'Read pending command results with bash_poll before starting another background command.';
       }
 
-      let absoluteCwd = expandedCwd ? path.resolve(task.getTaskDir(), expandedCwd) : task.getTaskDir();
+      if (!(await authorizeUnconfinedHostExecution(task))) {
+        return 'Host shell permission was not granted for this task. Project file and search tools remain available.';
+      }
+      commandSignal?.throwIfAborted();
+      let absoluteCwd = await resolveProjectToolPath(task.getTaskDir(), expandedCwd ?? '.');
       const admittedScope = (
         options as typeof options & {
           [VERIFIED_BASH_SCOPE]?: GoalVerificationScope;
@@ -941,6 +985,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
       });
       let commandInput: CommandInput | undefined;
       let cancelCommand: (() => void) | undefined;
+      commandSignal?.throwIfAborted();
       const completion = new Promise<CommandResult>((resolve) => {
         const stdoutAccumulator = new BoundedOutputAccumulator();
         const stderrAccumulator = new BoundedOutputAccumulator();
@@ -1076,6 +1121,7 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
             }
           } catch (error) {
             stderrOverride += ` Could not confirm process-tree termination: ${error instanceof Error ? error.message : String(error)}`;
+            desktopStop?.uncertainProcess(toolCallId);
           }
           await resolveWithResult();
         };
@@ -1265,6 +1311,10 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
       if (!approved) {
         return { error: 'Process input was denied.' };
       }
+      if (!(await authorizeUnconfinedHostExecution(task))) {
+        return { error: 'Host command execution was not authorized for this work.' };
+      }
+      abortSignal?.throwIfAborted();
       if (getCommand(request.processId)?.input !== writeInput) {
         return { error: 'Process input is no longer available.' };
       }
@@ -1382,11 +1432,12 @@ Do not use escape characters \\ in the string like \\n or \\" and others. Do not
       let searchPath = inputPath || task.getTaskDir();
 
       // Check if it's a dependency path (format: language:rest)
-      const isDependencyPath = /^[a-zA-Z]+:/.test(searchPath);
+      const isDependencyPath = /^[a-zA-Z]+:/.test(searchPath) && !/^[a-zA-Z]:/.test(searchPath);
 
-      if (!isDependencyPath && !path.isAbsolute(searchPath)) {
-        // If path is relative (including "." and "./"), resolve it relative to task.getTaskDir()
-        searchPath = path.resolve(task.getTaskDir(), searchPath);
+      if (!isDependencyPath) {
+        searchPath = await resolveProjectToolPath(task.getTaskDir(), searchPath);
+      } else if (!(await authorizeUnconfinedHostExecution(task))) {
+        return 'Dependency search outside the project requires host access for this task.';
       }
 
       // List of supported languages by the probe binary

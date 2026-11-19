@@ -162,6 +162,8 @@ class PromptExecutor:
     self.active_prompts: Dict[str, asyncio.Task] = {}
     self.active_coders: Dict[str, Coder] = {}
     self.active_futures: Dict[str, Future] = {}
+    self.desktop_stops = set()
+    self.streams_in_flight = {}
     self.executor = None
 
   def get_executor(self):
@@ -216,18 +218,32 @@ class PromptExecutor:
 
     queue = asyncio.Queue()
     executor = self.get_executor()
+    finished = asyncio.Event()
+    self.streams_in_flight[finished] = prompt_context.id
 
     def _sync_worker():
+      stream = None
       try:
-        for chunk in coder.run_stream(prompt_to_run):
+        stream = iter(coder.run_stream(prompt_to_run))
+        while not self.is_prompt_interrupted(prompt_context.id):
+          try:
+            chunk = next(stream)
+          except StopIteration:
+            break
           if self.is_prompt_interrupted(prompt_context.id):
             break
           # Put chunk into queue, handling potential queue full
           fut = asyncio.run_coroutine_threadsafe(queue.put(chunk), self.connector.loop)
           fut.result() # Wait for it to be put in queue
-        asyncio.run_coroutine_threadsafe(queue.put(None), self.connector.loop).result() # Sentinel for end
       except Exception as e:
         self.connector.coder.io.tool_error(f"Error in run_stream for {log_context}: {str(e)}")
+      finally:
+        try:
+          if hasattr(stream, "close"):
+            stream.close()
+        finally:
+          asyncio.run_coroutine_threadsafe(queue.put(None), self.connector.loop).result()
+          self.connector.loop.call_soon_threadsafe(self._stream_finished, finished)
 
     future = self.connector.loop.run_in_executor(executor, _sync_worker)
     self.active_futures[prompt_context.id] = future
@@ -235,6 +251,7 @@ class PromptExecutor:
     while True:
       chunk = await queue.get()
       if chunk is None:
+        await future
         break
       whole_content += chunk
       buffer += chunk
@@ -518,6 +535,14 @@ class PromptExecutor:
     self.active_prompts.pop(prompt_id, None)
     self.active_coders.pop(prompt_id, None)
     self.active_futures.pop(prompt_id, None)
+    if prompt_id not in self.streams_in_flight.values():
+      self.desktop_stops.discard(prompt_id)
+
+  def _stream_finished(self, event):
+    prompt_id = self.streams_in_flight.pop(event, None)
+    event.set()
+    if prompt_id not in self.active_prompts and prompt_id not in self.streams_in_flight.values():
+      self.desktop_stops.discard(prompt_id)
 
   def get_coder(self, prompt_id: str) -> Optional[Coder]:
     """Retrieve the coder instance for a given prompt ID."""
@@ -563,6 +588,8 @@ class PromptExecutor:
       await asyncio.gather(*(self.cancel_prompt(pid) for pid in prompt_ids))
 
   def is_prompt_interrupted(self, prompt_id: str) -> bool:
+    if prompt_id in self.desktop_stops:
+      return True
     """Check if a prompt task has been cancelled."""
     if prompt_id in self.active_prompts:
       return self.active_prompts[prompt_id].done() and self.active_prompts[prompt_id].cancelled()
@@ -940,6 +967,7 @@ class Connector:
 
     # Initialize prompt executor
     self.prompt_executor = PromptExecutor(self)
+    self.desktop_handlers = {}
 
     self.current_tokenization_task = None
 
@@ -1078,6 +1106,7 @@ class Connector:
         "request-context-info",
         "run-command",
         "interrupt-response",
+        "desktop-safe-stop",
         "apply-edits",
         "update-env-vars",
         "update-models-info"
@@ -1108,7 +1137,13 @@ class Connector:
       return []
 
   async def on_message(self, data):
-    await asyncio.create_task(self.process_message(data))
+    operation = asyncio.current_task()
+    if data.get("action") in ("prompt", "run-command", "apply-edits"):
+      self.desktop_handlers[operation] = (data.get("promptContext") or {}).get("id")
+    try:
+      return await self.process_message(data)
+    finally:
+      self.desktop_handlers.pop(operation, None)
 
   async def on_disconnect(self):
     """Handle disconnection event."""
@@ -1271,6 +1306,22 @@ class Connector:
 
         await self.run_command(command, messages, files)
 
+      elif action == "desktop-safe-stop":
+        # Let the synchronous coder finish its current operation. The next
+        # stream boundary ends the turn and the usual prompt-finished is its ack.
+        self.prompt_executor.desktop_stops.update(self.prompt_executor.active_prompts)
+        self.prompt_executor.desktop_stops.update(self.prompt_executor.streams_in_flight.values())
+        handlers = list(self.desktop_handlers)
+        self.prompt_executor.desktop_stops.update(pid for pid in self.desktop_handlers.values() if pid)
+        if handlers:
+          await asyncio.gather(*handlers, return_exceptions=True)
+        tasks = list(self.prompt_executor.active_prompts.values())
+        if tasks:
+          await asyncio.gather(*tasks, return_exceptions=True)
+        workers = list(self.prompt_executor.streams_in_flight)
+        if workers:
+          await asyncio.gather(*(worker.wait() for worker in workers))
+        return {"stopped": True}
       elif action == "interrupt-response":
         # Interrupt all active prompts
         self.coder.io.tool_output("INTERRUPTING ALL RESPONSES")

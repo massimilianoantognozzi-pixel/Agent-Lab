@@ -24,6 +24,7 @@ import type { AgentGoalTurn } from '@/task/agent-goal';
 import { AgentDesignReviewPending } from '@/task/agent-design-review';
 import { NATIVE_EMPTY_TEST_REPORT, NATIVE_VERIFICATION_RESEARCH_QUERY, verificationResearchQuery } from '@/task/goal-verification';
 import { workerToolFingerprint } from '@/agent/worker-checkpoint';
+import * as goalVerification from '@/task/goal-verification';
 
 vi.mock('@/logger');
 vi.mock('node:timers/promises', async (importOriginal) => {
@@ -140,6 +141,112 @@ const stopExpected = async (promise: Promise<unknown>) =>
   });
 
 describe('Agent.runAgent abort controller registration', () => {
+  it.each([
+    { failSave: false, pending: false, worker: false, steering: false },
+    { failSave: true, pending: false, worker: false, steering: false },
+    { failSave: false, pending: true, worker: false, steering: false },
+    { failSave: false, pending: false, worker: true, steering: false },
+    { failSave: false, pending: false, worker: false, steering: true },
+  ])('persists repeated-operation evidence, respecting active processes and new instructions: %j', async ({ failSave, pending, worker, steering }) => {
+    const { agent } = createAgent(new Error('fixture'));
+    const task = Object.assign(createTask(), { getTaskDir: () => '/test/project', addUserMessage: vi.fn() });
+    const modelManager = agent['modelManager'];
+    vi.mocked(modelManager.createLlm).mockResolvedValue({} as Awaited<ReturnType<typeof modelManager.createLlm>>);
+    modelManager.getModelSettings = vi.fn();
+    modelManager.getUsageReport = vi.fn();
+    modelManager.isStreamingDisabled = vi.fn(() => true);
+    vi.mocked(modelManager.normalizeMessages).mockImplementation((_provider, _model, input) => input);
+    agent['compactMessagesIfNeeded'] = vi.fn(async () => true);
+    agent['processStep'] = vi.fn(async () => [{ id: 'answer', role: 'assistant' as const, content: 'Work continues' }]);
+    agent['getAvailableTools'] = vi.fn(async () => ({ 'power---file_read': { inputSchema: z.object({ filePath: z.string() }) } }));
+    const revision = vi.spyOn(goalVerification, 'goalWorktreeRevision').mockResolvedValue('a'.repeat(64));
+    const progress = vi.fn(async (event: { noProgress?: unknown }) => {
+      if (failSave && event.noProgress) {
+        throw new Error('Checkpoint storage unavailable');
+      }
+    });
+    generateTextMock.mockReset();
+    let calls = 0;
+    const expectedCalls = pending || worker || steering ? 8 : 4;
+    let pendingInput = false;
+    const completion = Promise.resolve({ exitCode: 0, stdout: '', stderr: '' });
+    if (worker) {
+      Object.defineProperty(task, 'hasPendingWorkerRuns', { get: () => calls <= 4 });
+    }
+    if (pending) {
+      agent['pendingCommands'].add(completion);
+      agent['commandSession'].commands.set('running', {
+        directory: task.getTaskDir(),
+        profileId: profile.id,
+        completion,
+        preview: () => ({ exitCode: null, stdout: '', stderr: '' }),
+      });
+    }
+    generateTextMock.mockImplementation(async ({ onStepEnd }) => {
+      if (++calls > expectedCalls) {
+        throw new Error('Unexpected sample after repeated operations');
+      }
+      if (steering && calls === 4) {
+        pendingInput = true;
+      }
+      if (pending && calls === 5) {
+        agent['pendingCommands'].delete(completion);
+      }
+      await onStepEnd({
+        finishReason: 'tool-calls',
+        toolCalls: [{ toolName: 'power---file_read', toolCallId: 'call-' + calls, input: { filePath: 'src/a.ts' } }],
+        toolResults: [{ toolName: 'power---file_read', toolCallId: 'call-' + calls, input: { filePath: 'src/a.ts' }, output: 'same observed contents' }],
+      });
+    });
+    try {
+      const args: RunAgentArgs = [
+        task,
+        profile,
+        'Fix the bug',
+        'agent',
+        { id: 'turn' },
+        [],
+        [],
+        undefined,
+        true,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        progress,
+      ];
+      if (steering) {
+        args[22] = {
+          hasPendingOrClose: async () => pendingInput,
+          take: async () => {
+            if (!pendingInput) {
+              return [];
+            }
+            pendingInput = false;
+            return [{ id: 'new-user-input', role: 'user', content: 'Use this new evidence', promptContext: { id: 'turn' } }];
+          },
+        };
+      }
+      await agent.runAgent(...args);
+      expect(calls).toBe(expectedCalls);
+      expect(generateTextMock.mock.calls[expectedCalls - 1][0].instructions).toContain('ripetere la stessa sequenza');
+      if (steering) {
+        expect(JSON.stringify(generateTextMock.mock.calls[4][0].messages)).toContain('Use this new evidence');
+      }
+      expect(progress.mock.calls.some(([event]) => event.noProgress)).toBe(true);
+      expect(task.updateTask).toHaveBeenCalledWith({ state: DefaultTaskState.Interrupted });
+      expect(task.addLogMessage).toHaveBeenCalledWith(
+        'error',
+        expect.stringContaining(failSave ? 'Checkpoint storage unavailable' : 'Punto di ripresa conservato'),
+        false,
+        expect.anything(),
+      );
+    } finally {
+      revision.mockRestore();
+      generateTextMock.mockReset();
+    }
+  });
+
   it('changes strategy once after repeated goal reads with the same native verification', async () => {
     const { agent } = createAgent(new Error('fixture'));
     const task = Object.assign(createTask(), { getTaskDir: () => '/test/project', setState: vi.fn() });

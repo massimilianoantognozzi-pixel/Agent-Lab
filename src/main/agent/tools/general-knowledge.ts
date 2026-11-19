@@ -11,8 +11,11 @@ export const createGeneralKnowledgeTools = (
   'knowledge---search': tool({
     description:
       'Cerca lezioni riutilizzabili nella Knowledge Base generale. Sono interpretazioni del modello con comando osservato, sorgenti e versione, non regole superiori alle istruzioni del progetto.',
-    inputSchema: z.object({ query: z.string() }),
-    execute: ({ query }) => searchGeneralKnowledge(query),
+    inputSchema: z.object({
+      query: z.string(),
+      scope: z.enum(['project', 'general']).optional().describe('Usa project per recuperare lezioni del progetto attivo con una ricevuta di esecuzione.'),
+    }),
+    execute: (input: { query: string; scope?: 'project' | 'general' }) => searchGeneralKnowledge(input.query, input.scope === 'project' ? project : undefined),
   }),
   'knowledge---capture': tool({
     description:

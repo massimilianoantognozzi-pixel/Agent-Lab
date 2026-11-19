@@ -25,6 +25,7 @@ import { AiOutlineClose } from 'react-icons/ai';
 import { clsx } from 'clsx';
 import { parseCommandArgs, parseSkillCommand, SKILL_COMMAND_PREFIX } from '@common/utils';
 import { getSubagentId } from '@common/agent';
+import { newWorkRequestPattern, workCommandPattern } from '@common/work-commands';
 
 import { QueuedPromptsList } from './QueuedPromptsList';
 import { usePromptFieldText } from './usePromptFieldText';
@@ -32,6 +33,7 @@ import { wordCompletions } from './wordCompletions';
 import { acceptPathSegment } from './acceptPathSegment';
 
 import { useTaskQueuedPrompts } from '@/stores/taskStore';
+import { invokeAction } from '@/stores/actionsStore';
 import { InputHistoryMenu } from '@/components/PromptField/InputHistoryMenu';
 import { showErrorNotification } from '@/utils/notifications';
 import { useCommands } from '@/hooks/useCommands';
@@ -70,6 +72,9 @@ const COMMANDS = [
   '/drop',
   '/redo',
   '/resume',
+  '/inizia',
+  '/riprendi',
+  '/chiudi',
   '/goal',
   '/edit-last',
   '/compact',
@@ -423,7 +428,7 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
             const skillCmds = userInvocableSkills.map((skill) => `${SKILL_COMMAND_PREFIX}${skill.name}`);
             return {
               from: 0,
-              options: [...COMMANDS, SKILL_COMMAND_PREFIX, ...customCmds, ...skillCmds].map((cmd) => {
+              options: [...new Set([...COMMANDS, SKILL_COMMAND_PREFIX, ...customCmds, ...skillCmds])].map((cmd) => {
                 const option: Completion = { label: cmd, type: 'keyword' };
 
                 // Re-open the completion menu to show skill names right after accepting /skill:
@@ -723,7 +728,7 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
     useEffect(() => {
       const commandMatch = COMMANDS.find((cmd) => {
         // Skip auto-invoke for commands that need additional arguments
-        if (cmd === '/subagent') {
+        if (cmd === '/subagent' || workCommandPattern.test(cmd)) {
           return false;
         }
 
@@ -795,7 +800,14 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
     );
 
     const canSteer = Boolean(
-      steering && text.trim() && !text.trimStart().startsWith('/') && !pendingCommand && !question && !isEditingLastMessage && !disabled,
+      steering &&
+      text.trim() &&
+      !text.trimStart().startsWith('/') &&
+      !workCommandPattern.test(text.trim()) &&
+      !pendingCommand &&
+      !question &&
+      !isEditingLastMessage &&
+      !disabled,
     );
     const handleSteering = useCallback(async () => {
       if (!steering || !canSteer || sendingSteering) {
@@ -827,12 +839,40 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
     }, [canSteer, pastedImages, prepareForNextPrompt, scrollToBottom, sendingSteering, steering, t, text]);
 
     const handleSubmit = useCallback(() => {
+      if (/^\/?chiudi$/i.test(text.trim()) && !isEditingLastMessage) {
+        prepareForNextPrompt();
+        runPrompt('/chiudi');
+        return;
+      }
       if (sendingSteering) {
         return;
       }
       scrollToBottom?.();
       void stopRecording();
       if (text) {
+        const initialRequest = newWorkRequestPattern.exec(text.trim())?.[1].trim();
+        if (initialRequest && !question && !isEditingLastMessage) {
+          prepareForNextPrompt();
+          void api
+            .createNewTask(baseDir, { activate: true })
+            .then((task) => api.runPrompt(baseDir, task.id, '/inizia ' + initialRequest, 'agent', pastedImages.length ? pastedImages : undefined))
+            .catch((error) => showErrorNotification(String(error)));
+          return;
+        }
+        const workCommand = workCommandPattern.exec(text.trim());
+        if (workCommand && !question && !isEditingLastMessage) {
+          prepareForNextPrompt();
+          if (workCommand[1].toLowerCase() === 'riprendi') {
+            invokeAction('task.resumeWork');
+          } else {
+            runPrompt('/' + workCommand[1].toLowerCase());
+          }
+          return;
+        }
+        if (/^\/riprendi\s+\S/i.test(text.trim()) && !question && !isEditingLastMessage) {
+          showErrorNotification(t('promptField.invalidCommand'));
+          return;
+        }
         if (text.startsWith('/workflow ') || /^\/(?:goal|plan)(?:\s|$)/.test(text)) {
           runPrompt(text);
           prepareForNextPrompt();
@@ -896,6 +936,8 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
     }, [
       scrollToBottom,
       stopRecording,
+      question,
+      isEditingLastMessage,
       text,
       pastedImages,
       customCommands,
@@ -1018,6 +1060,10 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
               }
 
               // Desktop behavior: submit or handle special cases
+              if (/^\/?chiudi$/i.test(text.trim()) && !isEditingLastMessage) {
+                handleSubmit();
+                return true;
+              }
               if (question && selectedAnswer) {
                 const answers = question.answers?.map((answer) => answer.shortkey.toLowerCase()) || ANSWERS;
                 if (answers.includes(selectedAnswer.toLowerCase())) {
@@ -1212,6 +1258,7 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
       [
         toggleVoice,
         isMobile,
+        isEditingLastMessage,
         question,
         selectedAnswer,
         answerQuestion,
@@ -1502,13 +1549,25 @@ export const PromptField = forwardRef<PromptFieldRef, Props>(
                     </button>
                   </Tooltip>
                 )}
-                <Tooltip content={processing && !question ? t('promptField.queueMessage') : t('promptField.sendMessage')}>
+                <Tooltip
+                  content={
+                    /^\/?chiudi$/i.test(text.trim())
+                      ? t('commands.chiudi')
+                      : processing && !question
+                        ? t('promptField.queueMessage')
+                        : t('promptField.sendMessage')
+                  }
+                >
                   <button
                     onClick={handleSubmit}
                     disabled={disabled || sendingSteering}
                     className={clsx('hover:text-text-tertiary hover:bg-bg-tertiary rounded p-1 transition-all duration-200')}
                   >
-                    {processing && !question ? <MdOutlineScheduleSend className="w-4 h-4" /> : <BiSend className="w-4 h-4" />}
+                    {processing && !question && !/^\/?chiudi$/i.test(text.trim()) ? (
+                      <MdOutlineScheduleSend className="w-4 h-4" />
+                    ) : (
+                      <BiSend className="w-4 h-4" />
+                    )}
                   </button>
                 </Tooltip>
               </>

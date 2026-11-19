@@ -17,15 +17,94 @@ import {
   ChangeRequestItem,
   SwitchToWorktreeOptions,
 } from '@common/types';
-import { ipcMain, clipboard, ClipboardItem } from 'electron';
+import { ipcMain as electronIpcMain, clipboard, ClipboardItem, BrowserWindow, dialog } from 'electron';
 
 import { EventsHandler } from './events-handler';
 
 import logger from '@/logger';
 import { PythonDependenciesInstaller } from '@/python-dependencies-installer';
 import { ServerController } from '@/server';
+import { approveProjectExtensionSnapshot, captureProjectExtensions } from '@/extensions/project-extension-trust';
+import { isGovernedWorkflow } from '@/task/workflow-policy';
+import { isDesktopRendererUrl } from '@/desktop-boundary';
+import { approveProjectMcpConfig, captureProjectMcpConfig } from '@/agent/project-mcp-trust';
+
+const isTrustedIpcSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean => {
+  const frame = event.senderFrame;
+  return Boolean(frame && frame === event.sender.mainFrame && BrowserWindow.fromWebContents(event.sender) && isDesktopRendererUrl(frame.url));
+};
+
+const ipcMain = {
+  handle: (channel: string, handler: Parameters<typeof electronIpcMain.handle>[1]) => {
+    electronIpcMain.handle(channel, (event, ...args) => {
+      if (!isTrustedIpcSender(event)) {
+        throw new Error('Unrecognized desktop IPC sender.');
+      }
+      return handler(event, ...args);
+    });
+  },
+  on: (channel: string, listener: Parameters<typeof electronIpcMain.on>[1]) => {
+    electronIpcMain.on(channel, (event, ...args) => {
+      if (isTrustedIpcSender(event)) {
+        listener(event, ...args);
+      }
+    });
+  },
+};
 
 export const setupIpcHandlers = (eventsHandler: EventsHandler, serverController: ServerController, pythonInstaller: PythonDependenciesInstaller) => {
+  ipcMain.handle('approve-project-mcp', async (event, projectDir: string) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner || typeof projectDir !== 'string' || isGovernedWorkflow(projectDir)) {
+      return false;
+    }
+    const snapshot = await captureProjectMcpConfig(projectDir);
+    if (isGovernedWorkflow(snapshot.project)) {
+      return false;
+    }
+    const { response } = await dialog.showMessageBox(owner, {
+      type: 'warning',
+      title: 'Agent-Lab',
+      message: 'Allow this project MCP configuration?',
+      detail: `${snapshot.project}\n\n${Object.keys(snapshot.servers).length} configured servers\nSHA-256 ${snapshot.revision}\n\nConfigured programs can run with your desktop permissions.`,
+      buttons: ['Cancel', 'Approve this version'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (response !== 1) {
+      return false;
+    }
+    await approveProjectMcpConfig(snapshot);
+    await eventsHandler.refreshApprovedProjectMcp(projectDir);
+    return true;
+  });
+
+  ipcMain.handle('approve-project-extensions', async (event, baseDir: string) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner || typeof baseDir !== 'string' || isGovernedWorkflow(baseDir)) {
+      return false;
+    }
+    const snapshot = await captureProjectExtensions(baseDir);
+    if (!snapshot.files.length || isGovernedWorkflow(snapshot.project)) {
+      return false;
+    }
+    const { response } = await dialog.showMessageBox(owner, {
+      type: 'warning',
+      title: 'Agent-Lab',
+      message: 'Allow the reviewed project extensions to run?',
+      detail: `${snapshot.project}\n\n${snapshot.files.length} files in the extension snapshot\nSHA-256 ${snapshot.revision}\n\nExtensions run with your desktop permissions.`,
+      buttons: ['Cancel', 'Approve this version'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (response !== 1) {
+      return false;
+    }
+    await approveProjectExtensionSnapshot(snapshot);
+    await eventsHandler.reloadApprovedProjectExtensions(baseDir);
+    return true;
+  });
+
   // Voice handlers
   ipcMain.handle('create-voice-session', async (_, provider: ProviderProfile) => {
     return await eventsHandler.createVoiceSession(provider);
@@ -717,6 +796,13 @@ export const setupIpcHandlers = (eventsHandler: EventsHandler, serverController:
 
   // Server control handlers
   ipcMain.handle('start-server', async (_, username?: string, password?: string) => {
+    if (username !== undefined || password !== undefined) {
+      if (!username || !password || !serverController.access.canConfigureCredentials(username, password)) {
+        throw new Error('A complete server username and password are required.');
+      }
+    } else if (!serverController.access.hasCredentials) {
+      throw new Error('Configure server authentication before enabling web access.');
+    }
     const started = await serverController.startServer();
     if (started) {
       await eventsHandler.enableServer(username, password);

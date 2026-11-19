@@ -7,7 +7,7 @@ interface ProbeSearchOptions {
   json?: boolean;
   filesOnly?: boolean;
   ignore?: string;
-  excludeFilenames?: string;
+  excludeFilenames?: boolean;
   reranker?: string;
   frequencySearch?: boolean;
   exact?: boolean;
@@ -45,7 +45,7 @@ const FLAG_MAP: Record<string, string> = {
 };
 
 export const search = async (options: ProbeSearchOptions): Promise<string | unknown> => {
-  const args: string[] = [];
+  const args = [PROBE_BINARY_PATH, 'search'];
 
   const opts = options as unknown as Record<string, unknown>;
   for (const [key, flag] of Object.entries(FLAG_MAP)) {
@@ -57,20 +57,17 @@ export const search = async (options: ProbeSearchOptions): Promise<string | unkn
     if (typeof value === 'boolean') {
       args.push(flag);
     } else {
-      args.push(`${flag} ${String(value)}`);
+      args.push(flag, String(value));
     }
   }
 
-  args.push('--');
-  args.push(`"${options.query}"`);
+  args.push('--', options.query);
 
   if (options.path) {
-    args.push(`"${options.path}"`);
+    args.push(options.path);
   }
 
-  const command = `"${PROBE_BINARY_PATH}" search ${args.join(' ')}`;
-
-  const { stdout } = await execWithShellPath(command);
+  const { stdout } = await execWithShellPath(args);
 
   if (options.json) {
     return JSON.parse(stdout);

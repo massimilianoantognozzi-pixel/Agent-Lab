@@ -298,33 +298,111 @@ export const compileGeneralKnowledge = async (project: string, model: string, ge
   }
 };
 
-export const searchGeneralKnowledge = async (query: string): Promise<Entry[]> => {
-  const folders = await fs.readdir(root()).catch((error) => {
-    if (error.code === 'ENOENT') {
-      return [];
+const commonWords = new Set(
+  'alla allo anche con che dal dalla dalle dei del della dello delle degli gli nel nella nelle per una uno tra the and for from with this that src docs'.split(
+    ' ',
+  ),
+);
+const knowledgeTerms = (value: string) =>
+  new Set(
+    (
+      value
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/\p{M}/gu, '')
+        .match(/[\p{L}\p{N}]+/gu) ?? []
+    ).filter((term) => term.length > 2 && !commonWords.has(term)),
+  );
+
+const hasLessonEvidence = async (projectFolder: string, entry: Entry, filename: string): Promise<boolean> => {
+  if (filename !== entry.evidenceId + '.json') {
+    return false;
+  }
+  const file = path.join(projectFolder, 'evidence', filename);
+  try {
+    if (path.relative(file, await fs.realpath(file))) {
+      return false;
+    }
+    const receipt = JSON.parse(await fs.readFile(file, 'utf8')) as Evidence;
+    return (
+      receipt?.id === entry.evidenceId &&
+      receipt.projectId === entry.projectId &&
+      receipt.provenance === 'native-shell-result-before-extension-hooks' &&
+      receipt.exitCode === 0
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) {
+      return false;
     }
     throw error;
-  });
-  const entries: Entry[] = [];
+  }
+};
+
+export const searchGeneralKnowledge = async (query: string, project?: string): Promise<Entry[]> => {
+  const terms = knowledgeTerms(query);
+  if (!terms.size) {
+    return [];
+  }
+  const directory = project && process.env.AIDER_DESK_PROJECT_KNOWLEDGE_DIR ? process.env.AIDER_DESK_PROJECT_KNOWLEDGE_DIR : root();
+  const scope = project ? projectId(await fs.realpath(project)) : undefined;
+  const folders = scope
+    ? [scope]
+    : await fs.readdir(directory).catch((error) => {
+        if (error.code === 'ENOENT') {
+          return [];
+        }
+        throw error;
+      });
+  const matches: { entry: Entry; score: number; projectFolder: string; filename: string }[] = [];
   for (const folder of folders.filter((folder) => /^[a-f0-9]{64}$/.test(folder))) {
-    const dir = path.join(root(), folder, 'entries');
-    const names = await fs.readdir(dir).catch((error) => {
+    const dir = path.join(directory, folder, 'entries');
+    const names = await fs.readdir(dir, { withFileTypes: true }).catch((error) => {
       if (error.code === 'ENOENT') {
         return [];
       }
       throw error;
     });
-    for (const name of names.filter((name) => /^[a-f0-9-]{36}\.json$/.test(name))) {
-      const entry = JSON.parse(await fs.readFile(path.join(dir, name), 'utf8')) as Entry;
-      if (entry.formatVersion === 1) {
-        entries.push(entry);
+    if (!names.length) {
+      continue;
+    }
+    const canonical = await fs.realpath(dir);
+    if (path.relative(path.join(await fs.realpath(directory), folder, 'entries'), canonical)) {
+      continue;
+    }
+    for (const { name } of names.filter((item) => item.isFile() && /^[a-f0-9-]{36}\.json$/.test(item.name))) {
+      let entry: Entry;
+      try {
+        entry = JSON.parse(await fs.readFile(path.join(dir, name), 'utf8')) as Entry;
+      } catch (error) {
+        if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') {
+          continue;
+        }
+        throw error;
+      }
+      if (
+        entry?.formatVersion !== 1 ||
+        entry.projectId !== folder ||
+        ![entry.title, entry.lesson, entry.applicability, entry.createdAt].every((value) => typeof value === 'string')
+      ) {
+        continue;
+      }
+      const words = knowledgeTerms([entry.title, entry.lesson, entry.applicability].join(' '));
+      const score = [...terms].filter((term) => words.has(term)).length;
+      if (score > 0) {
+        matches.push({ entry, score, projectFolder: path.dirname(canonical), filename: name });
       }
     }
   }
-  const terms = query
-    .toLowerCase()
-    .split(/\W+/)
-    .filter((term) => term.length > 2);
-  const score = (entry: Entry) => terms.filter((term) => JSON.stringify(entry).toLowerCase().includes(term)).length;
-  return entries.sort((a, b) => score(b) - score(a) || b.createdAt.localeCompare(a.createdAt)).slice(0, 4);
+  matches.sort((a, b) => b.score - a.score || b.entry.createdAt.localeCompare(a.entry.createdAt));
+  const results: Entry[] = [];
+  for (const match of matches) {
+    if (scope && !(await hasLessonEvidence(match.projectFolder, match.entry, match.filename))) {
+      continue;
+    }
+    results.push(match.entry);
+    if (results.length === 4) {
+      break;
+    }
+  }
+  return results;
 };

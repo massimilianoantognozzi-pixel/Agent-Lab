@@ -130,6 +130,8 @@ export interface ApplicationAPI {
   getPathForFile: (file: File) => string;
   getOpenProjects: () => Promise<ProjectData[]>;
   checkProject: (baseDir: string) => Promise<ProjectCheckResult>;
+  approveProjectExtensions?: (baseDir: string) => Promise<boolean>;
+  approveProjectMcp?: (baseDir: string) => Promise<boolean>;
   addOpenProject: (baseDir: string) => Promise<ProjectData[]>;
   setActiveProject: (baseDir: string) => Promise<ProjectData[]>;
   removeOpenProject: (baseDir: string) => Promise<ProjectData[]>;

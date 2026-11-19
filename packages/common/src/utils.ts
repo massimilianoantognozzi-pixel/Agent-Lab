@@ -2,7 +2,9 @@ import fs from 'fs/promises';
 
 import { EXTENSION_TOOL_GROUP_NAME, TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
-import { OS, UsageReportData } from './types';
+import { UsageReportData } from './types';
+
+export { compareBaseDirs, normalizeBaseDir } from './base-dirs';
 
 type TextContent =
   | string
@@ -92,39 +94,6 @@ export const parseUsageReport = (model: string, report: string): UsageReportData
     cacheWriteTokens,
     cacheReadTokens,
   };
-};
-
-const detectOS = (): OS => {
-  if (typeof process !== 'undefined' && process.platform) {
-    return process.platform === 'win32' ? OS.Windows : process.platform === 'darwin' ? OS.MacOS : OS.Linux;
-  }
-  return OS.Linux;
-};
-
-export const normalizeBaseDir = (baseDir: string, os: OS = detectOS()): string => {
-  if (os === OS.Windows) {
-    // On Windows, paths are case-insensitive so we normalize to lowercase
-    return baseDir.toLowerCase().replace(/\\+$/, '');
-  } else {
-    // Handle WSL paths like \\wsl.localhost\Ubuntu\home\user\...
-    const wslPrefix = '\\\\wsl.localhost\\';
-    if (baseDir.startsWith(wslPrefix)) {
-      // Find the third backslash which marks the end of the distro name
-      const thirdBackslashIndex = baseDir.indexOf('\\', wslPrefix.length);
-      if (thirdBackslashIndex !== -1) {
-        // Extract the path after \\wsl.localhost\<distro_name>\
-        const actualPath = baseDir.substring(thirdBackslashIndex + 1);
-        // Replace backslashes with forward slashes
-        return ('/' + actualPath.replace(/\\/g, '/')).replace(/\/+$/, '');
-      }
-    }
-    // Otherwise, return the path as is
-    return baseDir.replace(/\/+$/, '');
-  }
-};
-
-export const compareBaseDirs = (baseDir1: string, baseDir2: string, os?: OS): boolean => {
-  return normalizeBaseDir(baseDir1, os) === normalizeBaseDir(baseDir2, os);
 };
 
 /**

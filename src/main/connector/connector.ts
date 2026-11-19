@@ -133,6 +133,24 @@ export class Connector {
     this.sendMessage(message);
   }
 
+  public async requestDesktopSafeStop() {
+    const socket = this.socket;
+    if (!socket.connected) {
+      throw new Error('Aider scollegato prima della conferma di arresto.');
+    }
+    const lost = Promise.withResolvers<never>();
+    const disconnected = () => lost.reject(new Error('Aider scollegato durante la chiusura. Pubblicazione sospesa.'));
+    socket.once('disconnect', disconnected);
+    try {
+      const result = await Promise.race([socket.emitWithAck('message', { action: 'desktop-safe-stop' }), lost.promise]);
+      if (result?.stopped !== true) {
+        throw new Error('Aider non ha confermato il completamento delle operazioni in corso.');
+      }
+    } finally {
+      socket.off('disconnect', disconnected);
+    }
+  }
+
   public sendApplyEditsMessage(edits: FileEdit[]) {
     const message: ApplyEditsMessage = {
       action: 'apply-edits',

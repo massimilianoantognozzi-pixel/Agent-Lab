@@ -179,7 +179,7 @@ export class ExtensionContextImpl implements ExtensionContext {
   }
 
   async openUrl(url: string, target: 'external' | 'window' | 'modal-overlay' = 'window'): Promise<void> {
-    this.log(`Opening URL: ${url} (target: ${target})`);
+    this.log(`Opening URL (target: ${target})`);
     try {
       if (target === 'modal-overlay') {
         if (!this.eventManager) {
@@ -191,7 +191,7 @@ export class ExtensionContextImpl implements ExtensionContext {
         await openUrlUtil(url, target);
       }
     } catch (error) {
-      this.log(`Failed to open URL: ${error}`, 'error');
+      this.log('Failed to open URL.', 'error');
       throw error;
     }
   }

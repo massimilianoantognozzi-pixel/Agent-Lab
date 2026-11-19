@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -100,6 +101,46 @@ describe('repository workflow', () => {
     expect(match).not.toBeNull();
     return match![0];
   };
+
+  it('supplies relevant project lessons during planning and reloads them on an approved continuation without changing the revision', async () => {
+    const kb = path.join(tmp, 'kb');
+    vi.stubEnv('AIDER_DESK_PROJECT_KNOWLEDGE_DIR', kb);
+    const root = await fs.realpath(policy.root);
+    const projectId = createHash('sha256')
+      .update(process.platform === 'win32' ? root.toLowerCase() : root)
+      .digest('hex');
+    const entries = path.join(kb, projectId, 'entries');
+    await fs.mkdir(entries, { recursive: true });
+    const evidenceId = randomUUID();
+    const file = path.join(entries, evidenceId + '.json');
+    const receipts = path.join(kb, projectId, 'evidence');
+    await fs.mkdir(receipts, { recursive: true });
+    await fs.writeFile(
+      path.join(receipts, evidenceId + '.json'),
+      JSON.stringify({ id: evidenceId, projectId, exitCode: 0, provenance: 'native-shell-result-before-extension-hooks' }),
+    );
+    const entry = {
+      formatVersion: 1,
+      projectId,
+      evidenceId,
+      createdAt: new Date().toISOString(),
+      title: 'Filtro',
+      applicability: 'Numeri positivi',
+      lesson: 'Controlla il segno.',
+    };
+    await fs.writeFile(file, JSON.stringify(entry));
+    const generate = vi.fn<Generate>(async (stage) => response(stage));
+    const proposed = await run('/workflow bug Correggi il filtro.', generate);
+    expect(JSON.parse(generate.mock.calls[0][2]).projectLessons).toEqual([expect.objectContaining({ evidenceId, lesson: entry.lesson })]);
+    const approval = proposed.message.match(/\/workflow approve [0-9a-f]{64}/)![0];
+    await fs.writeFile(file, JSON.stringify({ ...entry, lesson: 'Riesegui la prova sul filtro.' }));
+    generate.mockClear();
+    const bad = JSON.stringify({ changes: [{ path: 'src/filter.ts', content: original }] });
+    expect((await run(approval, vi.fn<Generate>().mockResolvedValue(bad))).phase).toBe('waiting');
+    expect((await run('/workflow resume', generate)).phase).toBe('done');
+    const implementation = generate.mock.calls.find(([stage]) => stage === 'debug' || stage === 'implement')!;
+    expect(JSON.parse(implementation[2]).projectLessons).toEqual([expect.objectContaining({ evidenceId, lesson: 'Riesegui la prova sul filtro.' })]);
+  });
 
   it('keeps planning when the model lists the same authorized file twice', async () => {
     const generate = vi.fn<Generate>(async () => JSON.stringify({ ...plan, files: [plan.files[0], plan.files[0]] }));

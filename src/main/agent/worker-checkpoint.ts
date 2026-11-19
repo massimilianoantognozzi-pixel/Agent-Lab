@@ -10,6 +10,8 @@ export const WORKER_STOP = Symbol('explicit worker cancellation');
 
 export class TurnSettingsMismatch extends Error {}
 
+export type NoProgressCheckpoint = { revision: string; fingerprints: string[]; tools: string[]; goalBinding?: string };
+
 const canonicalInput = (value: unknown): unknown => {
   if (Array.isArray(value)) {
     return value.map(canonicalInput);
@@ -36,6 +38,7 @@ export const workerToolFingerprint = (name: string, input: Record<string, unknow
 };
 
 export type WorkerProgress = {
+  noProgress?: NoProgressCheckpoint;
   messages?: ContextMessage[];
   tool?: { id: string; name: string; processId?: string; fingerprint?: string };
   receipt?: WorkerToolReceipt;
@@ -60,6 +63,7 @@ export type WorkerRecord = {
 };
 
 export type RootTurnRecord = WorkerRecord & {
+  noProgress?: NoProgressCheckpoint;
   turnId: string;
   directory: string;
   provider: string;
@@ -148,6 +152,9 @@ export const describeInterruptedTools = (record: WorkerRecord): string => {
 };
 
 export const reconcileTurnProgress = (record: WorkerRecord, progress: WorkerProgress): void => {
+  if (progress.noProgress) {
+    Object.assign(record, { noProgress: progress.noProgress });
+  }
   if (progress.modelSettings) {
     record.modelSettings = progress.modelSettings;
   }

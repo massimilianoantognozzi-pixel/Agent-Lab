@@ -36,7 +36,7 @@ export class ExtensionRegistry {
     return filename;
   }
 
-  async register(extension: Extension, metadata: ExtensionMetadata, filePath: string, projectDir?: string) {
+  async register(extension: Extension, metadata: ExtensionMetadata, filePath: string, projectDir?: string, approvedEntry = filePath) {
     const id = this.deriveExtensionId(filePath);
     logger.debug(`[Extensions] Registering extension: ${metadata.name} (id: ${id})`);
 
@@ -44,7 +44,7 @@ export class ExtensionRegistry {
     let readmeContent: string | undefined;
     const parsedPath = path.parse(filePath);
     if (parsedPath.name === 'index') {
-      const readmePath = path.join(parsedPath.dir, 'README.md');
+      const readmePath = path.join(path.dirname(approvedEntry), 'README.md');
       try {
         const content = await fs.readFile(readmePath, 'utf-8');
         if (content.trim()) {
