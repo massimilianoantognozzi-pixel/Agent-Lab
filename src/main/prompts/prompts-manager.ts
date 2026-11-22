@@ -211,7 +211,7 @@ export class PromptsManager {
       return;
     }
 
-    const projectPromptsDir = path.join(projectDir, '.aider-desk', 'prompts');
+    const projectPromptsDir = path.join(projectDir, AIDER_DESK_PROMPTS_DIR);
     try {
       await fs.mkdir(projectPromptsDir, { recursive: true });
     } catch (error) {

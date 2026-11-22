@@ -146,7 +146,7 @@ export default class CursorExtension implements Extension {
       this.projectStates.delete(projectDir);
     }
 
-    const conversationDir = join(projectDir, '.aider-desk', 'cursor');
+    const conversationDir = join(projectDir, process.env.AIDER_DESK_DIR || '.aider-desk', 'cursor');
     mkdirSync(conversationDir, { recursive: true });
 
     const apiKey = config.apiKey || process.env.CURSOR_API_KEY;

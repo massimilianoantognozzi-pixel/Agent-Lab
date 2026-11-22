@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ensureWorkflowDocker } from '../workflow-docker';
+import { dockerFailureDetail, ensureWorkflowDocker } from '../workflow-docker';
 
 const { run } = vi.hoisted(() => ({ run: vi.fn<(program: string, args: string[]) => Promise<{ stdout: string }>>() }));
 
@@ -12,6 +12,24 @@ vi.mock('node:timers/promises', () => ({
 const launch = ['desktop', 'start', '--detach'];
 const engine = ['info', '--format', '{{.ServerVersion}}'];
 const offline = new Error('Engine unavailable');
+
+describe('Docker failure diagnostics', () => {
+  const files = { 'check.py': 'first\nsecond\nthird' };
+  const summary = 'Il comando isolato ha restituito codice 1.';
+
+  it('keeps only a known error type and a location in the supplied snapshot', () => {
+    const output = '  File "/workspace/check.py", line 2, in verify\nValueError: private business record\nActual: unrelated personal data';
+    expect(dockerFailureDetail(1, output, files)).toBe(summary + '\nValueError · check.py:2');
+    expect(dockerFailureDetail(1, output.replace('check.py', 'unknown.py'), files)).toBe(summary + '\nValueError');
+    expect(dockerFailureDetail(1, output.replace('line 2', 'line 9'), files)).toBe(summary + '\nValueError');
+  });
+
+  it('keeps only the exit code for binary data and unstructured messages', () => {
+    for (const output of ['AssertionError: private\0data', 'customer record', '', 'MyCustomError: private data']) {
+      expect(dockerFailureDetail(1, output, files)).toBe(summary);
+    }
+  });
+});
 
 describe('Docker readiness for the project queue', () => {
   beforeEach(() => {

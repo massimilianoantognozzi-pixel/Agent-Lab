@@ -11,8 +11,9 @@ import { Store } from '@/store';
 import { EventManager } from '@/events';
 import { getElectronApp, isDev } from '@/app';
 import { isLabMode } from '@/lab-mode';
+import { isLocalAgentLabInstall } from '@/desktop-product';
 
-const hasApplicationUpdateManifest = (): boolean => existsSync(path.join(process.resourcesPath, 'app-update.yml'));
+const hasApplicationUpdateManifest = (): boolean => !isLocalAgentLabInstall() && existsSync(path.join(process.resourcesPath, 'app-update.yml'));
 
 export class VersionsManager {
   private readonly checkInterval = 10 * 60 * 1000; // 10 minutes
@@ -31,7 +32,10 @@ export class VersionsManager {
 
   async getVersions(forceRefresh = false): Promise<VersionsInfo> {
     if (isLabMode()) {
-      return { ...this.versionsInfo };
+      return {
+        ...this.versionsInfo,
+        ...(isLocalAgentLabInstall() && { aiderDeskCurrentVersion: getElectronApp()?.getVersion(), applicationUpdatesSupported: false }),
+      };
     }
     if (!forceRefresh && this.versionsInfo) {
       return this.versionsInfo;
@@ -47,9 +51,6 @@ export class VersionsManager {
     logger.debug('Checking for version updates...');
     // Get AiderDesk version using app.getVersion()
     const aiderDeskCurrentVersion = app.getVersion();
-
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const autoUpdater = require('electron-updater').autoUpdater;
 
     // Wait for Python venv to be ready before checking library versions
     if (this.pythonInstaller) {
@@ -74,6 +75,8 @@ export class VersionsManager {
       !this.versionsInfo?.aiderDeskDownloadProgress
     ) {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const autoUpdater = require('electron-updater').autoUpdater;
         const result = await autoUpdater.checkForUpdates();
         if (result && result.updateInfo.version !== aiderDeskCurrentVersion) {
           aiderDeskAvailableVersion = result.updateInfo.version;
@@ -100,6 +103,7 @@ export class VersionsManager {
     }
 
     this.updateVersionsInfo({
+      ...(isLocalAgentLabInstall() && { applicationUpdatesSupported: false }),
       aiderDeskCurrentVersion,
       aiderCurrentVersion,
       aiderAvailableVersion,
@@ -125,6 +129,10 @@ export class VersionsManager {
     const app = getElectronApp();
     if (!app) {
       logger.info('Skipping versions manager initialization in non-Electron environment');
+      return;
+    }
+    if (isLocalAgentLabInstall()) {
+      this.updateVersionsInfo({ aiderDeskCurrentVersion: app.getVersion(), applicationUpdatesSupported: false });
       return;
     }
     // A source checkout has no installer/update manifest. Preserve normal packaged updates.

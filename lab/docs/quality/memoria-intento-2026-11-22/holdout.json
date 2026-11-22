@@ -1,0 +1,588 @@
+[
+  {
+    "id": "H01",
+    "query": "Dammi una descrizione breve del ruolo di un assistente.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {}
+  },
+  {
+    "id": "H02",
+    "query": "Alla ripresa ero sui fornitori e mi sono trovata altrove. Ho soltanto l'identificativo che avevo richiesto.",
+    "expected": "B",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "fornitori"
+    }
+  },
+  {
+    "id": "H03",
+    "query": "Ho una lista di firme da mettere in ordine per cognome.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {}
+  },
+  {
+    "id": "H04",
+    "query": "Trascrivimi i due codici delle revisioni per il verbale, nell'ordine in cui compaiono.",
+    "expected": "-",
+    "evidenceExpected": "E",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retryCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "id": "H05",
+    "query": "Controlla l'ortografia del messaggio di commit, soprattutto l'espressione «staging estraneo».",
+    "expected": "-",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "bozza.csv"
+      ],
+      "sessionFiles": [
+        "report.js"
+      ],
+      "committedFiles": [
+        "report.js",
+        "bozza.csv"
+      ]
+    }
+  },
+  {
+    "id": "H06",
+    "query": "Nel verbale inserisci l'ora della chiusura e il nome di chi era di turno.",
+    "expected": "-",
+    "evidenceExpected": "C",
+    "observation": {
+      "checkpointBefore": "fase-righe",
+      "checkpointAfter": null
+    }
+  },
+  {
+    "id": "H07",
+    "query": "Due addetti lavorano ciascuno sul suo ordine: puoi allinearli in due colonne?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "assegnazione-34",
+      "workers": [
+        {
+          "workerId": "uno",
+          "taskId": "assegnazione-34",
+          "active": true
+        },
+        {
+          "workerId": "due",
+          "taskId": "assegnazione-37",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "H08",
+    "query": "Nel salvataggio del tuo intervento vedo il foglio che avevo parcheggiato per domani. Teniamolo fuori dalla tua consegna.",
+    "expected": "D",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "bozza.csv"
+      ],
+      "sessionFiles": [
+        "report.js"
+      ],
+      "committedFiles": [
+        "report.js",
+        "bozza.csv"
+      ]
+    }
+  },
+  {
+    "id": "H09",
+    "query": "Non volevo assegnarlo di nuovo: dopo la pausa lo stesso disegno è finito nelle mani di entrambi. Puoi rimediare?",
+    "expected": "A",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "assegnazione-34",
+      "workers": [
+        {
+          "workerId": "uno",
+          "taskId": "assegnazione-34",
+          "active": true
+        },
+        {
+          "workerId": "due",
+          "taskId": "assegnazione-34",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "H10",
+    "query": "Vorrei che l'icona di ripubblicazione fosse più visibile quando l'invio precedente è fallito.",
+    "expected": "-",
+    "evidenceExpected": "E",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retryCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "id": "H11",
+    "query": "La consegna deve contenere solo il lavoro della chat: hai raccolto anche la modifica che avevo preparato per conto mio.",
+    "expected": "D",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "bozza.csv"
+      ],
+      "sessionFiles": [
+        "report.js"
+      ],
+      "committedFiles": [
+        "report.js",
+        "bozza.csv"
+      ]
+    }
+  },
+  {
+    "id": "H12",
+    "query": "Su un foglio di chat ancora bianco, riparti dalla faccenda di ieri. Per ora mi stai facendo rivedere quella già consegnata.",
+    "expected": "B",
+    "evidenceExpected": "B",
+    "observation": {
+      "requestedTask": "fornitori",
+      "selectedTask": "clienti"
+    }
+  },
+  {
+    "id": "H13",
+    "query": "La procedura è stata riscritta ma l'esito di ieri continua a risultare superato. Non trovo una copia della procedura provata allora.",
+    "expected": "F",
+    "evidenceExpected": "-",
+    "observation": {
+      "displayedCheck": "passed",
+      "currentBehavior": "filtro-2"
+    }
+  },
+  {
+    "id": "H14",
+    "query": "Nella revisione finale vedo anche un appunto che era mio. Prima della chiusura non avevo salvato l'elenco di cosa fosse già pronto.",
+    "expected": "D",
+    "evidenceExpected": "-",
+    "observation": {
+      "committedFiles": [
+        "report.js",
+        "bozza.csv"
+      ]
+    }
+  },
+  {
+    "id": "H15",
+    "query": "Dopo la modifica la schermata mi chiede giustamente una nuova prova. A che ora era stata fatta l'ultima?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "checkedBehavior": "filtro-1",
+      "currentBehavior": "filtro-2",
+      "displayedCheck": "pending"
+    }
+  },
+  {
+    "id": "H16",
+    "query": "Ho riaperto l'editor e due incaricati stanno già facendo proprio la stessa revisione. Rimetti ordine.",
+    "expected": "A",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "assegnazione-34",
+      "workers": [
+        {
+          "workerId": "uno",
+          "taskId": "assegnazione-34",
+          "active": true
+        },
+        {
+          "workerId": "due",
+          "taskId": "assegnazione-34",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "H17",
+    "query": "Prima di uscire c'era un punto di ripartenza, ora non lo trovo più. Mi è rimasta solo la foto di prima.",
+    "expected": "C",
+    "evidenceExpected": "-",
+    "observation": {
+      "checkpointBefore": "fase-righe"
+    }
+  },
+  {
+    "id": "H18",
+    "query": "Per la guida utenti, rendi più naturale la frase «il bottone continua apre una pratica diversa».",
+    "expected": "-",
+    "evidenceExpected": "B",
+    "observation": {
+      "requestedTask": "fornitori",
+      "selectedTask": "clienti"
+    }
+  },
+  {
+    "id": "H19",
+    "query": "Non sostituire il segno lasciato a metà con la nota finale: alla riapertura è sparito di nuovo.",
+    "expected": "C",
+    "evidenceExpected": "C",
+    "observation": {
+      "checkpointBefore": "fase-righe",
+      "checkpointAfter": null
+    }
+  },
+  {
+    "id": "H20",
+    "query": "Sto scrivendo un dialogo: traduci «dopo il saluto mi sono persa il segno» in francese.",
+    "expected": "-",
+    "evidenceExpected": "C",
+    "observation": {
+      "checkpointBefore": "fase-righe",
+      "checkpointAfter": null
+    }
+  },
+  {
+    "id": "H21",
+    "query": "Nel menu delle attività fammi vedere i termini in ordine alfabetico.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {}
+  },
+  {
+    "id": "H22",
+    "query": "Stavo correggendo il riepilogo; ho concluso la giornata e il punto salvato è svanito. Aiutami a recuperarlo.",
+    "expected": "C",
+    "evidenceExpected": "C",
+    "observation": {
+      "checkpointBefore": "fase-righe",
+      "checkpointAfter": null
+    }
+  },
+  {
+    "id": "H23",
+    "query": "Il collega dice che dopo aver riprovato a spedire ha visto una revisione in più. Ho soltanto il codice del primo invio respinto.",
+    "expected": "E",
+    "evidenceExpected": "-",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "id": "H24",
+    "query": "Vorrei copiare il titolo della scheda clienti negli appunti, è quella che ho davanti adesso.",
+    "expected": "-",
+    "evidenceExpected": "B",
+    "observation": {
+      "requestedTask": "fornitori",
+      "selectedTask": "clienti"
+    }
+  },
+  {
+    "id": "H25",
+    "query": "Dopo il rifiuto voglio ripetere soltanto la pubblicazione. L'ultima volta mi hai cambiato l'impronta del lavoro.",
+    "expected": "E",
+    "evidenceExpected": "E",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retryCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "id": "H26",
+    "query": "Nell'elenco dei due esecutori inserisci un pulsante per stampare la pagina.",
+    "expected": "-",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "assegnazione-34",
+      "workers": [
+        {
+          "workerId": "uno",
+          "taskId": "assegnazione-34",
+          "active": true
+        },
+        {
+          "workerId": "due",
+          "taskId": "assegnazione-34",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "H27",
+    "query": "Nel pannello Git vorrei il carattere di un punto più grande.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {}
+  },
+  {
+    "id": "H28",
+    "query": "Dalla conversazione appena aperta ti ho chiesto di proseguire i fornitori; mi hai rimandato ai clienti. Riporta qui il lavoro giusto.",
+    "expected": "B",
+    "evidenceExpected": "B",
+    "observation": {
+      "requestedTask": "fornitori",
+      "selectedTask": "clienti"
+    }
+  },
+  {
+    "id": "H29",
+    "query": "Nel manuale scrivi una nota per spiegare il significato della spunta verde accanto alle prove manuali.",
+    "expected": "-",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "filtro-1",
+      "currentBehavior": "filtro-2",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "H30",
+    "query": "C'è già una revisione sul PC. Al secondo tentativo dopo l'errore ne è nata una con un codice diverso, rimettiamoci su quella originale.",
+    "expected": "E",
+    "evidenceExpected": "E",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retryCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "id": "H31",
+    "query": "Questa volta il secondo invio ha conservato la stessa impronta. Chi è l'autore?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retryCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "id": "H32",
+    "query": "Ora il bottone archivia subito, prima mostrava una domanda. È rimasto il via libera dato prima della modifica: riapri la prova.",
+    "expected": "F",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "filtro-1",
+      "currentBehavior": "filtro-2",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "H33",
+    "query": "La spunta della verifica eseguita dall'operatore è verde anche se il percorso è cambiato ieri. Chiediamo un nuovo controllo.",
+    "expected": "F",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "filtro-1",
+      "currentBehavior": "filtro-2",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "H34",
+    "query": "Ieri uno lo stava già calcolando. Oggi vedo il calcolo ripetuto, ma il cruscotto ha perso gli identificativi degli addetti.",
+    "expected": "A",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "assegnazione-34"
+    }
+  },
+  {
+    "id": "H35",
+    "query": "Esporta per l'archivio il nome dell'operatore che aveva approvato il vecchio percorso.",
+    "expected": "-",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "filtro-1",
+      "currentBehavior": "filtro-2",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "H36",
+    "query": "Torno al preventivo e me lo stanno rifacendo in due. Come interrompo il doppione lasciando proseguire chi aveva iniziato?",
+    "expected": "A",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "assegnazione-34",
+      "workers": [
+        {
+          "workerId": "uno",
+          "taskId": "assegnazione-34",
+          "active": true
+        },
+        {
+          "workerId": "due",
+          "taskId": "assegnazione-34",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "H37",
+    "query": "Traduci per il nostro manuale la frase «due processi fanno lo stesso lavoro».",
+    "expected": "-",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "assegnazione-34",
+      "workers": [
+        {
+          "workerId": "uno",
+          "taskId": "assegnazione-34",
+          "active": true
+        },
+        {
+          "workerId": "due",
+          "taskId": "assegnazione-34",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "H38",
+    "query": "Fammi una tabella con estensione e dimensione dei file inclusi nella revisione.",
+    "expected": "-",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "bozza.csv"
+      ],
+      "sessionFiles": [
+        "report.js"
+      ],
+      "committedFiles": [
+        "report.js",
+        "bozza.csv"
+      ]
+    }
+  },
+  {
+    "id": "H39",
+    "query": "Non possiamo contare sul collaudo della schermata precedente: chi ha verificato a mano non ha mai visto il nuovo gesto. Il registro la dà ancora buona.",
+    "expected": "F",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "filtro-1",
+      "currentBehavior": "filtro-2",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "H40",
+    "query": "La pratica che è saltata fuori quando ho detto «avanti» non è quella lasciata in sospeso. Recuperami l'altra.",
+    "expected": "B",
+    "evidenceExpected": "B",
+    "observation": {
+      "requestedTask": "fornitori",
+      "selectedTask": "clienti"
+    }
+  },
+  {
+    "id": "H41",
+    "query": "Ho ripreso i fornitori come volevo. Mostrami la data in cui ho aperto questa conversazione.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "fornitori",
+      "selectedTask": "fornitori"
+    }
+  },
+  {
+    "id": "H42",
+    "query": "La bozza è rimasta da parte come avevo chiesto. Crea un titolo più corto per la consegna.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "stagedBefore": [
+        "bozza.csv"
+      ],
+      "sessionFiles": [
+        "report.js"
+      ],
+      "committedFiles": [
+        "report.js"
+      ]
+    }
+  },
+  {
+    "id": "H43",
+    "query": "Avevo una bozza mia già pronta in Git. Quando hai archiviato i tuoi file si è infilata anche quella. Sistemiamo.",
+    "expected": "D",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "bozza.csv"
+      ],
+      "sessionFiles": [
+        "report.js"
+      ],
+      "committedFiles": [
+        "report.js",
+        "bozza.csv"
+      ]
+    }
+  },
+  {
+    "id": "H44",
+    "query": "Ho riprovato l'invio che era tornato indietro e nella cronologia sono apparsi due salvataggi. Come faccio a spedire quello già pronto?",
+    "expected": "E",
+    "evidenceExpected": "E",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retryCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "id": "H45",
+    "query": "Dopo il saluto di chiusura ho perso la riga da cui dovevo proseguire. Ho bisogno di ritrovarla.",
+    "expected": "C",
+    "evidenceExpected": "C",
+    "observation": {
+      "checkpointBefore": "fase-righe",
+      "checkpointAfter": null
+    }
+  },
+  {
+    "id": "H46",
+    "query": "Il salvataggio finale ha lasciato il segnalibro al posto giusto. Vorrei rinominarlo maggio.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "checkpointBefore": "fase-righe",
+      "checkpointAfter": "fase-righe"
+    }
+  },
+  {
+    "id": "H47",
+    "query": "Come si pronuncia in inglese il termine push?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {}
+  },
+  {
+    "id": "H48",
+    "query": "Disegna un'icona per il comando di fine turno.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {}
+  }
+]

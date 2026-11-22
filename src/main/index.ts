@@ -11,6 +11,7 @@ import icon from '../../build/icon.png?asset';
 import splashImage from '../../build/splash.mp4?asset';
 
 import { AIDER_DESK_DATA_DIR, DISABLE_MENU, HEADLESS_MODE } from '@/constants';
+import { AGENT_LAB_APP_ID, isLocalAgentLabInstall } from '@/desktop-product';
 import { ProgressWindow } from '@/progress-window';
 import { setupIpcHandlers } from '@/ipc-handlers';
 import { desktopExternalUrl, isDesktopRendererUrl, isWebViewUrl } from '@/desktop-boundary';
@@ -416,7 +417,7 @@ export const getCreateNewWindow = () => createNewWindow;
 
 app.whenReady().then(async () => {
   try {
-    electronApp.setAppUserModelId('com.hotovo.aider-desk');
+    electronApp.setAppUserModelId(isLocalAgentLabInstall() ? AGENT_LAB_APP_ID : 'com.hotovo.aider-desk');
 
     if (!HEADLESS_MODE) {
       if (DISABLE_MENU) {
@@ -428,7 +429,7 @@ app.whenReady().then(async () => {
       });
     }
 
-    logger.info('------------ Starting AiderDesk... ------------');
+    logger.info(`Starting ${app.getName()}...`);
     initPath();
 
     let progressBar: ProgressWindow | null = null;
@@ -439,7 +440,7 @@ app.whenReady().then(async () => {
         icon,
         splashImage,
       });
-      progressBar.setDetail('Launching AiderDesk...');
+      progressBar.setDetail(`Launching ${app.getName()}...`);
 
       await new Promise((resolve) => {
         progressBar?.on('ready', () => {

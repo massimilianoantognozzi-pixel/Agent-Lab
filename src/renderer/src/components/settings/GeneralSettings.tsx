@@ -11,6 +11,9 @@ import { InfoIcon } from '../common/InfoIcon';
 import { Input } from '../common/Input';
 
 import { LanguageSelector } from './LanguageSelector';
+import { ImageGenerationSettings } from './ImageGenerationSettings';
+
+import type { ProviderProfile } from '@common/types';
 
 const ZOOM_OPTIONS: Option[] = [
   { label: '80%', value: '0.8' },
@@ -40,6 +43,7 @@ const FONT_SIZE_OPTIONS: Option[] = [
 
 type Props = {
   settings: SettingsData;
+  providers?: ProviderProfile[];
   setSettings: (settings: SettingsData) => void;
   onLanguageChange: (language: string) => void;
   onZoomChange: (zoomLevel: number) => void;
@@ -48,7 +52,16 @@ type Props = {
   onFontSizeChange: (fontSize: number) => void;
 };
 
-export const GeneralSettings = ({ settings, setSettings, onLanguageChange, onZoomChange, onThemeChange, onFontChange, onFontSizeChange }: Props) => {
+export const GeneralSettings = ({
+  settings,
+  providers = [],
+  setSettings,
+  onLanguageChange,
+  onZoomChange,
+  onThemeChange,
+  onFontChange,
+  onFontSizeChange,
+}: Props) => {
   const { t } = useTranslation();
 
   const fontOptions: Option[] = FONTS.map((font) => ({
@@ -243,7 +256,7 @@ export const GeneralSettings = ({ settings, setSettings, onLanguageChange, onZoo
             <span className="text-xs text-text-primary">{t('settings.windowTitleTemplateLabel')}</span>
             <InfoIcon tooltip={t('settings.windowTitleTemplateTooltip')} />
           </div>
-          <Input size="sm" value={settings.windowTitleTemplate ?? 'AiderDesk - {project}'} onChange={handleWindowTitleTemplateChange} />
+          <Input size="sm" value={settings.windowTitleTemplate ?? 'Agent-Lab - {project}'} onChange={handleWindowTitleTemplateChange} />
         </div>
       </Section>
 
@@ -416,6 +429,8 @@ export const GeneralSettings = ({ settings, setSettings, onLanguageChange, onZoo
           </div>
         </div>
       </Section>
+
+      <ImageGenerationSettings settings={settings} setSettings={setSettings} providers={providers} />
 
       <Section id="general-notifications" title={t('settings.notificationsAndFiles.title')}>
         <div className="px-4 py-5 space-y-6">

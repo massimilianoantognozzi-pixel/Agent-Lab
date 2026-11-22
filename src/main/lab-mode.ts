@@ -4,6 +4,8 @@ import path from 'node:path';
 
 export const isLabMode = (): boolean => process.env.AIDER_DESK_LAB_MODE === 'true';
 export const isGeneralMode = (): boolean => process.env.AIDER_DESK_GENERAL_MODE === 'true';
+export const isComputerUseDesktop = (): boolean =>
+  process.platform === 'win32' && process.arch === 'x64' && !!process.versions.electron && !isLabMode() && process.env.AIDER_DESK_HEADLESS !== 'true';
 
 export const getLabServerHost = (): string | undefined =>
   isLabMode() || isGeneralMode() || process.env.AIDER_DESK_LOOPBACK_ONLY === 'true' ? '127.0.0.1' : undefined;

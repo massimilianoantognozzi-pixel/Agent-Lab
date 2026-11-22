@@ -1,0 +1,397 @@
+[
+  {
+    "id": "N01",
+    "query": "Il repository ha respinto la prima pubblicazione. Il secondo tentativo ha conservato la revisione preparata?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "21a0f96b2244a674976c6cbc83cc152f6ed7f381",
+      "retryCommit": "21a0f96b2244a674976c6cbc83cc152f6ed7f381"
+    }
+  },
+  {
+    "id": "N02",
+    "query": "Ho chiuso il laboratorio mentre compilava il catalogo. È rimasto il punto da cui continuare?",
+    "expected": "C",
+    "evidenceExpected": "C",
+    "observation": {
+      "checkpointBefore": "catalogo/chunk-017",
+      "checkpointAfter": null
+    }
+  },
+  {
+    "id": "N03",
+    "query": "All'assistente avevo affidato una sola bonifica dei nomi. Dopo aver riaperto la finestra, due istanze stanno modificando in parallelo le stesse righe per quell'incarico.",
+    "expected": "A",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "nomi-19",
+      "workers": [
+        {
+          "workerId": "wk-23",
+          "taskId": "nomi-19",
+          "active": true
+        },
+        {
+          "workerId": "wk-02",
+          "taskId": "nomi-2",
+          "active": true
+        },
+        {
+          "workerId": "wk-25",
+          "taskId": "nomi-19",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "N04",
+    "query": "Ho chiuso il laboratorio mentre compilava il catalogo. È rimasto il punto da cui continuare?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "checkpointBefore": "catalogo/chunk-017",
+      "checkpointAfter": "catalogo/chunk-017"
+    }
+  },
+  {
+    "id": "N05",
+    "query": "Il controllo manuale del vecchio ordinamento risulta ancora valido anche se abbiamo invertito la precedenza delle righe. Il pannello esportato conserva solo la spunta.",
+    "expected": "F",
+    "evidenceExpected": "-",
+    "observation": {
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "N06",
+    "query": "Ieri ho verificato a mano che il pulsante cancellava una riga. Oggi la archivia e il pannello conserva ancora la spunta di ieri.",
+    "expected": "F",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "righe/rimuovi",
+      "currentBehavior": "righe/archivia",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "N07",
+    "query": "Voglio cambiare il colore delle icone dei processi nella pagina attività, lo stesso per tutti.",
+    "expected": "-",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "icone-81",
+      "workers": [
+        {
+          "workerId": "wk-46",
+          "taskId": "icone-81",
+          "active": true
+        },
+        {
+          "workerId": "wk-53",
+          "taskId": "icone-81",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "N08",
+    "query": "Nel commit di chiusura è finito anche il mio appunto sulle consegne, che era già nell'indice?",
+    "expected": "D",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "note/consegne.md"
+      ],
+      "sessionFiles": [
+        "ui/filtro.ts"
+      ],
+      "committedFiles": [
+        "ui/filtro.ts",
+        "note/consegne.md"
+      ]
+    }
+  },
+  {
+    "id": "N09",
+    "query": "Nella revisione della serata ho riconosciuto una bozza che avevo preparato da sola per dopo. Della chiusura sono rimasti solo i nomi dei file che ha consegnato.",
+    "expected": "D",
+    "evidenceExpected": "-",
+    "observation": {
+      "committedFiles": [
+        "parser/civici.ts",
+        "bozze/civici.md"
+      ]
+    }
+  },
+  {
+    "id": "N10",
+    "query": "Vedo due righe per il calcolo notturno. Una riporta «terminato», l'altra ha ancora il contatore in movimento. Quanto è durato il primo giro?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "calcolo-44",
+      "workers": [
+        {
+          "workerId": "wk-32",
+          "taskId": "calcolo-44",
+          "active": false
+        },
+        {
+          "workerId": "wk-36",
+          "taskId": "calcolo-44",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "N11",
+    "query": "Al rientro vedo due esecutori nella finestra delle lavorazioni. È ripartita due volte la pratica preventivi?",
+    "expected": "A",
+    "evidenceExpected": "A",
+    "observation": {
+      "requestedTask": "prev-16",
+      "workers": [
+        {
+          "workerId": "wk-11",
+          "taskId": "prev-16",
+          "active": true
+        },
+        {
+          "workerId": "wk-14",
+          "taskId": "prev-16",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "N12",
+    "query": "Dalla finestra nuova ho chiesto di continuare l'importazione di ieri. Mi controlli quale attività ha aperto?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "import-articoli",
+      "selectedTask": "import-articoli"
+    }
+  },
+  {
+    "id": "N13",
+    "query": "La prova fatta a mano sul calcolo dei turni compare ancora tra quelle superate. È valida per come funziona oggi?",
+    "expected": "F",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "turni/costo-settimanale-v1",
+      "currentBehavior": "turni/costo-giornaliero-v2",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "N14",
+    "query": "Nel riepilogo giornaliero vorrei l'ora in cui chiude il magazzino tra il numero di colli e il nome del vettore.",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {}
+  },
+  {
+    "id": "N15",
+    "query": "Avevo messo da parte le traduzioni francesi. L'assistente doveva consegnare solo il convertitore e mi ritrovo anche i miei testi nel suo salvataggio.",
+    "expected": "D",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "lingue/fr.json",
+        "lingue/de.json"
+      ],
+      "sessionFiles": [
+        "conversione/date.ts"
+      ],
+      "committedFiles": [
+        "lingue/fr.json",
+        "conversione/date.ts"
+      ]
+    }
+  },
+  {
+    "id": "N16",
+    "query": "La prova fatta a mano sul calcolo dei turni compare ancora tra quelle superate. È valida per come funziona oggi?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "checkedBehavior": "turni/costo-settimanale-v1",
+      "currentBehavior": "turni/costo-settimanale-v1",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "N17",
+    "query": "Ero al riordino del magazzino e al mio «continua» dalla nuova chat è ripartita la fatturazione. Il registro annota la mia richiesta ma si interrompe prima dell'apertura.",
+    "expected": "B",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "riordino-scaffali"
+    }
+  },
+  {
+    "id": "N18",
+    "query": "Il repository ha respinto la prima pubblicazione. Il secondo tentativo ha conservato la revisione preparata?",
+    "expected": "E",
+    "evidenceExpected": "E",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "21a0f96b2244a674976c6cbc83cc152f6ed7f381",
+      "retryCommit": "850e8bb1eb6d0c871bc7e46458b74b5bbcc765d2"
+    }
+  },
+  {
+    "id": "N19",
+    "query": "Ho cambiato il comportamento del riepilogo e il pannello aspetta la nuova prova. Dove si inserisce il nome del collaudatore?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "checkedBehavior": "riepilogo/uno",
+      "currentBehavior": "riepilogo/molti",
+      "displayedCheck": "pending"
+    }
+  },
+  {
+    "id": "N20",
+    "query": "Scrivo «andiamo avanti con il filtro» nella conversazione appena creata e mi mostra le stampe già archiviate. Come torno al filo giusto?",
+    "expected": "B",
+    "evidenceExpected": "B",
+    "observation": {
+      "requestedTask": "filtra-righe",
+      "selectedTask": "stampe-luglio"
+    }
+  },
+  {
+    "id": "N21",
+    "query": "Dopo il rifiuto ho insistito con invia e ho visto una seconda revisione identica. Ho soltanto il codice della prima.",
+    "expected": "E",
+    "evidenceExpected": "-",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "ab2ceec2a927ab4e208fbdf2597d8298198dce24"
+    }
+  },
+  {
+    "id": "N22",
+    "query": "Puoi tradurre in inglese la descrizione del commit selezionato così la mando al cliente?",
+    "expected": "-",
+    "evidenceExpected": "D",
+    "observation": {
+      "stagedBefore": [
+        "note/disegno.md"
+      ],
+      "sessionFiles": [
+        "stampe/colori.ts"
+      ],
+      "committedFiles": [
+        "note/disegno.md",
+        "stampe/colori.ts"
+      ]
+    }
+  },
+  {
+    "id": "N23",
+    "query": "Mi ero fermata al lotto diciotto. Al saluto serale il riferimento è stato rimpiazzato dal riepilogo finale e al mattino ricomincio dalla partenza.",
+    "expected": "C",
+    "evidenceExpected": "C",
+    "observation": {
+      "checkpointBefore": "lotto/018",
+      "checkpointAfter": "riepilogo/chiusura"
+    }
+  },
+  {
+    "id": "N24",
+    "query": "Dalla finestra nuova ho chiesto di continuare l'importazione di ieri. Mi controlli quale attività ha aperto?",
+    "expected": "B",
+    "evidenceExpected": "B",
+    "observation": {
+      "requestedTask": "import-articoli",
+      "selectedTask": "stampa-fatture"
+    }
+  },
+  {
+    "id": "N25",
+    "query": "Nel commit di chiusura è finito anche il mio appunto sulle consegne, che era già nell'indice?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "stagedBefore": [
+        "note/consegne.md"
+      ],
+      "sessionFiles": [
+        "ui/filtro.ts"
+      ],
+      "committedFiles": [
+        "ui/filtro.ts"
+      ]
+    }
+  },
+  {
+    "id": "N26",
+    "query": "Da quando ho riaperto ieri vedo elaborare due volte il medesimo elenco. Dalla schermata che ho salvato si legge l'orario, ma manca l'identità dei processi.",
+    "expected": "A",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "listino-inverno"
+    }
+  },
+  {
+    "id": "N27",
+    "query": "Al rientro vedo due esecutori nella finestra delle lavorazioni. È ripartita due volte la pratica preventivi?",
+    "expected": "-",
+    "evidenceExpected": "-",
+    "observation": {
+      "requestedTask": "prev-16",
+      "workers": [
+        {
+          "workerId": "wk-11",
+          "taskId": "prev-16",
+          "active": true
+        },
+        {
+          "workerId": "wk-14",
+          "taskId": "imp-9",
+          "active": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "N28",
+    "query": "Mi serve la data dell'ultimo controllo manuale per il verbale. Puoi trovarla nell'elenco?",
+    "expected": "-",
+    "evidenceExpected": "F",
+    "observation": {
+      "checkedBehavior": "report/apri-v1",
+      "currentBehavior": "report/apri-v3",
+      "displayedCheck": "passed"
+    }
+  },
+  {
+    "id": "N29",
+    "query": "Chiudendo con l'analisi ancora sospesa ho perso il segno di dove ero arrivata. Ho solo la copia del registro presa prima di uscire.",
+    "expected": "C",
+    "evidenceExpected": "-",
+    "observation": {
+      "checkpointBefore": "analisi/902"
+    }
+  },
+  {
+    "id": "N30",
+    "query": "Risolto il rifiuto del server ho fatto rispedire il lavoro già pronto, senza cambiare file. La storia locale ora mostra una copia con un altro identificativo.",
+    "expected": "E",
+    "evidenceExpected": "E",
+    "observation": {
+      "firstPushAccepted": false,
+      "retryOf": "850e8bb1eb6d0c871bc7e46458b74b5bbcc765d2",
+      "retryCommit": "ab2ceec2a927ab4e208fbdf2597d8298198dce24"
+    }
+  }
+]

@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { AIDER_TOOL_GROUP_NAME, AIDER_TOOL_RUN_PROMPT, SUBAGENTS_TOOL_GROUP_NAME, SUBAGENTS_TOOL_RUN_TASK, TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
-import type { ContextMessage, PromptContext, UsageReportData } from '@common/types';
+import type { ContextMessage, PromptContext, ToolData, UsageReportData } from '@common/types';
 
 describe('ContextManager - getContextMessagesData', () => {
   let ContextManager: any;
@@ -807,6 +807,62 @@ describe('ContextManager - getContextMessagesData', () => {
   });
 
   describe('8. Subagent tool with prompt context', () => {
+    it.each(['desktop-first', 'designer-first', 'text-only-checkpoint'] as const)('restores one image receipt with its desktop thumbnail (%s)', (order) => {
+      const jobId = uuidv4();
+      const imageCallId = uuidv4();
+      const designerCallId = uuidv4();
+      const designerTool = `${SUBAGENTS_TOOL_GROUP_NAME}${TOOL_GROUP_NAME_SEPARATOR}${SUBAGENTS_TOOL_RUN_TASK}`;
+      const imageTool = 'images---result';
+      const receipt = { jobId, state: 'completed', output: 'assets/copertina.png' };
+      const text = JSON.stringify(receipt);
+      const thumbnail = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X+ikAAAAASUVORK5CYII=';
+      const imageCall = {
+        id: 'image-call',
+        role: 'assistant' as const,
+        content: [{ type: 'tool-call' as const, toolCallId: imageCallId, toolName: imageTool, input: { jobId } }],
+      };
+      const imageResult = {
+        id: 'image-result',
+        role: 'tool' as const,
+        content: [{ type: 'tool-result' as const, toolCallId: imageCallId, toolName: imageTool, output: { type: 'text' as const, value: text } }],
+      };
+      const desktop: ContextMessage[] = [imageCall, { ...imageResult, imagePreview: thumbnail }];
+      const designer: ContextMessage[] = [
+        { id: 'designer-call', role: 'assistant', content: [{ type: 'tool-call', toolCallId: designerCallId, toolName: designerTool, input: {} }] },
+        {
+          id: 'designer-result',
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: designerCallId,
+              toolName: designerTool,
+              output: { type: 'json', value: { messages: [imageCall, imageResult] } },
+            },
+          ],
+        },
+      ];
+      const history = order === 'designer-first' ? [...designer, ...desktop] : [...desktop, ...designer];
+      const manager = new ContextManager({ ...mockTask, sendContextInfoUpdated: vi.fn() }, 'test-task', JSON.parse(JSON.stringify(history)));
+      if (order === 'text-only-checkpoint') {
+        const checkpoint: ContextMessage[] = JSON.parse(JSON.stringify(history, (key, value) => (key === 'imagePreview' ? undefined : value)));
+        checkpoint.push({ id: 'checkpoint-user', role: 'user', content: 'Riprendi il lavoro.' });
+        manager.restoreTurnMessages(checkpoint);
+        expect(manager.getContextMessagesData()).toContainEqual(expect.objectContaining({ type: 'user', id: 'checkpoint-user' }));
+      }
+      const toolRows: ToolData[] = manager.getContextMessagesData().filter((row: ToolData) => row.type === 'tool');
+      expect(toolRows.filter((row) => row.id === designerCallId)).toHaveLength(1);
+      const images = toolRows.filter((row) => row.serverName === 'images' && row.toolName === 'result');
+      expect(images).toHaveLength(1);
+      expect(images[0]).toMatchObject({ id: imageCallId, args: { jobId }, finished: true });
+      const body = JSON.parse(images[0].response!);
+      expect(body.content).toEqual([
+        { type: 'text', text },
+        { type: 'image', mimeType: 'image/png', data: thumbnail },
+      ]);
+      expect(JSON.parse(body.content[0].text)).toEqual(receipt);
+    });
+
     it('should process subagent run_task responses', () => {
       const toolCallId = uuidv4();
       const subagentPromptContext = { id: 'subagent-ctx', group: { id: 'sg-1', color: 'green', name: 'Subagent' } };

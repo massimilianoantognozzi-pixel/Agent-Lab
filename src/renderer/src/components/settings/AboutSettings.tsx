@@ -54,19 +54,22 @@ export const AboutSettings = ({ settings, setSettings, onShowLogs }: Props) => {
 
   return (
     <div className="space-y-6">
-      <Section title="AiderDesk">
+      <Section title="Agent-Lab">
         <div className="p-6 space-y-2">
+          <p className="text-sm text-text-muted">{t('settings.about.baseProject')}</p>
           <div className="flex  text-sm text-text-primary gap-2">
             <span>{t('settings.about.version')}:</span>
             <span>{versions ? (versions.aiderDeskCurrentVersion ?? t('settings.about.notAvailable')) : t('common.loading')}</span>
           </div>
-          <div className="pt-2">
-            <Checkbox
-              label={t('settings.about.downloadAutomatically')}
-              checked={settings.aiderDeskAutoUpdate}
-              onChange={(checked) => setSettings({ ...settings, aiderDeskAutoUpdate: checked })}
-            />
-          </div>
+          {versions && versions.applicationUpdatesSupported !== false && (
+            <div className="pt-2">
+              <Checkbox
+                label={t('settings.about.downloadAutomatically')}
+                checked={settings.aiderDeskAutoUpdate}
+                onChange={(checked) => setSettings({ ...settings, aiderDeskAutoUpdate: checked })}
+              />
+            </div>
+          )}
           {isDownloading && (
             <div className="pt-2">
               <div className="flex items-center gap-2">

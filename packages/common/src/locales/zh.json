@@ -127,7 +127,7 @@
     "nextResult": "下一个结果 (F3)"
   },
   "onboarding": {
-    "title": "欢迎使用 AiderDesk",
+    "title": "欢迎使用 Agent-Lab",
     "description": "面向专业软件工程师的透明、可操控的 AI 编排平台。不仅是 Aider 的图形界面——更是一个完整的编排层，帮助您：",
     "skipForNow": "暂时跳过",
     "finish": "完成设置",
@@ -151,7 +151,7 @@
       "configure": "配置"
     },
     "choice": {
-      "title": "您打算如何使用 AiderDesk？",
+      "title": "您打算如何使用 Agent-Lab？",
       "description": "这将定制您的设置流程并设置默认模式。您可以随时在“设置 → 常规”中更改。",
       "recommended": "推荐",
       "agent": {
@@ -196,7 +196,7 @@
       "description": "配置您的 LLM 提供商以在 Aider 和 Agent 模式中使用。您可以为各种提供商设置 API 密钥和其他设置。",
       "configureLater": "如果您愿意，可以稍后在设置中配置这些。",
       "connectTitle": "连接您的AI模型",
-      "connectDescription": "AiderDesk 支持多个AI提供商，包括OpenAI、Anthropic、Google Gemini等。您的API密钥安全存储在本地机器上，绝不会被共享。",
+      "connectDescription": "Agent-Lab 支持多个AI提供商，包括OpenAI、Anthropic、Google Gemini等。您的API密钥安全存储在本地机器上，绝不会被共享。",
       "advancedUsersNote": "高级用户：您也可以在下一步的Aider配置部分使用环境变量配置提供商。",
       "advancedSettings": "高级设置",
       "order": "排序",
@@ -219,7 +219,7 @@
     },
     "agent": {
       "title": "认识您的AI代理",
-      "description": "通过 AiderDesk 的代理模式发现自主AI辅助的强大功能。您的AI代理可以独立工作来完成复杂任务。",
+      "description": "通过 Agent-Lab 的代理模式发现自主AI辅助的强大功能。您的AI代理可以独立工作来完成复杂任务。",
       "capabilities": "代理功能：",
       "autonomousPlanning": "自主任务规划：",
       "autonomousPlanningDesc": "将复杂请求分解为可管理的步骤并系统性地执行它们。",
@@ -234,13 +234,13 @@
     },
     "complete": {
       "title": "设置完成！",
-      "description": "恭喜！您已成功设置 AiderDesk。现在您可以以完全透明和可控的方式驾驭 AI 辅助开发。",
+      "description": "恭喜！您已成功设置 Agent-Lab。现在您可以以完全透明和可控的方式驾驭 AI 辅助开发。",
       "ready": "点击'完成设置'开始您的编程之旅。",
-      "success": "引导完成成功！欢迎使用 AiderDesk。",
+      "success": "引导完成成功！欢迎使用 Agent-Lab。",
       "mode": "新任务将以 {{mode}} 模式开始——您可以随时在“设置 → 常规”中更改。",
       "modeAgent": "Agent",
       "modeCode": "Code",
-      "customizeTitle": "定制你的 AiderDesk",
+      "customizeTitle": "定制你的 Agent-Lab",
       "customizeDescription": "还有更多可探索的设置——推荐看看这几处：",
       "general": {
         "title": "设置 → 常规",
@@ -720,6 +720,22 @@
       "openEditor": "打开编辑器"
     },
     "gui": "GUI",
+    "imageGeneration": {
+      "title": "图像生成",
+      "off": "关闭",
+      "unavailable": "配置不可用",
+      "configure": "请在模型库中配置已启用的 OpenAI API 配置，使用其专属密钥，并留空自定义请求头。",
+      "quality": "质量",
+      "size": "图像尺寸",
+      "credits": "确认前会显示输出费用估算。输入内容和参考图像可能会额外消耗 API 额度。",
+      "qualities": {
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "xhigh": "超高",
+        "max": "最高"
+      }
+    },
     "voice": {
       "title": "语音",
       "providerProfile": "提供者配置",
@@ -810,7 +826,7 @@
       "title": "窗口标题"
     },
     "windowTitleTemplateLabel": "窗口标题模板",
-    "windowTitleTemplateTooltip": "使用 {project} 表示项目名称，{task} 表示当前任务名称。例如：'AiderDesk - {project}' 或 '{project} - {task}'",
+    "windowTitleTemplateTooltip": "使用 {project} 表示项目名称，{task} 表示当前任务名称。例如：'Agent-Lab - {project}' 或 '{project} - {task}'",
     "agent": {
       "tabs": {
         "general": "常规",
@@ -1025,6 +1041,7 @@
       "credentialsPlaceholder": "输入您的 Google Cloud 凭据 JSON"
     },
     "about": {
+      "baseProject": "基于 AiderDesk 0.88.0 · Apache 2.0 许可证",
       "version": "版本",
       "notAvailable": "不可用",
       "checkForUpdates": "检查更新",
@@ -1183,7 +1200,7 @@
     "openLocalProject": "打开本地项目",
     "cloneFromGit": "从 Git 克隆",
     "repositoryUrlPlaceholder": "例如 https://github.com/owner/repo.git 或 git@github.com:owner/repo.git",
-    "cloneDestinationPlaceholder": "默认：~/.aider-desk/projects",
+    "cloneDestinationPlaceholder": "留空以使用当前配置的项目文件夹",
     "repositoryUrlLabel": "仓库 URL",
     "cloneDestinationLabel": "目标文件夹",
     "cloningProject": "正在克隆仓库...",
@@ -1889,7 +1906,7 @@
     "noProxyDescription": "逗号分隔的应绕过代理的主机或域名列表。支持精确主机名、IP 地址和通配符域名（例如 .example.com）"
   },
   "server": {
-    "description": "启用 服务器，允许您通过浏览器在端口 24337 访问 AiderDesk",
+    "description": "允许外部应用访问 Agent-Lab 本地服务器。",
     "serverStatus": "服务器状态",
     "running": "运行中",
     "enableBasicAuth": "启用基本身份验证",

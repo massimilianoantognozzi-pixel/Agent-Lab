@@ -16,7 +16,7 @@ Alternatively, run it directly without installing:
 npx @aiderdesk/aiderdesk
 ```
 
-The postinstall script automatically downloads the required `uv` Python package manager and `probe` binary for your platform.
+The postinstall script downloads and verifies the `probe` executable for your platform. When Python setup is enabled, AiderDesk looks for `uv` at startup and downloads it into the application data directory if needed.
 
 ## Usage
 

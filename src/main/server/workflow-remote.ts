@@ -124,7 +124,8 @@ type DeviceConfig = {
 };
 
 const cookieName = '__Host-agentlab-device';
-const deviceCookie = (token: string, maxAge = REMOTE_DEVICE_LIFETIME_SECONDS) => cookieName + '=' + token + '; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=' + maxAge;
+const deviceCookie = (token: string, maxAge = REMOTE_DEVICE_LIFETIME_SECONDS) =>
+  cookieName + '=' + token + '; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=' + maxAge;
 
 const readDeviceCookie = (header: string | undefined): string | undefined => {
   const values =
@@ -231,7 +232,10 @@ export const createWorkflowRemote = (pairing: Pairing, workflows: Workflows, ico
             json(response, 403, { error: 'Associazione revocata. Genera un nuovo QR dal PC.' });
             return;
           }
-          const device = input.client && generation ? { digest: tokenHash.toString('hex'), generation, expiresAt: Date.now() + REMOTE_DEVICE_LIFETIME_SECONDS * 1000 } : undefined;
+          const device =
+            input.client && generation
+              ? { digest: tokenHash.toString('hex'), generation, expiresAt: Date.now() + REMOTE_DEVICE_LIFETIME_SECONDS * 1000 }
+              : undefined;
           await deviceConfig.store.write({ usedCode, device });
         }
         credential.consumed = true;

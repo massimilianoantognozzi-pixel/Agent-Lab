@@ -10,6 +10,7 @@ type HostWork = HostWorkInput & { active: boolean; children: number; completed: 
 const work = new WeakMap<Task, HostWork>();
 const scopedWork = new AsyncLocalStorage<{ task: Task; active: boolean; current: () => HostWork | undefined }>();
 const approvals = new WeakMap<HostWork, { key: string; decision: Promise<boolean> }>();
+const computerWork = new WeakMap<HostWork, { objective: string }>();
 let desktopApi: Promise<typeof import('electron')> | undefined;
 const loadDesktopApi = () => (desktopApi ??= import('electron'));
 
@@ -36,12 +37,28 @@ export const revokeHostExecutionGrant = (task: Task): void => {
   const current = work.get(task);
   if (current) {
     approvals.delete(current);
+    computerWork.delete(current);
   }
   const scoped = scopedWork.getStore();
   const currentScope = scoped?.task === task ? scoped.current() : undefined;
   if (currentScope) {
     approvals.delete(currentScope);
+    computerWork.delete(currentScope);
   }
+};
+
+// Separate identity for window sharing: permission to run a shell does not grant screen access.
+export const currentComputerWork = (task: Task) => {
+  const current = activeWork(task);
+  if (!current) {
+    return undefined;
+  }
+  let token = computerWork.get(current);
+  if (!token) {
+    token = { objective: current.objective };
+    computerWork.set(current, token);
+  }
+  return token;
 };
 
 export const amendHostExecutionWork = (task: Task, instructions: string): void => {

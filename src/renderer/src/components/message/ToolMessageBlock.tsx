@@ -21,7 +21,7 @@ import { ToolMessage } from '@common/types';
 import { CopyMessageButton } from './CopyMessageButton';
 import { formatName, parseToolContent } from './utils';
 import { ExpandableMessageBlock } from './ExpandableMessageBlock';
-import { ToolResultImages } from './ToolResultImages';
+import { generatedImagePreview, ToolResultImages } from './ToolResultImages';
 
 import { CodeInline } from '@/components/common/CodeInline';
 
@@ -39,6 +39,7 @@ export const ToolMessageBlock = ({ message, onRemove, compact = false, onFork, o
   const isExecuting = message.content === '';
   const isStreaming = message.isStreaming === true;
   const parsedResult = !isExecuting ? parseToolContent(message.content) : null;
+  const preview = generatedImagePreview(message, parsedResult);
 
   const copyContent = JSON.stringify({ args: message.args, result: message.content && JSON.parse(message.content) }, null, 2);
 
@@ -174,7 +175,7 @@ export const ToolMessageBlock = ({ message, onRemove, compact = false, onFork, o
         >
           {displayContent}
         </pre>
-        {parsedResult.images.length > 0 && <ToolResultImages images={parsedResult.images} />}
+        {!preview && parsedResult.images.length > 0 && <ToolResultImages images={parsedResult.images} />}
       </>
     );
   };
@@ -218,11 +219,9 @@ export const ToolMessageBlock = ({ message, onRemove, compact = false, onFork, o
     </div>
   );
 
-  if (compact) {
-    return title;
-  }
-
-  return (
+  const block = compact ? (
+    title
+  ) : (
     <ExpandableMessageBlock
       message={message}
       title={title}
@@ -234,5 +233,15 @@ export const ToolMessageBlock = ({ message, onRemove, compact = false, onFork, o
       onRemoveUpTo={onRemoveUpTo}
       hideMessageBar={hideMessageBar}
     />
+  );
+  return preview ? (
+    <div>
+      {block}
+      <div className="px-3 pb-2">
+        <ToolResultImages {...preview} />
+      </div>
+    </div>
+  ) : (
+    block
   );
 };

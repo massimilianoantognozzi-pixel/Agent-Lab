@@ -106,6 +106,7 @@ export const Settings = ({
         { id: 'general-startup', label: t('settings.startup.title') },
         { id: 'general-messages', label: t('settings.messages.title') },
         { id: 'general-prompt', label: t('settings.promptBehavior.title') },
+        { id: 'general-image-generation', label: t('settings.imageGeneration.title') },
         {
           id: 'general-notifications',
           label: t('settings.notificationsAndFiles.title'),
@@ -263,6 +264,7 @@ export const Settings = ({
         return (
           <GeneralSettings
             settings={settings}
+            providers={providers}
             setSettings={updateSettings}
             onLanguageChange={onLanguageChange}
             onZoomChange={onZoomChange}

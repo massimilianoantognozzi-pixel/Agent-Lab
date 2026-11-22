@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process';
 import { setTimeout } from 'node:timers/promises';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 
 import { RetryError } from 'ai';
+
+import type { WorkflowFiles } from './workflow-policy';
 
 const run = promisify(execFile);
 const engineProbeTimeout = 3_000;
@@ -10,6 +12,32 @@ const startupTimeout = 120_000;
 let startup: Promise<void> | undefined;
 
 export class WorkflowServiceUnavailable extends Error {}
+
+// These fields go to the model and the saved task. Never forward free-form test output or assertion values.
+export const dockerFailureDetail = (code: number, output: string, files: WorkflowFiles): string => {
+  const summary = 'Il comando isolato ha restituito codice ' + code + '.';
+  if (output.includes('\0')) {
+    return summary;
+  }
+  const log = stripVTControlCharacters(output);
+  const failure = log.match(/^(AssertionError|TypeError|ReferenceError|SyntaxError|RangeError|ValueError|KeyError|IndexError|ModuleNotFoundError)(?::| \[|$)/m);
+  if (!failure) {
+    return summary;
+  }
+  const fields = [failure[1]];
+  const operator = log.match(/^\s*operator:\s*'(strictEqual|deepStrictEqual|notStrictEqual|notDeepStrictEqual|equal|deepEqual|match|rejects)'[,]?\s*$/m);
+  if (failure[1] === 'AssertionError' && operator) {
+    fields.push(operator[1]);
+  }
+  for (const frame of log.matchAll(/(?:\/workspace\/([^:\r\n"]+):|File "\/workspace\/([^"\r\n]+)", line )([1-9]\d{0,5})(?=[:,\s)]|$)/gm)) {
+    const file = frame[1] ?? frame[2];
+    if (file.length <= 300 && Object.hasOwn(files, file) && typeof files[file] === 'string' && Number(frame[3]) <= files[file].split('\n').length) {
+      fields.push(file + ':' + frame[3]);
+      break;
+    }
+  }
+  return summary + '\n' + fields.join(' · ');
+};
 
 export const workflowServiceRetryable = (error: unknown): boolean => {
   const seen = new Set<Error>();

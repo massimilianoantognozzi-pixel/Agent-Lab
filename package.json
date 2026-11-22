@@ -17,7 +17,9 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "start": "electron-vite preview",
+    "predev": "node packages/app/scripts/check-sdk-behavior.mjs",
     "dev": "electron-vite dev",
+    "predev:no-hmr": "node packages/app/scripts/check-sdk-behavior.mjs",
     "dev:no-hmr": "NO_HMR=true electron-vite dev",
     "build:mcp-server": "npm run build --workspace=packages/mcp-server",
     "publish:mcp-server": "npm publish --workspace=packages/mcp-server",
@@ -28,10 +30,11 @@
     "prebuild:server": "electron-vite build",
     "build:server": "vite build --config vite.config.server.ts && mkdir -p out/resources && cp -r resources/* out/resources",
     "postbuild:server": "npm rebuild",
+    "prebuild": "node packages/app/scripts/check-sdk-behavior.mjs",
     "build": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps && node node_modules/electron/install.js && node scripts/download-probe.mjs && patch-package && npm run build:extensions",
     "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win",
+    "build:win": "node lab/scripts/build-windows-package.mjs",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
     "prepare": "husky",
@@ -83,7 +86,7 @@
     "@dotenvx/dotenvx": "1.52.0",
     "@electron-toolkit/preload": "3.0.2",
     "@electron-toolkit/utils": "4.0.0",
-    "@google-cloud/aiplatform": "5.14.0",
+    "@google-cloud/aiplatform": "7.8.0",
     "@google/genai": "1.52.0",
     "@headless-tree/core": "1.7.0",
     "@headless-tree/react": "1.7.0",
@@ -136,7 +139,8 @@
     "gitdiff-parser": "0.3.1",
     "glob": "14.0.6",
     "global-agent": "4.1.3",
-    "google-auth-library": "10.6.2",
+    "gcp-metadata": "8.1.2",
+    "google-auth-library": "11.3.4",
     "gpt-tokenizer": "2.9.0",
     "handlebars": "4.7.10",
     "hast-util-to-jsx-runtime": "2.3.6",
@@ -145,7 +149,7 @@
     "i18next-browser-languagedetector": "8.2.1",
     "istextorbinary": "9.5.0",
     "jiti": "2.6.1",
-    "katex": "0.16.47",
+    "katex": "0.18.10",
     "langfuse-vercel": "3.38.6",
     "lodash": "4.18.1",
     "lowlight": "3.3.0",
@@ -196,6 +200,7 @@
     "zustand": "5.0.11"
   },
   "devDependencies": {
+    "@babel/core": "7.29.7",
     "@electron-toolkit/tsconfig": "2.0.0",
     "@electron/notarize": "3.1.1",
     "@eslint/js": "9.39.5",
@@ -233,7 +238,6 @@
     "eslint-plugin-import": "2.32.0",
     "eslint-plugin-prettier": "5.5.5",
     "eslint-plugin-react": "7.37.5",
-    "eslint-plugin-react-compiler": "19.1.0-rc.2",
     "eslint-plugin-react-hooks": "7.0.1",
     "globals": "15.15.0",
     "husky": "9.1.7",
@@ -249,7 +253,7 @@
     "tailwindcss": "3.4.19",
     "tar": "7.5.22",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.57.2",
+    "typescript-eslint": "8.73.0",
     "vite": "7.3.7",
     "vite-tsconfig-paths": "5.1.4",
     "vitest": "4.1.12"
@@ -260,14 +264,20 @@
     "@ai-sdk/provider": "4.0.21",
     "@ai-sdk/provider-utils": "5.0.53",
     "@huggingface/transformers": {
-      "sharp": "npm:empty-npm-package@1.0.0"
+      "sharp": "npm:empty-npm-package@1.0.0",
+      "onnxruntime-node": "1.31.1"
     },
     "@tootallnate/once": "^3.0.1",
     "jsondiffpatch": "^0.7.3",
     "dompurify": "3.4.17",
     "undici@^6.0.0": "6.29.1",
     "undici@^7.0.0": "7.30.1",
-    "undici@^8.0.0": "8.12.3"
+    "undici@^8.0.0": "8.12.3",
+    "katex": "0.18.10",
+    "@tailwindcss/typography": {
+      "postcss-selector-parser": "6.1.5"
+    },
+    "minimatch@>=7 <11": "11.0.9"
   },
   "workspaces": [
     "packages/common",

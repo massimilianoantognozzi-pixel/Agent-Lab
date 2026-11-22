@@ -22,7 +22,7 @@ import { ToolMessage } from '@common/types';
 
 import { CopyMessageButton } from './CopyMessageButton';
 import { formatName, parseToolContent } from './utils';
-import { ToolResultImages } from './ToolResultImages';
+import { generatedImagePreview, ToolResultImages } from './ToolResultImages';
 
 import { CodeInline } from '@/components/common/CodeInline';
 
@@ -36,6 +36,7 @@ const CompactToolMessageComponent = ({ message, isExpanded, onToggle }: Props) =
   const { t } = useTranslation();
   const isExecuting = message.content === '';
   const parsedResult = !isExecuting ? parseToolContent(message.content) : null;
+  const preview = generatedImagePreview(message, parsedResult);
 
   const getToolLabel = (toolMessage: ToolMessage): ReactNode => {
     const defaultLabel = () => t('toolMessage.toolLabel', { server: formatName(toolMessage.serverName), tool: formatName(toolMessage.toolName) });
@@ -144,7 +145,7 @@ const CompactToolMessageComponent = ({ message, isExpanded, onToggle }: Props) =
         >
           {displayContent}
         </pre>
-        {parsedResult.images.length > 0 && <ToolResultImages images={parsedResult.images} />}
+        {!preview && parsedResult.images.length > 0 && <ToolResultImages images={parsedResult.images} />}
       </>
     );
   };
@@ -167,6 +168,12 @@ const CompactToolMessageComponent = ({ message, isExpanded, onToggle }: Props) =
         {isExecuting && <CgSpinner className="animate-spin w-3 h-3 text-text-muted-light flex-shrink-0" />}
         {!isExecuting && parsedResult?.isError === true && <VscError className="text-error flex-shrink-0" />}
       </button>
+
+      {preview && (
+        <div className="px-2 pb-2">
+          <ToolResultImages {...preview} />
+        </div>
+      )}
 
       {/* Expanded content */}
       {isExpanded && (

@@ -53,4 +53,5 @@ e2e/.playwright
 benchmarks
 
 # I workflow di release appartengono al progetto upstream.
-/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/pr-check.yml

@@ -62,7 +62,10 @@ export const createRemoteDeviceStore = (directory: string, scope: string): Remot
       }
       return {
         usedCode: current.usedCode,
-        device: current.version === 2 && current.device && current.device.expiresAt > Date.now() && current.device.generation === (await generation()) ? current.device : undefined,
+        device:
+          current.version === 2 && current.device && current.device.expiresAt > Date.now() && current.device.generation === (await generation())
+            ? current.device
+            : undefined,
       };
     },
     write: async (value) => atomicWriteJsonFile(ledgerPath, ledger.parse({ version: 2, scope, ...value })),

@@ -1,4 +1,4 @@
-import { AgentProfile, ContextMemoryMode, InvocationMode, Model, ReasoningEffort, ToolApprovalState } from '@common/types';
+import { AgentProfile, ContextMemoryMode, InvocationMode, Model, type ProviderProfile, ReasoningEffort, ToolApprovalState } from '@common/types';
 import {
   AIDER_TOOL_ADD_CONTEXT_FILES,
   AIDER_TOOL_DROP_CONTEXT_FILES,
@@ -135,6 +135,29 @@ export interface OpenAiProvider extends LlmProviderBase {
   voice?: Partial<OpenAiVoiceControlSettings>;
 }
 export const isOpenAiProvider = (provider: LlmProviderBase): provider is OpenAiProvider => provider.name === 'openai';
+
+const isOfficialImageEndpoint = (value: unknown): boolean =>
+  value == null || value === '' || (typeof value === 'string' && /^https:\/\/api\.openai\.com(?:\/v1)?\/?$/.test(value));
+
+const hasNoImageHeaders = (value: unknown): boolean => value == null || (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0);
+
+export const isImageProviderProfile = (profile: ProviderProfile): profile is ProviderProfile & { provider: OpenAiProvider } => {
+  const { id, provider, extensionId, disabled, headers } = profile;
+  return (
+    !!id &&
+    id !== 'openai-codex' &&
+    !disabled &&
+    !extensionId &&
+    hasNoImageHeaders(headers) &&
+    !!provider &&
+    isOpenAiProvider(provider) &&
+    typeof provider.apiKey === 'string' &&
+    provider.apiKey.trim().length > 0 &&
+    (!('headers' in provider) || hasNoImageHeaders(provider.headers)) &&
+    (!('baseUrl' in provider) || isOfficialImageEndpoint(provider.baseUrl)) &&
+    (!('baseURL' in provider) || isOfficialImageEndpoint(provider.baseURL))
+  );
+};
 
 export interface AzureProvider extends LlmProviderBase {
   name: 'azure';

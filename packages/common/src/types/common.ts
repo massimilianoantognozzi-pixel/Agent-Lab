@@ -783,6 +783,12 @@ export interface MemoryEmbeddingProgress {
 
 export interface SettingsData {
   onboardingFinished?: boolean;
+  imageGeneration?: {
+    providerId: string;
+    model: 'gpt-image-2.6-sunburst' | 'gpt-image-2.6-flare';
+    quality: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    size: '1024x1024' | '1536x1024' | '1024x1536';
+  };
   language: string;
   startupMode?: ProjectStartMode;
   zoomLevel?: number;
@@ -983,6 +989,7 @@ export interface McpOAuthStatusData {
 }
 
 export interface VersionsInfo {
+  applicationUpdatesSupported?: boolean;
   aiderDeskCurrentVersion?: string | null;
   aiderCurrentVersion?: string | null;
   aiderDeskAvailableVersion?: string | null;

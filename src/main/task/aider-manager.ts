@@ -9,7 +9,15 @@ import { fileExists } from '@common/utils';
 import treeKill from 'tree-kill';
 import { DEFAULT_AIDER_MAIN_MODEL, isCodexAgentModel } from '@common/agent';
 
-import { AIDER_DESK_CONNECTOR_DIR, AIDER_DESK_PROJECT_RULES_DIR, AIDER_DESK_TASKS_DIR, PID_FILES_DIR, PYTHON_COMMAND, SERVER_PORT } from '@/constants';
+import {
+  AIDER_DESK_CONNECTOR_DIR,
+  AIDER_DESK_DIR,
+  AIDER_DESK_PROJECT_RULES_DIR,
+  AIDER_DESK_TASKS_DIR,
+  PID_FILES_DIR,
+  PYTHON_COMMAND,
+  SERVER_PORT,
+} from '@/constants';
 import { Connector } from '@/connector';
 import { registerConnectorAuthorization } from '@/connector/connector-auth';
 import logger from '@/logger';
@@ -180,6 +188,7 @@ export class AiderManager {
       ...envFromMain,
       ...envFromWeak,
       ...networkEnvVars,
+      AIDER_DESK_DIR,
       PYTHONPATH: AIDER_DESK_CONNECTOR_DIR,
       PYTHONUTF8: process.env.AIDER_DESK_OMIT_PYTHONUTF8 ? undefined : '1',
       BASE_DIR: this.task.getProjectDir(),

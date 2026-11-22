@@ -73,6 +73,9 @@ Nel profilo locale `lab/profile/workflow-pilot/data`, copia `managed-workflow.ex
 - I file del contesto vengono usati per pianificare. I file modificabili devono inoltre comparire nel piano approvato.
 - Il profilo del modello deve coincidere con quello dichiarato nella configurazione. Prima di autorizzare un repository, verifica quali documenti possono essere inviati al provider scelto.
 - I controlli locali possono verificare JSON, sintassi JS/TS, un’espressione TypeScript e condizioni testuali. Per eseguire il codice candidato, dichiara un controllo Docker con l’identificatore SHA-256 di un’immagine già disponibile e gli argomenti del test. Il job usa la copia in sola lettura, senza rete, con risorse limitate.
+- La consegna indica il metodo accanto a ogni controllo superato. Un criterio funzionale richiede una prova che eserciti il comportamento descritto. Anche un semplice controllo di sintassi può girare in Docker. Il comando eseguito determina la copertura.
+- I nuovi piani mostrano il metodo del controllo accanto a ciascun criterio prima dell’approvazione. La task conserva questa informazione quando viene riaperta. I piani precedenti continuano a mostrare gli ID registrati.
+- Quando un test Docker fallisce, il correttore riceve il codice di uscita e, per i formati riconosciuti, la classe dell’errore, l’operatore di confronto e la posizione in un file del progetto. Per gli altri formati riceve il codice di uscita. I valori confrontati e il testo libero dei log restano esclusi dal messaggio e dalla ricevuta.
 - `requiredChecks` elenca gli ID dei controlli di progetto obbligatori per ogni task. Il motore li aggiunge alla selezione della coda e li include nella validità delle prove. Un errore rientra nel ciclo di correzione anche se il piano del task omette il controllo.
 - Il campo facoltativo `designSurface` del task nel piano di lavoro versionato accetta `ui`, `mobile` o `ui-and-mobile`. La scelta dichiarata determina il lavoro del Designer e la relativa review. Il motore la applica anche se il piano generato indica `surface: none`. Una variazione del campo costituisce una nuova definizione del task e richiede la verifica della versione corrente del piano.
 - I repository governati non avviano automaticamente estensioni o MCP del progetto. Il profilo Agent-Lab mantiene le estensioni del laboratorio, inclusi OpenAI Codex Auth e Ragionamento.
@@ -88,6 +91,21 @@ del progetto restano fuori dalle query. L’Orchestratore usa i risultati come
 riferimenti da verificare, salva la strategia e passa al Correttore. La
 consegna richiede comunque il superamento dei controlli e della revisione.
 Se la ricerca è indisponibile, il motore conserva le diagnosi locali.
+
+### Collaudo del progetto dimostrativo
+
+Il nuovo esempio Turni collega `regression-filter` a `checks/verify-turni.mjs` nel contesto di sola lettura del candidato. Il test esegue il filtro su dati sintetici, controlla ordine, array di ingresso, lista vuota ed etichette. Per eseguire la prova sul proprio motore Docker, dalla radice del clone:
+
+```sh
+docker pull node@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
+node lab/scripts/verify-workflow-example.mjs
+```
+
+Il comando prepara un profilo temporaneo e verifica tre candidati. L’esempio generato usa l’ID locale dell’immagine quando Docker la trova. Se il profilo è stato creato prima del download e il daemon adotta lo store classico, copia l’ID restituito da `docker image inspect node@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 --format '{{.Id}}'` nel controllo Docker. Il generatore conserva le configurazioni preesistenti.
+
+### Scanner per i controlli sul contenuto
+
+Su Linux x64 i controlli di Agent-Lab riconoscono l’eseguibile Gitleaks 8.30.1 con SHA-256 `88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509`. Il percorso predefinito è `~/go/bin/gitleaks`. Per un’installazione diversa imposta `AIDER_DESK_GITLEAKS_PATH` al percorso assoluto del binario. Il programma verifica l’impronta prima dell’uso. Il banco Ubuntu x64 ha verificato la scansione della memoria, della consegna e della directory di progetto. [Distribuzione ufficiale 8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1)
 
 ## Controllo dal telefono
 

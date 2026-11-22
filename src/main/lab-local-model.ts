@@ -11,6 +11,7 @@ import type { LanguageModel } from 'ai';
 
 import { assertLabWorkspace, isLabMode, isGeneralMode } from '@/lab-mode';
 import logger from '@/logger';
+import { loadLocalTransformers } from '@/utils/local-transformers';
 
 export const LOCAL_PROVIDER_ID = 'lab-local-devstral';
 export const LOCAL_MODEL_ID = 'devstral-small-2:24b-instruct-2512-q4_K_M';
@@ -51,7 +52,7 @@ const countLocalTokens = async (text: string): Promise<number> => {
       }
       data[file] = JSON.parse(bytes.toString('utf8'));
     }
-    const { PreTrainedTokenizer } = await import('@huggingface/transformers');
+    const { PreTrainedTokenizer } = await loadLocalTransformers();
     const tokenizer = new PreTrainedTokenizer(data['tokenizer.json'], data['tokenizer_config.json']);
     return (input: string) => tokenizer.encode(input, { add_special_tokens: false }).length;
   })();

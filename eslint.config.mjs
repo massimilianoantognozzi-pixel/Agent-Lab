@@ -1,7 +1,8 @@
 import js from '@eslint/js';
+import { transformSync } from '@babel/core';
+import compiler from 'babel-plugin-react-compiler';
 import globals from 'globals';
 import reactHooks from 'eslint-plugin-react-hooks';
-import reactCompiler from 'eslint-plugin-react-compiler';
 import tseslint from 'typescript-eslint';
 import importPlugin from 'eslint-plugin-import';
 import prettierPlugin from 'eslint-plugin-prettier/recommended';
@@ -38,6 +39,34 @@ const noInlinePropTypes = {
     'Extract inline prop types into a dedicated `type Props` (or `<Component>Props`) declared directly above the component definition.',
 };
 
+// The stable Hooks rules cover Compiler diagnostics. Preserve the earlier opt-out warning using the build's Compiler.
+const unusedCompilerOptOut = {
+  meta: { type: 'suggestion', schema: [] },
+  create(context) {
+    const source = context.sourceCode.text;
+    if (!source.includes('use no memo') && !source.includes('use no forget')) return {};
+    const compiled = new Set();
+    const location = ({ line, column }) => `${line}:${column}`;
+    transformSync(source, {
+      filename: context.filename, configFile: false, babelrc: false, ast: false, code: false,
+      parserOpts: { plugins: ['typescript', 'jsx'] },
+      plugins: [[compiler.default, {
+        noEmit: true, panicThreshold: 'none', ignoreUseNoForget: true,
+        logger: { logEvent(_filename, event) {
+          if (event.kind === 'CompileSuccess' && event.fnLoc) compiled.add(location(event.fnLoc.start));
+        } },
+      }]],
+    });
+    return {
+      'ExpressionStatement[directive]'(node) {
+        if (compiler.OPT_OUT_DIRECTIVES.has(node.directive) && node.parent.type === 'BlockStatement' && compiled.has(location(node.parent.parent.loc.start))) {
+          context.report({ node, message: `Unused '${node.directive}' directive` });
+        }
+      },
+    };
+  },
+};
+
 export default tseslint.config({ ignores }, {
   ignores,
   extends: [
@@ -66,7 +95,7 @@ export default tseslint.config({ ignores }, {
   plugins: {
     'react': reactPlugin,
     'react-hooks': reactHooks,
-    'react-compiler': reactCompiler,
+    'agent-lab': { rules: { 'unused-compiler-opt-out': unusedCompilerOptOut } },
   },
   rules: {
     ...reactHooks.configs.recommended.rules,
@@ -222,7 +251,7 @@ export default tseslint.config({ ignores }, {
     'react-hooks/purity': 'warn',
     'react-hooks/set-state-in-effect': 'warn',
     'react-hooks/refs': 'warn',
-    'react-compiler/react-compiler': 'warn',
+    'agent-lab/unused-compiler-opt-out': 'warn',
   }
 }, {
   files: ['src/renderer/src/**/*.{ts,tsx}'],

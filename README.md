@@ -2,6 +2,10 @@
 
 Ambiente di sviluppo basato su [AiderDesk 0.88.0](https://github.com/hotovo/aider-desk/tree/v0.88.0), con interfaccia italiana, workflow governato e web app per il controllo dal telefono. Il PC esegue l’agente. Dalla web app puoi avviare o riprendere le chat del progetto associato, approvare il piano e consultare le verifiche.
 
+Per usare Agent-Lab sul tuo PC puoi continuare con il launcher del checkout oppure installare la versione Windows x64 con il proprio profilo. [Uso e installazione locale](lab/docs/INSTALLAZIONE-LOCALE.md).
+
+Su Windows x64 puoi chiedere alla chat Agent di lavorare su una finestra condivisa o in un browser temporaneo. La scelta della finestra e il consenso avvengono sul PC. [Guida al Computer Use](lab/docs/COMPUTER-USE.md).
+
 ## Avvio da sorgente su Windows
 
 Il percorso di avvio è verificato su Windows x64 con Git, Node.js 24 e npm. Dalla radice del clone esegui:
@@ -18,6 +22,8 @@ node node_modules/electron-vite/bin/electron-vite.js build --outDir lab/work/wor
 ```
 
 Al primo avvio aggiungi il tuo provider nelle impostazioni dei modelli di AiderDesk e scegli un modello nel profilo agente. Per un modello locale, installalo nel tuo runtime e configura il relativo endpoint. Il clone parte senza credenziali, pesi o profili di inferenza attivi.
+
+La build verifica che l'SDK AI rifiuti i messaggi malformati e che Requesty conservi gli allegati immagine. Se un checkout precedente conserva una vecchia copia modificata degli SDK, la procedura di installazione pulita sopra ripristina le versioni verificate.
 
 Segui la [guida all’ambiente governato e alla web app](lab/docs/WORKFLOW-ENVIRONMENT.md) per configurare un repository, collegare il telefono con QR e attivare l’accesso privato tramite Tailscale. Il sorgente della web app e del relay è incluso qui. La web app viene servita dal tuo PC.
 

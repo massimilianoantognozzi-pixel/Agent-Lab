@@ -30,18 +30,20 @@ Do not use when:
 
 **Then:** Ask the user where to install the extension
 
+Resolve the directories using the app’s current configuration. The project target is `extensions/` under the active project root joined with `AIDER_DESK_DIR`. The global target is `extensions/` under `AIDER_DESK_HOME_DIR` when set, otherwise under the operating-system home joined with `AIDER_DESK_DIR`. The default directory name is `.aider-desk`. Packaged Agent-Lab on Windows selects `.agent-lab` unless explicitly configured. Substitute these resolved targets for the example paths in the references.
+
 **If:** Working inside the AiderDesk project (the current project is the aider-desk repository)
 
 **Then:** Offer three options:
-1. **Current Project** — Install to `.aider-desk/extensions/` in the current project (project-scoped)
-2. **Global** — Install to `~/.aider-desk/extensions/` (available in all projects)
+1. **Current Project** — Install to the current project’s extensions directory (project-scoped)
+2. **Global** — Install to the active global extensions directory (available in all projects)
 3. **In-Repo** — Create inside `packages/extensions/extensions/` (ships with AiderDesk app)
 
 **If:** Working outside the AiderDesk project
 
 **Then:** Offer two options:
-1. **Current Project** — Install to `.aider-desk/extensions/` in the current project (project-scoped)
-2. **Global** — Install to `~/.aider-desk/extensions/` (available in all projects)
+1. **Current Project** — Install to the current project’s extensions directory (project-scoped)
+2. **Global** — Install to the active global extensions directory (available in all projects)
 
 **Must:** Wait for user's choice before proceeding. The chosen target determines the entire workflow.
 
@@ -55,7 +57,7 @@ Do not use when:
 
 **Then:** Follow the [Project / Global Flow](references/project-global-flow.md):
 1. Determine extension type (single-file or folder)
-2. Create extension file(s) in the target directory (`.aider-desk/extensions/` or `~/.aider-desk/extensions/`)
+2. Create extension file(s) in the resolved target directory
 3. Implement Extension interface methods
 4. Export metadata and default class
 5. Verify the extension loads (auto-discovered, no registry needed)

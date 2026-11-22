@@ -1,5 +1,27 @@
 # Ripresa del riallineamento generale
 
+## 22 novembre 2026 — Cinque lavori prima delle nuove funzionalità
+
+Massimiliano ha confermato il computer use generale e la precedenza dei cinque lavori su immagini, documenti e Remote. Il perimetro del computer use comprende applicazioni Windows e browser.
+
+1. **Computer Use.** Nel candidato desktop Windows x64 la chat usa Cua Driver 0.52.0, la versione verificata nel lock Hermes. L'utente condivide una finestra con il modello scelto oppure autorizza un browser Chromium temporaneo. Sono state provate scrittura e conferma in un modulo WinForms e in Edge; nel browser privato il test legge il valore ricevuto da un server locale e controlla che il PID termini su Stop. Le prove automatizzano il consenso solo su finestre del banco. La guida riporta comandi, copertura e limiti. [Computer Use](COMPUTER-USE.md)
+2. **Distribuzione CLI e desktop.** Il collaudo in un progetto consumatore ha individuato due SDK con patch non applicate, differenze nelle dipendenze effettive e materiale di lavoro incluso dalla vecchia configurazione di packaging. Le prove coprono l'installazione pulita, la salvaguardia delle dipendenze del consumatore, avvio, accesso negato e autorizzato sul servizio isolato e contenuto dell'ASAR. Nel pacchetto con i nuovi SDK il consumatore pulito Windows e Linux supera l'installazione ordinaria e l'audit. Le dipendenze già installate dal consumatore conservano le proprie impronte. Il lock completo del desktop restituisce zero avvisi noti anche includendo i tool di sviluppo. ONNX è stato provato su CPU e, con fallback CPU disabilitato, su DirectML e CUDA. La preparazione delle vecchie chat avviene prima della validazione SDK. [Dipendenze e compatibilità](quality/qualifica-dipendenze-2026-11-22.md). [Rapporto di distribuzione](quality/qualifica-cli-2026-11-22.md)
+3. **Workflow governato e Linux.** Il correttore riceve la diagnostica Docker strutturata. Il piano e la consegna indicano il metodo del controllo. Nell'esempio Turni il test esegue la funzione e rileva anche il risultato nell'ordine sbagliato. La copia Linux con Node 24 ha superato build, typecheck, 2.014 test Node e 517 renderer. Cinque esclusioni sono registrate nel rapporto. Gitleaks verifica il digest dei binari Windows e Linux x64. Il container resta in sola lettura con UID non privilegiato; la copia privata è stata verificata anche in caso di errore e Stop. La prima esecuzione della CI su GitHub richiede la pubblicazione del ramo o della PR. [Rapporto Linux e CI](quality/qualifica-workflow-2026-11-22.md)
+4. **Confronto su codice reale.** Il progetto scelto è Agent-Lab stesso. Su copie isolate del modulo navigazione, entrambe le modalità hanno affrontato un bug, una modifica su più file e una funzionalità con lo stesso Devstral locale. Al primo tentativo la modalità generale ha superato due contratti Edge e la governata uno. Il pilota ha individuato un errore HTTP 500 quando il provider annunciava al modello nomi di strumenti che Devstral poi abbreviava. La correzione traduce quattro nomi univoci solo sull'alias Devstral locale; l'app riceve i nomi originali e mantiene i controlli. Sulla revisione finale il bug passa e la funzionalità passa dopo una ripetizione. Nel governato ora il Planner distingue le risposte ricevute dalle decisioni ancora aperte. Devstral riceve lo schema del verdetto del revisore; la validazione e l'approvazione della revisione restano obbligatorie. Quando un candidato fallisce, il correttore vede i file effettivamente collaudati e la base originale separatamente. Il multifile è stato completato sulla stessa revisione approvata e ha superato il contratto Edge originale. Un chiarimento volutamente incerto ha mantenuto il piano in attesa. [Esiti per caso, modalità e tentativo](quality/pilota-reale-2026-11-22.md)
+5. **Memoria delle correzioni.** Alla [prima prova di 30 casi](quality/memoria-it-2026-11-22/rapporto.md) è seguito un campione indipendente di 48. Fra 24 richieste estranee il nuovo filtro riduce i falsi allarmi da 9 a 2. Fra 24 pertinenti scende da 17 a 16 risposte giuste. Il criterio fissato prima della misura richiedeva di conservare le correzioni utili. La replica è identica e il profilo desktop mantiene la configurazione attuale. [Rapporto sul filtro di intento](quality/memoria-intento-2026-11-22/rapporto.md)
+
+Restano separate le decisioni sul consenso ai singoli piani della coda e sulla durata delle credenziali remote. Dopo il collaudo immagini sul conto personale, le capacità successive già discusse comprendono produzione e verifica di PDF/DOCX/XLSX e app Remote nativa. Selettore degli ambienti e connettore portatile restano proposte da definire.
+
+**Consegna locale Windows x64.** L’[installer Agent-Lab con immagini](../artifacts/Agent-Lab-locale-immagini/Agent-Lab-0.88.0-setup.exe) ha SHA-256 `bfde522846d9bf269767c1a04295fa20a8f93f8e311d46064935aa7cada931ec`. L’eseguibile incluso è stato avviato su Windows in un profilo temporaneo. Il primo avvio diretto usa il profilo Agent-Lab e il servizio su 127.0.0.1:24364. La precedente consegna Windows e il relativo rapporto restano disponibili con la loro impronta originale, insieme al pacchetto CLI. [Guida locale](INSTALLAZIONE-LOCALE.md) · [Qualifica della precedente consegna](quality/installer-locale-2026-11-22.md) · [CLI](../artifacts/consegna-2026-11-22/aiderdesk-aiderdesk-0.87.0.tgz)
+
+**Punto di ripresa — immagini.** Massimiliano ha approvato la generazione e la modifica dalla chat e dal Designer per uso locale. Il collegamento al suo account e la verifica dei crediti inclusi sono rinviati al suo rientro. Prima della prova reale, aprire *Impostazioni → Generali → Generazione immagini*, selezionare un profilo OpenAI con chiave propria e verificare sul portale OpenAI il credito dell’organizzazione associata. Il modello iniziale è Sunburst con qualità bassa e formato 1024 × 1024. La selezione è indipendente dal modello di coding. [Guida ai crediti inclusi](https://developers.openai.com/api/docs/guides/chatgpt-api-credits)
+
+Il desktop richiede un consenso per ciascun invio. Mostra prompt, riferimenti, destinazione, profilo e stima del costo del solo output. Le ricevute conservano i conteggi comunicati dal provider e il costo calcolato quando i dati lo permettono. I riferimenti provengono dal progetto aperto e ogni risultato viene salvato in un nuovo PNG. Una richiesta con esito incerto conserva la propria ricevuta per consentire la verifica del consumo. La prova in Electron ha verificato creazione, modifica, riapertura delle anteprime e uso degli asset nella scena. [Esito e prove riproducibili](quality/immagini-locali-2026-11-22.md)
+
+Distribuzione pubblica, Store, eventuale firma per terzi e download tramite GitHub rimangono rinviati.
+
+**Commit manuale proposto.** Summary `Qualifica Computer Use, workflow e distribuzione Agent-Lab`. Description `Integra il driver Windows con consenso per finestra e browser temporaneo. Corregge il recupero del governato e i nomi strumenti di Devstral. Qualifica la migrazione Google, i pacchetti e i controlli Linux/Windows. Registra i risultati della memoria senza attivare il filtro sperimentale.`
+
 ## Chiusura del 19 novembre 2026 — Prova di memoria in italiano
 
 **Punto di ripresa per il 20 novembre.** Leggere prima il
@@ -302,6 +324,8 @@ locale e dal checkpoint verificato, senza commit, push o pentest.
 
 ### Piano di ripresa
 
+**Priorità concordata il 22 novembre 2026.** I cinque lavori e i relativi collaudi sono registrati nel checkpoint in apertura. L'elenco seguente conserva le dipendenze, i requisiti precedenti e il perimetro delle milestone successive.
+
 1. **CHIUSO il 18 novembre: verifica dei 14 rilievi originali.** Esiti,
    impronta, test e limiti sono nel checkpoint sopra e nel report collegato.
    Prima di una build di consegna o dell'aggiornamento dell'icona desktop,
@@ -329,11 +353,12 @@ locale e dal checkpoint verificato, senza commit, push o pentest.
    interventi umani e cause dei blocchi. Usare i risultati per decidere se
    introdurre modifiche mirate al posto dei file interi, strumenti di sola
    lettura per l'esplorazione o un revisore con un modello diverso.
-5. **Integrare la generazione di immagini con Sunburst.** Milestone
-   approvata il 16 novembre 2026, da avviare dopo la chiusura della security
-   review e il completamento delle correzioni confermate. Adattare il
+5. **Generazione di immagini con Sunburst.** Milestone approvata il 16
+   novembre 2026 e implementata nel desktop locale. Il collaudo con
+   provider simulato è passato. Rimane la prova sull’account personale.
+   Il disegno approvato prende come riferimento il
    [tool nativo di OpenCode](https://github.com/anomalyco/opencode/blob/d4e48f54da346bc9f6e530c7111d9cbebc641513/packages/core/src/tool/plugin/image-generate.ts)
-   alla chat e al Designer di Agent-Lab. Un tool dedicato invia prompt e
+   per la chat e il Designer di Agent-Lab. Un tool dedicato invia prompt e
    riferimenti autorizzati, segue il lavoro in background e restituisce
    anteprima e file nel perimetro del progetto. Il modello grafico è
    `gpt-image-2.6-sunburst` tramite la

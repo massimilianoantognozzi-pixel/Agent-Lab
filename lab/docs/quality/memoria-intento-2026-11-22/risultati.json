@@ -1,0 +1,929 @@
+{
+  "campioneSha256": "14b93e215b427a8780ff0f6f2b7124ca4f2a554e2e5db51ab9ff8c8bec5568f5",
+  "metodo": {
+    "protocollo.md": "a72737ca75cf5881218999b693d8b4b0ec921153500ded57b340aec21d49dc43",
+    "intento.mjs": "67be2f051a00bc089b016d34742d6ec6fade2d0d61e591385a81b6515b9ec664",
+    "prova.py": "fbd0dae9e628d01416f78c158343a598b7b9d5dc169eb20f39d4589b71ad5eb1"
+  },
+  "regressioniSuperate": 45,
+  "proveCollegate": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F"
+  ],
+  "conteggiPerIntento": {
+    "riscontro": {
+      "giuste": 17,
+      "sbagliate": 0,
+      "mancanti": 7,
+      "falsiAllarmi": 9,
+      "scartiCorretti": 15
+    },
+    "riscontroIntento": {
+      "giuste": 16,
+      "sbagliate": 0,
+      "mancanti": 8,
+      "falsiAllarmi": 2,
+      "scartiCorretti": 22
+    }
+  },
+  "casi": [
+    {
+      "id": "H01",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "A",
+        "D",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H02",
+      "expected": "B",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "A",
+        "F",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H03",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "F",
+        "A",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H04",
+      "expected": "-",
+      "evidenceExpected": "E",
+      "primeTre": [
+        "B",
+        "F",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H05",
+      "expected": "-",
+      "evidenceExpected": "D",
+      "primeTre": [
+        "D",
+        "E",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "D",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-semantico",
+        "clause": "Controlla l'ortografia del messaggio di commit, soprattutto l'espressione «staging estraneo»",
+        "correctiveScore": 0.369027,
+        "alternateScore": 0.522279
+      }
+    },
+    {
+      "id": "H06",
+      "expected": "-",
+      "evidenceExpected": "C",
+      "primeTre": [
+        "C",
+        "B",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "C",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-esplicito",
+        "clause": "Nel verbale inserisci l'ora della chiusura e il nome di chi era di turno",
+        "correctiveScore": 0.537038,
+        "alternateScore": 0.591426
+      }
+    },
+    {
+      "id": "H07",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "A",
+        "B",
+        "F"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H08",
+      "expected": "D",
+      "evidenceExpected": "D",
+      "primeTre": [
+        "D",
+        "C",
+        "F"
+      ],
+      "picks": {
+        "riscontro": "D",
+        "riscontroIntento": "D"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Nel salvataggio del tuo intervento vedo il foglio che avevo parcheggiato per domani. Teniamolo fuori dalla tua consegna.",
+        "correctiveScore": 0.55462,
+        "alternateScore": 0.467594
+      }
+    },
+    {
+      "id": "H09",
+      "expected": "A",
+      "evidenceExpected": "A",
+      "primeTre": [
+        "E",
+        "A",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "A",
+        "riscontroIntento": "A"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Puoi rimediare",
+        "correctiveScore": 0.430954,
+        "alternateScore": 0.357542
+      }
+    },
+    {
+      "id": "H10",
+      "expected": "-",
+      "evidenceExpected": "E",
+      "primeTre": [
+        "F",
+        "E",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "E",
+        "riscontroIntento": "E"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Vorrei che l'icona di ripubblicazione fosse più visibile quando l'invio precedente è fallito",
+        "correctiveScore": 0.389902,
+        "alternateScore": 0.20845
+      }
+    },
+    {
+      "id": "H11",
+      "expected": "D",
+      "evidenceExpected": "D",
+      "primeTre": [
+        "B",
+        "D",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "D",
+        "riscontroIntento": "D"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "La consegna deve contenere solo il lavoro della chat: hai raccolto anche la modifica che avevo preparato per conto mio",
+        "correctiveScore": 0.519809,
+        "alternateScore": 0.471147
+      }
+    },
+    {
+      "id": "H12",
+      "expected": "B",
+      "evidenceExpected": "B",
+      "primeTre": [
+        "B",
+        "F",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "B",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-semantico",
+        "clause": "Su un foglio di chat ancora bianco, riparti dalla faccenda di ieri. Per ora mi stai facendo rivedere quella già consegnata.",
+        "correctiveScore": 0.290154,
+        "alternateScore": 0.421985
+      }
+    },
+    {
+      "id": "H13",
+      "expected": "F",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "F",
+        "E",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H14",
+      "expected": "D",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "F",
+        "C",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H15",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "F",
+        "B",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H16",
+      "expected": "A",
+      "evidenceExpected": "A",
+      "primeTre": [
+        "F",
+        "A",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "A",
+        "riscontroIntento": "A"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Ho riaperto l'editor e due incaricati stanno già facendo proprio la stessa revisione. Rimetti ordine.",
+        "correctiveScore": 0.506783,
+        "alternateScore": 0.417297
+      }
+    },
+    {
+      "id": "H17",
+      "expected": "C",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "A",
+        "B",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H18",
+      "expected": "-",
+      "evidenceExpected": "B",
+      "primeTre": [
+        "E",
+        "F",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "B",
+        "riscontroIntento": "B"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Per la guida utenti, rendi più naturale la frase «il bottone continua apre una pratica diversa».",
+        "correctiveScore": 0.396517,
+        "alternateScore": 0.351902
+      }
+    },
+    {
+      "id": "H19",
+      "expected": "C",
+      "evidenceExpected": "C",
+      "primeTre": [
+        "E",
+        "C",
+        "F"
+      ],
+      "picks": {
+        "riscontro": "C",
+        "riscontroIntento": "C"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Non sostituire il segno lasciato a metà con la nota finale: alla riapertura è sparito di nuovo.",
+        "correctiveScore": 0.602307,
+        "alternateScore": 0.266832
+      }
+    },
+    {
+      "id": "H20",
+      "expected": "-",
+      "evidenceExpected": "C",
+      "primeTre": [
+        "B",
+        "F",
+        "E"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H21",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "B",
+        "A",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H22",
+      "expected": "C",
+      "evidenceExpected": "C",
+      "primeTre": [
+        "C",
+        "F",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "C",
+        "riscontroIntento": "C"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Stavo correggendo il riepilogo; ho concluso la giornata e il punto salvato è svanito. Aiutami a recuperarlo.",
+        "correctiveScore": 0.707811,
+        "alternateScore": 0.41559
+      }
+    },
+    {
+      "id": "H23",
+      "expected": "E",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "F",
+        "E",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H24",
+      "expected": "-",
+      "evidenceExpected": "B",
+      "primeTre": [
+        "F",
+        "D",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H25",
+      "expected": "E",
+      "evidenceExpected": "E",
+      "primeTre": [
+        "F",
+        "E",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "E",
+        "riscontroIntento": "E"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Dopo il rifiuto voglio ripetere soltanto la pubblicazione",
+        "correctiveScore": 0.606107,
+        "alternateScore": 0.463857
+      }
+    },
+    {
+      "id": "H26",
+      "expected": "-",
+      "evidenceExpected": "A",
+      "primeTre": [
+        "A",
+        "B",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "A",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-semantico",
+        "clause": "Nell'elenco dei due esecutori inserisci un pulsante per stampare la pagina.",
+        "correctiveScore": 0.378355,
+        "alternateScore": 0.49033
+      }
+    },
+    {
+      "id": "H27",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "E",
+        "B",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H28",
+      "expected": "B",
+      "evidenceExpected": "B",
+      "primeTre": [
+        "B",
+        "A",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "B",
+        "riscontroIntento": "B"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Riporta qui il lavoro giusto",
+        "correctiveScore": 0.499802,
+        "alternateScore": 0.273362
+      }
+    },
+    {
+      "id": "H29",
+      "expected": "-",
+      "evidenceExpected": "F",
+      "primeTre": [
+        "F",
+        "D",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "F",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-semantico",
+        "clause": "Nel manuale scrivi una nota per spiegare il significato della spunta verde accanto alle prove manuali",
+        "correctiveScore": 0.354479,
+        "alternateScore": 0.64683
+      }
+    },
+    {
+      "id": "H30",
+      "expected": "E",
+      "evidenceExpected": "E",
+      "primeTre": [
+        "F",
+        "E",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "E",
+        "riscontroIntento": "E"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "C'è già una revisione sul PC. Al secondo tentativo dopo l'errore ne è nata una con un codice diverso, rimettiamoci su quella originale.",
+        "correctiveScore": 0.58061,
+        "alternateScore": 0.30392
+      }
+    },
+    {
+      "id": "H31",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "A",
+        "F",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H32",
+      "expected": "F",
+      "evidenceExpected": "F",
+      "primeTre": [
+        "F",
+        "E",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "F",
+        "riscontroIntento": "F"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Ora il bottone archivia subito, prima mostrava una domanda",
+        "correctiveScore": 0.437028,
+        "alternateScore": 0.43301
+      }
+    },
+    {
+      "id": "H33",
+      "expected": "F",
+      "evidenceExpected": "F",
+      "primeTre": [
+        "F",
+        "C",
+        "E"
+      ],
+      "picks": {
+        "riscontro": "F",
+        "riscontroIntento": "F"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "La spunta della verifica eseguita dall'operatore è verde anche se il percorso è cambiato ieri",
+        "correctiveScore": 0.444997,
+        "alternateScore": 0.33374
+      }
+    },
+    {
+      "id": "H34",
+      "expected": "A",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "A",
+        "F",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H35",
+      "expected": "-",
+      "evidenceExpected": "F",
+      "primeTre": [
+        "F",
+        "D",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "F",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-esplicito",
+        "clause": "Esporta per l'archivio il nome dell'operatore che aveva approvato il vecchio percorso",
+        "correctiveScore": 0.35349,
+        "alternateScore": 0.467887
+      }
+    },
+    {
+      "id": "H36",
+      "expected": "A",
+      "evidenceExpected": "A",
+      "primeTre": [
+        "A",
+        "C",
+        "B"
+      ],
+      "picks": {
+        "riscontro": "A",
+        "riscontroIntento": "A"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Come interrompo il doppione lasciando proseguire chi aveva iniziato",
+        "correctiveScore": 0.574817,
+        "alternateScore": 0.377605
+      }
+    },
+    {
+      "id": "H37",
+      "expected": "-",
+      "evidenceExpected": "A",
+      "primeTre": [
+        "A",
+        "D",
+        "F"
+      ],
+      "picks": {
+        "riscontro": "A",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-esplicito",
+        "clause": "Traduci per il nostro manuale la frase «due processi fanno lo stesso lavoro»",
+        "correctiveScore": 0.547089,
+        "alternateScore": 0.461543
+      }
+    },
+    {
+      "id": "H38",
+      "expected": "-",
+      "evidenceExpected": "D",
+      "primeTre": [
+        "D",
+        "F",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "D",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "obiettivo-alternativo-semantico",
+        "clause": "Fammi una tabella con estensione e dimensione dei file inclusi nella revisione",
+        "correctiveScore": 0.390848,
+        "alternateScore": 0.51868
+      }
+    },
+    {
+      "id": "H39",
+      "expected": "F",
+      "evidenceExpected": "F",
+      "primeTre": [
+        "F",
+        "E",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "F",
+        "riscontroIntento": "F"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Non possiamo contare sul collaudo della schermata precedente: chi ha verificato a mano non ha mai visto il nuovo gesto",
+        "correctiveScore": 0.375516,
+        "alternateScore": 0.402859
+      }
+    },
+    {
+      "id": "H40",
+      "expected": "B",
+      "evidenceExpected": "B",
+      "primeTre": [
+        "A",
+        "B",
+        "F"
+      ],
+      "picks": {
+        "riscontro": "B",
+        "riscontroIntento": "B"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "La pratica che è saltata fuori quando ho detto «avanti» non è quella lasciata in sospeso",
+        "correctiveScore": 0.546497,
+        "alternateScore": 0.441162
+      }
+    },
+    {
+      "id": "H41",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "B",
+        "F",
+        "A"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H42",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "F",
+        "B",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H43",
+      "expected": "D",
+      "evidenceExpected": "D",
+      "primeTre": [
+        "D",
+        "E",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "D",
+        "riscontroIntento": "D"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Quando hai archiviato i tuoi file si è infilata anche quella",
+        "correctiveScore": 0.469562,
+        "alternateScore": 0.471761
+      }
+    },
+    {
+      "id": "H44",
+      "expected": "E",
+      "evidenceExpected": "E",
+      "primeTre": [
+        "C",
+        "F",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H45",
+      "expected": "C",
+      "evidenceExpected": "C",
+      "primeTre": [
+        "C",
+        "B",
+        "F"
+      ],
+      "picks": {
+        "riscontro": "C",
+        "riscontroIntento": "C"
+      },
+      "filtro": {
+        "reason": "conservata",
+        "clause": "Dopo il saluto di chiusura ho perso la riga da cui dovevo proseguire. Ho bisogno di ritrovarla.",
+        "correctiveScore": 0.641125,
+        "alternateScore": 0.30853
+      }
+    },
+    {
+      "id": "H46",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "F",
+        "C",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H47",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "E",
+        "B",
+        "C"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    },
+    {
+      "id": "H48",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "primeTre": [
+        "C",
+        "A",
+        "D"
+      ],
+      "picks": {
+        "riscontro": "-",
+        "riscontroIntento": "-"
+      },
+      "filtro": {
+        "reason": "nessuna-candidata"
+      }
+    }
+  ]
+}

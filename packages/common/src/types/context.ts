@@ -182,6 +182,8 @@ export interface ProposedPlan {
 export interface ContextToolMessage extends BaseContextMessage {
   role: 'tool';
   content: ToolContent;
+  /** Local desktop thumbnail for a generated asset, separate from the tool output sent to the model. */
+  imagePreview?: string;
 }
 
 // Union type for enhanced context messages

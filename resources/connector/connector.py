@@ -23,6 +23,9 @@ from aider.utils import is_image_file
 from concurrent.futures import ThreadPoolExecutor, Future
 import nest_asyncio
 
+# Capture the project namespace before later model environment updates.
+PROJECT_DATA_DIR = os.environ.get("AIDER_DESK_DIR") or ".aider-desk"
+
 def apply_tls_overrides():
   """Apply AiderDesk TLS settings before litellm/httpx create their SSL contexts.
 
@@ -806,7 +809,7 @@ class ConnectorInputOutput(InputOutput):
 
   def interrupt_input(self):
     async def process_changes():
-      lock_file_path = Path(self.connector.base_dir) / '.aider-desk' / 'watch-files.lock'
+      lock_file_path = Path(self.connector.base_dir) / PROJECT_DATA_DIR / 'watch-files.lock'
       lock_file = None
 
       try:

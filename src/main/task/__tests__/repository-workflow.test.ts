@@ -148,9 +148,22 @@ describe('repository workflow', () => {
     const result = await run('/workflow bug Correggi il filtro.', generate);
 
     expect(result.message).toMatch(/\/workflow approve [0-9a-f]{64}/);
+    expect(result.message).toContain('[regression] · struttura di una espressione');
     expect(generate).toHaveBeenCalledOnce();
     expect(JSON.parse(await fs.readFile(statePath, 'utf8'))).toMatchObject({ plan: { files: plan.files }, approved: false });
     expect(await fs.readFile(source(), 'utf8')).toBe(original);
+  });
+
+  it('shows the recorded check method in a plan and reads an older plan without it', async () => {
+    await approve();
+    policy.checks = [{ id: 'regression', type: 'browser' }];
+    expect((await run('/workflow status')).message).toContain('[regression] · struttura di una espressione');
+    const saved = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    delete saved.plan.criteria[0].method;
+    await fs.writeFile(statePath, JSON.stringify(saved));
+    const historical = await run('/workflow status');
+    expect(historical.message).toContain('[regression]');
+    expect(historical.message).not.toContain('verificatore browser');
   });
 
   it('delivers a staged patch only after the old bug fails and the candidate passes', async () => {
@@ -172,6 +185,9 @@ describe('repository workflow', () => {
     await expect(assertRepositoryWorkflowDone(policy, statePath)).resolves.toBeUndefined();
     await expect(readRemoteRepositoryPatch(policy, statePath, command.slice('/workflow approve '.length))).resolves.toContain('item > 0');
     await expect(readRemoteRepositoryPatch(policy, statePath, '0'.repeat(64))).rejects.toThrow('La chiusura richiede');
+    const status = await run('/workflow status');
+    expect(status.message).toContain('syntax PASS · sola sintassi JS/TS');
+    expect(status.message).toContain('regression PASS · struttura di una espressione');
     const state = await readRepositoryWorkflow(statePath);
     expect(state).toMatchObject({
       phase: 'done',
@@ -298,6 +314,75 @@ describe('repository workflow', () => {
     });
     expect((await run(command, generate)).phase).toBe('done');
     expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['implement', 'debug', 'review', 'debug', 'review']);
+  });
+
+  it.each(['current', 'legacy', 'mismatched'] as const)(
+    'resumes a measured multi-file candidate and preserves the good change (%s checkpoint)',
+    async (format) => {
+      const notePath = 'src/notes.md';
+      const note = 'Nota accettata.\n';
+      const bad = 'export const filter = (items: number[]) => items.filter(item => item >= 0);\n';
+      const files = ['src/filter.ts', notePath];
+      policy.checks.push({ id: 'notes', type: 'contains', file: notePath, text: 'Nota accettata.' });
+      const changes = [
+        { path: notePath, content: note },
+        { path: files[0], content: bad },
+      ];
+      const start = vi.fn<Generate>(async (stage) => (stage === 'plan' ? JSON.stringify({ ...plan, files }) : JSON.stringify({ changes })));
+      const draft = await run('/workflow bug Correggi il filtro e aggiungi la nota.', start);
+      const command = draft.message.match(/\/workflow approve [0-9a-f]{64}/)![0];
+      expect((await run(command, start)).phase).toBe('waiting');
+      const stored = JSON.parse(await fs.readFile(statePath, 'utf8'));
+      expect(stored.recovery.checkedCandidate.checks.find((check: { id: string }) => check.id === 'notes').passed).toBe(true);
+      if (format === 'legacy') {
+        delete stored.recovery.checkedCandidate;
+      }
+      if (format === 'mismatched') {
+        stored.recovery.checkedCandidate.checks.find((check: { id: string }) => check.id === 'regression').passed = true;
+      }
+      await fs.writeFile(statePath, JSON.stringify(stored));
+      const resumed = vi.fn<Generate>(async (stage, instructions, input) => {
+        if (stage !== 'debug') {
+          return response(stage);
+        }
+        const payload = JSON.parse(input);
+        expect(instructions).toContain('tutte le differenze');
+        expect(Object.fromEntries(payload.files)).toEqual({ [files[0]]: bad, [notePath]: note });
+        expect(Object.fromEntries(payload.originalFiles)).toEqual({ [files[0]]: original, [notePath]: null });
+        expect(payload.context).not.toHaveProperty(files[0]);
+        expect(payload.candidateChecks).toContainEqual(expect.objectContaining({ id: 'regression', passed: false }));
+        expect(payload.candidateChecks).toContainEqual(expect.objectContaining({ id: 'notes', passed: true }));
+        return JSON.stringify({ changes: payload.files.map(([path, content]: [string, string]) => ({ path, content: path === files[0] ? fixed : content })) });
+      });
+      expect((await run('/workflow resume', resumed)).phase).toBe('done');
+      const done = JSON.parse(await fs.readFile(statePath, 'utf8'));
+      const candidateDir = path.join(statePath.slice(0, -5) + '-jobs', done.delivered.directory);
+      expect(await fs.readFile(path.join(candidateDir, notePath), 'utf8')).toBe(note);
+      expect(await fs.readFile(path.join(candidateDir, files[0]), 'utf8')).toBe(fixed);
+      expect(await fs.readFile(source(), 'utf8')).toBe(original);
+      await expect(fs.access(path.join(policy.root, notePath))).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it('does not describe an unscoped legacy proposal as tested or forward its content to the debugger', async () => {
+    const command = await approve();
+    const initial = vi.fn<Generate>().mockResolvedValue(JSON.stringify({ changes: [{ path: 'src/filter.ts', content: original + '// still wrong\n' }] }));
+    expect((await run(command, initial)).phase).toBe('waiting');
+    const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    state.recovery.changes = [{ path: 'outside.md', content: 'legacy-unscoped-proposal' }];
+    delete state.recovery.checkedCandidate;
+    await fs.writeFile(statePath, JSON.stringify(state));
+    const generate = vi.fn<Generate>(async (stage, _instructions, input) => {
+      if (stage === 'debug') {
+        const payload = JSON.parse(input);
+        expect(payload.files).toEqual([['src/filter.ts', original]]);
+        expect(payload).not.toHaveProperty('candidateChecks');
+        expect(payload).not.toHaveProperty('previousChanges');
+        expect(input).not.toContain('legacy-unscoped-proposal');
+      }
+      return response(stage);
+    });
+    expect((await run('/workflow resume', generate)).phase).toBe('done');
   });
 
   it('retains an approved objective for service retry without fabricating a test result', async () => {
@@ -1098,7 +1183,11 @@ describe('repository workflow', () => {
         const saved = JSON.parse(await fs.readFile(statePath, 'utf8'));
         expect(saved.pendingIntegration.integration.commit).toBe(preparedCommit);
         expect(git('rev-parse', 'dev')).toBe(preparedCommit);
-        expect((await run('/workflow resume', generate)).phase).toBe('done');
+        policy.checks = [{ id: 'ui-label', type: 'browser' }];
+        const recovered = await run('/workflow resume', generate);
+        expect(recovered.phase).toBe('done');
+        expect(recovered.message).toContain('ui-label PASS');
+        expect(recovered.message).not.toContain('verificatore browser');
         expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['design-review']);
         return;
       }
@@ -1137,6 +1226,159 @@ describe('repository workflow', () => {
     text = 'Guida cambiata.';
     await expect(runRepositoryWorkflow({ policy, statePath, prompt: approval, generate, skills })).rejects.toThrow('Skill cambiata');
     expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['plan']);
+  });
+
+  it('binds answers to the pending questions and keeps unresolved decisions and revision approvals intact', async () => {
+    const firstQuestion = 'Quale filtro?';
+    const secondQuestion = 'Quale ordinamento?';
+    await run(
+      '/workflow bug Correggi il filtro.',
+      vi.fn<Generate>(async () => JSON.stringify({ ...plan, questions: [firstQuestion, secondQuestion] })),
+    );
+    const originalState = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    const reply = vi.fn<Generate>(async (stage, _instructions, input) => {
+      expect(stage).toBe('plan');
+      const context = JSON.parse(input);
+      expect(context.request).toBe('Correggi il filtro.');
+      expect(context.currentClarification.numbered).toEqual([{ number: 1, text: 'Solo positivi.' }]);
+      return JSON.stringify({
+        ...plan,
+        questions: [firstQuestion],
+        answers: [
+          { number: 1, quote: 'Solo positivi', remaining: null },
+          { number: 2, quote: 'Solo positivi', remaining: null },
+        ],
+      });
+    });
+    const partial = await run('1. Solo positivi.', reply);
+    expect(partial.message).toContain(secondQuestion);
+    expect(partial.message).not.toContain(firstQuestion);
+    expect(partial.message).not.toContain('/workflow approve');
+    let state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    expect(state).toMatchObject({ approved: false, kind: 'bug', request: originalState.request, plan: { questions: [secondQuestion] } });
+    await expect(run('/workflow approve ' + state.revision)).rejects.toThrow('domande aperte');
+
+    const stillOpen = vi.fn<Generate>(async () => JSON.stringify({ ...plan, answers: [{ number: 1, quote: 'Non lo so', remaining: null }] }));
+    await run('1. Non lo so.', stillOpen);
+    state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    expect(state.plan.questions).toEqual([secondQuestion]);
+
+    const resolved = vi.fn<Generate>(async (_stage, _instructions, input) => {
+      const payload = JSON.parse(input);
+      expect(payload.currentClarification.reply).toBe('Ordine crescente.');
+      expect(payload.clarificationHistory).toHaveLength(2);
+      expect(payload.clarificationHistory[0].resolved).toEqual([{ number: 1, quote: 'Solo positivi' }]);
+      expect(payload.clarificationHistory[1].resolved).toEqual([]);
+      return JSON.stringify({ ...plan, answers: [{ number: 1, quote: 'Ordine crescente', remaining: null }] });
+    });
+    const updated = await run('/workflow bug Correggi il filtro. Ordine crescente.', resolved);
+    expect(updated.message).toContain('/workflow approve');
+    state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    expect(state.approved).toBe(false);
+    expect(state.revision).not.toBe(originalState.revision);
+    await expect(run('/workflow approve ' + originalState.revision)).rejects.toThrow();
+  });
+
+  it('keeps missing or invented evidence open and separates a new explicit objective', async () => {
+    const questions = ['Quale soglia?', 'Quale unità?'];
+    await run(
+      '/workflow feature Definisci il filtro.',
+      vi.fn<Generate>(async () => JSON.stringify({ ...plan, reproduction: null, questions })),
+    );
+    await run(
+      'Mi occupo del filtro domani.',
+      vi.fn<Generate>(async () =>
+        JSON.stringify({
+          ...plan,
+          reproduction: null,
+          questions: [],
+          answers: [
+            { number: 1, quote: 'Tre ore', remaining: null },
+            { number: 1, quote: 'domani', remaining: null },
+          ],
+        }),
+      ),
+    );
+    const stored = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    expect(stored.plan.questions).toEqual(questions);
+    const incorrectlyNumbered = vi.fn<Generate>(async () =>
+      JSON.stringify({
+        ...plan,
+        reproduction: null,
+        questions: ['Serve un limite massimo?'],
+        answers: [
+          { number: 1, quote: 'Tre ore', remaining: null },
+          { number: 2, quote: 'ore', remaining: null },
+        ],
+      }),
+    );
+    await run('99. Tre ore.', incorrectlyNumbered);
+    expect(JSON.parse(await fs.readFile(statePath, 'utf8')).plan.questions).toEqual([...questions, 'Serve un limite massimo?']);
+    const newPlan = vi.fn<Generate>(async (_stage, _instructions, input) => {
+      expect(JSON.parse(input)).not.toHaveProperty('currentClarification');
+      return JSON.stringify({ ...plan, reproduction: null });
+    });
+    await run('/workflow change Documenta le unità.', newPlan);
+    const restarted = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    expect(restarted.request).toBe('Documenta le unità.');
+    expect(restarted).not.toHaveProperty('clarifications');
+  });
+
+  it.skipIf(process.platform !== 'win32')('checks candidate patches at long private Windows paths with Git long paths disabled in the repository', async () => {
+    execFileSync('git', ['init', '--quiet', tmp]);
+    execFileSync('git', ['-C', tmp, 'config', 'core.longpaths', 'false']);
+    statePath = path.join(tmp, 'session-' + 'a'.repeat(44), 'data', 'c'.repeat(64) + '.json');
+    const nested = 'src/renderer/components/navigation/project-history/diff/code-review/presentation/filter.ts';
+    policy.context = [nested];
+    policy.editable = [nested];
+    policy.checks = policy.checks.map((check) => ('file' in check ? { ...check, file: nested } : check));
+    await fs.mkdir(path.dirname(path.join(policy.root, nested)), { recursive: true });
+    await fs.writeFile(path.join(policy.root, nested), original);
+    const generate = vi.fn<Generate>(async (stage) => {
+      if (stage === 'plan') {
+        return JSON.stringify({ ...plan, files: [nested] });
+      }
+      if (stage === 'implement' || stage === 'debug') {
+        return JSON.stringify({ changes: [{ path: nested, content: fixed }] });
+      }
+      return response(stage);
+    });
+    const draft = await run('/workflow bug Correggi il filtro.', generate);
+    const approval = draft.message.match(/\/workflow approve [0-9a-f]{64}/)![0];
+    expect((await run(approval, generate)).phase).toBe('done');
+    const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    const jobsDir = statePath.slice(0, -5) + '-jobs';
+    const checkDir = await fs.mkdtemp(path.join(jobsDir, 'patch-check-'));
+    await fs.mkdir(path.dirname(path.join(checkDir, nested)), { recursive: true });
+    await fs.writeFile(path.join(checkDir, nested), original);
+    const args = ['apply', '--check', path.join(jobsDir, state.delivered.directory + '.patch')];
+    expect(path.join(checkDir, nested).length).toBeGreaterThan(260);
+    expect(() => execFileSync('git', ['-c', 'core.longpaths=false', ...args], { cwd: checkDir, stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync('git', ['-c', 'core.longpaths=true', ...args], { cwd: checkDir, stdio: 'pipe' })).not.toThrow();
+    expect(execFileSync('git', ['-C', tmp, 'config', '--get', 'core.longpaths'], { encoding: 'utf8' }).trim()).toBe('false');
+  });
+
+  it('supplies the native verdict schema only for reviews and still applies it before delivery', async () => {
+    const command = await approve();
+    let reviews = 0;
+    const result = await runRepositoryWorkflow({
+      policy,
+      statePath,
+      prompt: command,
+      generate: async (stage, _instructions, _input, schema) => {
+        if (stage === 'review') {
+          reviews++;
+          expect(schema?.safeParse({ verdict: 'pass', findings: [] }).success).toBe(true);
+          expect(schema?.safeParse({ verdict: 'unknown', findings: [] }).success).toBe(false);
+          return JSON.stringify({ verdict: 'unknown', findings: [] });
+        }
+        expect(schema).toBeUndefined();
+        return response(stage);
+      },
+    });
+    expect(reviews).toBeGreaterThan(0);
+    expect(result.phase).toBe('waiting');
+    expect(await fs.readFile(source(), 'utf8')).toBe(original);
   });
 
   it('rejects changes outside the approved file list and empty review verdicts', async () => {
@@ -1190,13 +1432,36 @@ describe('repository workflow', () => {
           'import { filter } from "./src/filter.ts";',
           'assert.deepEqual(Object.keys(os.networkInterfaces()).filter(name => name !== "lo"), []);',
           'await assert.rejects(fs.writeFile("/workspace/probe", "test"), { code: "EROFS" });',
-          'assert.deepEqual(filter(Object.freeze([-1, 1, 0, 2])), [1, 2]);',
+          'const actual = filter(Object.freeze([-1, 1, 0, 2]));',
+          'if (actual.length !== 2 || actual[0] !== 1) console.error("Cliente " + "privato".repeat(4));',
+          'assert.deepEqual(actual, [1, 2]);',
         ].join('\n'),
       );
-      const generate = vi.fn<Generate>(async (stage) => (stage === 'plan' ? JSON.stringify({ ...plan, reproduction: 'docker-contract' }) : response(stage)));
+      const generate = vi.fn<Generate>(async (stage, _instructions, input) => {
+        if (stage === 'plan') {
+          return JSON.stringify({ ...plan, reproduction: 'docker-contract' });
+        }
+        if (stage === 'implement') {
+          return JSON.stringify({ changes: [{ path: 'src/filter.ts', content: fixed.replace('item > 0', 'item >= 0') }] });
+        }
+        if (stage === 'debug') {
+          const { feedback } = JSON.parse(input);
+          const failure = feedback.find((entry: { id: string }) => entry.id === 'docker-contract');
+          expect(failure.detail).toContain('AssertionError');
+          expect(failure.detail).toContain('deepStrictEqual');
+          expect(failure.detail).toMatch(/verify\.mjs:\d+/);
+          const saved = await fs.readFile(statePath, 'utf8');
+          for (const output of [input, saved]) {
+            expect(output).not.toContain('privato'.repeat(4));
+            expect(output).not.toContain('Expected values to be strictly deep-equal');
+          }
+        }
+        return response(stage);
+      });
       const draft = await run('/workflow bug Correggi il filtro.', generate);
       const approval = draft.message.match(/\/workflow approve [0-9a-f]{64}/)![0];
       expect((await run(approval, generate)).phase).toBe('done');
+      expect(generate.mock.calls.map(([stage]) => stage)).toContain('debug');
       expect(await readRepositoryWorkflow(statePath, policy)).toMatchObject({
         checks: expect.arrayContaining([{ id: 'docker-contract', passed: true, detail: 'PASS' }]),
       });

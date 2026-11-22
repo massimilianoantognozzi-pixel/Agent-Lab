@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { createTwoFilesPatch } from 'diff';
+import { escapeRegExp } from 'lodash';
 import * as ts from 'typescript';
 import { z } from 'zod';
 
@@ -19,7 +20,7 @@ import {
   readDevelopmentFiles,
   readDevelopmentHead,
 } from './workflow-development';
-import { ensureWorkflowDocker, WorkflowServiceUnavailable, workflowServiceRetryable } from './workflow-docker';
+import { dockerFailureDetail, ensureWorkflowDocker, WorkflowServiceUnavailable, workflowServiceRetryable } from './workflow-docker';
 import { hasVisualWorkflowImpact } from './workflow-evidence';
 import { assertWorkflowText, snapshotWorkflowFiles, validateWorkflowPath, type WorkflowFiles, type WorkflowProject } from './workflow-policy';
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
@@ -41,6 +42,15 @@ import { sanitizeKnowledgeText } from '@/knowledge-privacy';
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
 const line = z.string().trim().min(1).max(1500);
+const checkDescriptions = {
+  json: 'sola sintassi JSON',
+  typescript: 'sola sintassi JS/TS',
+  'typescript-expression': 'struttura di una espressione',
+  contains: 'presenza di testo',
+  excludes: 'assenza di testo',
+  browser: 'verificatore browser',
+  docker: 'comando eseguito in Docker',
+} as const;
 const surface = z.enum(['none', ...workflowDesignSurface.options]);
 const designSchema = z.strictObject({
   sharedLogic: line,
@@ -55,7 +65,9 @@ const planSchema = z.strictObject({
   reuse: z.array(line).max(15),
   steps: z.array(line).min(1).max(12),
   criteria: z
-    .array(z.strictObject({ scenario: line, check: z.string() }))
+    .array(
+      z.strictObject({ scenario: line, check: z.string(), method: z.enum(Object.keys(checkDescriptions) as (keyof typeof checkDescriptions)[]).optional() }),
+    )
     .min(1)
     .max(20),
   reproduction: z.string().nullable(),
@@ -107,6 +119,7 @@ const recoveryState = z.strictObject({
   attempts: z.array(recoveryAttempt),
   rejected: z.array(hash),
   changes: changeSchema.shape.changes.optional(),
+  checkedCandidate: z.strictObject({ fingerprint: hash, checks: z.array(checkResult) }).optional(),
   verifyPending: z.literal(true).optional(),
   strategies: z.array(recoveryStrategy).optional(),
   research: z.array(z.strictObject({ query: z.string(), references: z.string(), attempt: z.number().int().nonnegative().optional() })).optional(),
@@ -129,6 +142,18 @@ const stateSchema = z.strictObject({
   version: z.literal(2),
   kind: z.enum(['bug', 'change', 'feature']),
   request: line,
+  clarifications: z
+    .array(
+      z.strictObject({
+        questions: z.array(line).max(8),
+        reply: z.string().trim().min(1),
+        resolved: z
+          .array(z.strictObject({ number: z.number().int().min(1).max(8), quote: line }))
+          .max(8)
+          .optional(),
+      }),
+    )
+    .optional(),
   baseline: hash,
   source: hash,
   baseCommit: gitCommit.optional(),
@@ -150,7 +175,7 @@ const memorySchema = z.array(z.object({ revision: hash, proof: hash, lesson: les
 type State = z.infer<typeof stateSchema>;
 type Receipt = z.infer<typeof receipt>;
 type CheckResult = z.infer<typeof checkResult>;
-type Generate = (stage: WorkflowStage, instructions: string, input: string) => Promise<string | undefined>;
+type Generate = (stage: WorkflowStage, instructions: string, input: string, verdictSchema?: typeof reviewSchema) => Promise<string | undefined>;
 type Outcome = {
   phase: 'plan' | 'waiting' | 'done';
   message: string;
@@ -315,7 +340,8 @@ export const repositoryContinuationRevision = async (policy: WorkflowProject, si
 const approvedContext = (policy: WorkflowProject, files: WorkflowFiles) =>
   policy.references.map((reference) => ({ ...reference, content: files[reference.path] }));
 
-const stageFiles = async (dir: string, files: WorkflowFiles) => {
+const stageFiles = async (dir: string, files: WorkflowFiles, dockerReadable = false) => {
+  const directories = new Set([dir]);
   for (const [name, content] of Object.entries(files)) {
     if (content === null) {
       continue;
@@ -323,6 +349,19 @@ const stageFiles = async (dir: string, files: WorkflowFiles) => {
     const target = path.join(dir, validateWorkflowPath(name));
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, content, { flag: 'wx' });
+    if (dockerReadable) {
+      await fs.chmod(target, 0o644);
+      let parent = path.dirname(target);
+      while (!directories.has(parent)) {
+        directories.add(parent);
+        parent = path.dirname(parent);
+      }
+    }
+  }
+  if (dockerReadable) {
+    for (const parent of directories) {
+      await fs.chmod(parent, 0o755);
+    }
   }
 };
 
@@ -347,7 +386,7 @@ const readCandidate = async (policy: WorkflowProject, dir: string): Promise<Work
   }
   return files;
 };
-const sandboxCommand = async (dir: string, image: string, args: string[], signal?: AbortSignal): Promise<string | undefined> => {
+const sandboxCommand = async (dir: string, files: WorkflowFiles, image: string, args: string[], signal?: AbortSignal): Promise<string | undefined> => {
   if (dir.includes(',')) {
     throw new Error('Il percorso del job contiene una virgola.');
   }
@@ -360,7 +399,12 @@ const sandboxCommand = async (dir: string, image: string, args: string[], signal
     }
     throw new Error('Motore Docker o immagine locale approvata indisponibile.');
   }
+  // POSIX mkdtemp roots are 0700. Keep the original private and mount only a readable copy beneath it.
+  const mount = process.platform === 'win32' ? dir : await fs.mkdtemp(path.join(dir, '.docker-'));
   try {
+    if (mount !== dir) {
+      await stageFiles(mount, files, true);
+    }
     await run(
       'docker',
       [
@@ -378,7 +422,7 @@ const sandboxCommand = async (dir: string, image: string, args: string[], signal
         '--cpus=2',
         '--user=65534:65534',
         '--mount',
-        'type=bind,source=' + dir + ',target=/workspace,readonly',
+        'type=bind,source=' + mount + ',target=/workspace,readonly',
         '--tmpfs',
         '/tmp:rw,noexec,nosuid,nodev,size=128m',
         '--workdir=/workspace',
@@ -392,14 +436,17 @@ const sandboxCommand = async (dir: string, image: string, args: string[], signal
     if (signal?.aborted) {
       throw error;
     }
-    const commandError = error as { code?: string | number; killed?: boolean };
+    const commandError = error as { code?: string | number; killed?: boolean; stdout?: string; stderr?: string };
     // A missing sandbox, timeout or failure to start the image is not a reproducible bug.
     if (typeof commandError.code !== 'number' || commandError.killed || commandError.code >= 125) {
       throw new WorkflowServiceUnavailable('Controllo Docker indisponibile o interrotto.');
     }
-    return 'Il comando isolato ha restituito codice ' + commandError.code + '.';
+    return dockerFailureDetail(commandError.code, [commandError.stderr, commandError.stdout].filter(Boolean).join('\n'), files);
   } finally {
     await run('docker', ['rm', '--force', container], { timeout: 5000, maxBuffer: 150_000, windowsHide: true }).catch(() => undefined);
+    if (mount !== dir) {
+      await fs.rm(mount, { recursive: true, force: true });
+    }
   }
 };
 
@@ -436,7 +483,7 @@ const runChecks = async (policy: WorkflowProject, files: WorkflowFiles, dir: str
     }
     let problem: string | undefined;
     if (check.type === 'docker') {
-      problem = await sandboxCommand(dir, check.image, check.args, signal);
+      problem = await sandboxCommand(dir, files, check.image, check.args, signal);
     } else {
       const content = files[check.file];
       if (typeof content !== 'string') {
@@ -473,6 +520,47 @@ const runChecks = async (policy: WorkflowProject, files: WorkflowFiles, dir: str
   return results;
 };
 
+const numberedAnswers = (reply: string) => {
+  const labels = [...reply.matchAll(/^[ \t]*(\d+)[.)](?=[ \t]|\r?$)[ \t]*/gm)];
+  return labels.map((label, index) => ({ number: Number(label[1]), text: reply.slice(label.index + label[0].length, labels[index + 1]?.index).trim() }));
+};
+
+const answerDecisions = z.array(z.strictObject({ number: z.number().int().min(1).max(8), quote: line.nullable(), remaining: line.nullable() }));
+
+const reconcileQuestions = (round: { questions: string[]; reply: string }, answers: z.infer<typeof answerDecisions>, newQuestions: string[]) => {
+  const normalized = (text: string) => text.trim().replace(/\s+/g, ' ').toLowerCase();
+  const numbered = numberedAnswers(round.reply);
+  const resolved = new Map<string, { number: number; quote: string }>();
+  const open: string[] = [];
+  for (const [index, question] of round.questions.entries()) {
+    const decisions = answers.filter((answer) => answer.number === index + 1);
+    const decision = decisions.length === 1 ? decisions[0] : undefined;
+    const assigned = numbered.filter((answer) => answer.number === index + 1);
+    const text = numbered.length ? (assigned.length === 1 ? assigned[0].text : '') : round.reply;
+    const quote = decision?.quote;
+    const deferred = /^(?:aperta|da decidere|da chiarire|non (?:lo so|saprei|ho deciso)|non ancora|non so)[\s.!?]*$/iu;
+    const literal = quote && escapeRegExp(quote);
+    const evidence =
+      quote &&
+      literal &&
+      !deferred.test(quote) &&
+      !deferred.test(text.trim()) &&
+      new RegExp('(?<![\\p{L}\\p{N}_])' + literal + '(?![\\p{L}\\p{N}_])', 'u').test(text);
+    if (evidence && !decision.remaining) {
+      resolved.set(normalized(question), { number: index + 1, quote });
+    } else {
+      open.push((evidence && decision?.remaining) || question);
+    }
+  }
+  const questions = new Map(open.map((q) => [normalized(q), q]));
+  for (const question of newQuestions) {
+    if (!resolved.has(normalized(question))) {
+      questions.set(normalized(question), question);
+    }
+  }
+  return { open: planSchema.shape.questions.parse([...questions.values()]), resolved: [...resolved.values()] };
+};
+
 const renderPlan = (state: State) =>
   [
     '## ' + { bug: 'Correzione', change: 'Piano di modifica', feature: 'Blueprint funzionale' }[state.kind],
@@ -481,7 +569,10 @@ const renderPlan = (state: State) =>
     'File autorizzati dal piano\n' + state.plan.files.map((item) => '- ' + item).join('\n'),
     'Riuso\n' + state.plan.reuse.map((item) => '- ' + item).join('\n'),
     'Passi\n' + state.plan.steps.map((item) => '- ' + item).join('\n'),
-    'Criteri\n' + state.plan.criteria.map((item) => '- ' + item.scenario + ' [' + item.check + ']').join('\n'),
+    'Criteri\n' +
+      state.plan.criteria
+        .map((item) => '- ' + item.scenario + ' [' + item.check + ']' + (item.method ? ' · ' + checkDescriptions[item.method] : ''))
+        .join('\n'),
     ...(state.plan.design
       ? [
           'Proposta UI/UX',
@@ -494,20 +585,28 @@ const renderPlan = (state: State) =>
     ...(state.plan.catalog ? ['Catalogo shadcn MCP · ' + (state.plan.catalog === 'consulted' ? 'consultato' : 'indisponibile')] : []),
     ...(state.plan.reproduction ? ['Riproduzione: ' + state.plan.reproduction] : []),
     'Versione: ' + state.revision,
-    state.plan.questions.length ? 'Domande aperte\n' + state.plan.questions.map((item) => '- ' + item).join('\n') : '/workflow approve ' + state.revision,
+    state.plan.questions.length
+      ? 'Domande aperte\n' +
+        state.plan.questions.map((item, index) => index + 1 + '. ' + item).join('\n') +
+        '\nRispondi in questa chat, anche per numero. Per iniziare un altro incarico usa /workflow bug, change o feature con la nuova richiesta.'
+      : '/workflow approve ' + state.revision,
   ].join('\n\n');
 
-const renderDelivery = (state: State, statePath: string) => {
+const renderDelivery = (state: State, statePath: string, policy: WorkflowProject) => {
   const delivery = state.delivered;
   if (!delivery) {
     throw new Error('Consegna assente.');
   }
+  const verifiedDefinitions = !delivery.integration || delivery.integration.policy === digest(policy) ? policy.checks : [];
   return [
     '## Consegna verificata',
     ...(delivery.baselineChecks
       ?.filter((result) => result.id === state.plan.reproduction)
       .map((result) => '- Riproduzione sulla base: ' + result.id + ' FAIL') ?? []),
-    ...delivery.checks.map((result) => '- ' + result.id + ' PASS'),
+    ...delivery.checks.map((result) => {
+      const check = verifiedDefinitions.find(({ id }) => id === result.id);
+      return '- ' + result.id + ' PASS' + (check ? ' · ' + checkDescriptions[check.type] : '');
+    }),
     '- Revisione del codice PASS',
     ...(delivery.designReviewed ? ['- Revisione UI/UX del codice PASS'] : []),
     'File della proposta: ' + delivery.files.join(', '),
@@ -696,6 +795,7 @@ const runWorkflowTask = async (args: {
       ) {
         const review = await generate(state.kind, 'design-review', reviewSchema, reviewContract, {
           plan: state.plan,
+          ...(state.clarifications && { clarifications: state.clarifications }),
           changes,
           checks: pending.checks,
           baselineChecks: pending.baselineChecks,
@@ -761,6 +861,9 @@ const runWorkflowTask = async (args: {
         : '') +
       '\n' +
       instruction +
+      (stage === 'plan' && typeof payload === 'object' && payload !== null && 'currentClarification' in payload
+        ? '\nIl messaggio currentClarification è una risposta dell’utente sul piano in attesa. Mantieni il suo obiettivo. Per ogni domanda, in ordine, scrivi in answers il numero, una citazione letterale pertinente dalla risposta più recente in quote o null se manca, e in remaining la domanda precisa che resta aperta oppure null se il chiarimento risolve la decisione. Una risposta incerta, negativa sul poter decidere o estranea non risolve una domanda. Se numbered assegna una risposta a un numero, usa quel testo solo per la domanda corrispondente. In questions inserisci soltanto nuove decisioni ancora da prendere. Integra nel piano le scelte chiarite.'
+        : '') +
       '\nRestituisci un singolo JSON conforme esattamente a questo JSON Schema. Non usare oggetti al posto di stringhe.\n' +
       JSON.stringify(z.toJSONSchema(schema));
     let feedback = '';
@@ -768,7 +871,10 @@ const runWorkflowTask = async (args: {
       signal?.throwIfAborted();
       let raw;
       try {
-        raw = await args.generate(stage, contract + feedback, text);
+        raw =
+          stage === 'review' || stage === 'design-review'
+            ? await args.generate(stage, contract + feedback, text, reviewSchema)
+            : await args.generate(stage, contract + feedback, text);
       } catch (error) {
         signal?.throwIfAborted();
         throw new WorkflowModelFailure(recoveryMessage(error, 'Chiamata al modello non riuscita.'), { cause: error });
@@ -810,7 +916,7 @@ const runWorkflowTask = async (args: {
       }
       if (state.delivered) {
         await assertRepositoryWorkflowDone(policy, statePath);
-        return { phase: 'done', message: renderDelivery(state, statePath) };
+        return { phase: 'done', message: renderDelivery(state, statePath, policy) };
       }
       if (state.pendingIntegration) {
         return { phase: 'waiting', message: 'Commit preparato: ' + state.pendingIntegration.integration.commit + '\n/workflow resume' };
@@ -857,7 +963,7 @@ const runWorkflowTask = async (args: {
     }
     if (state?.pendingIntegration && (resume || approval?.[1] === state.revision)) {
       try {
-        return { phase: 'done', message: renderDelivery(await finishIntegration(state, state.pendingIntegration), statePath) };
+        return { phase: 'done', message: renderDelivery(await finishIntegration(state, state.pendingIntegration), statePath, policy) };
       } catch (error) {
         if (!(error instanceof PreparedDesignRejection)) {
           throw error;
@@ -884,7 +990,7 @@ const runWorkflowTask = async (args: {
       if ((args.projectTask || samePolicy) && (await isIntegrated(policy, pending.integration.commit, signal))) {
         state = await finishIntegration(state, pending);
         if (args.projectTask) {
-          return { phase: 'done', message: renderDelivery(state, statePath) };
+          return { phase: 'done', message: renderDelivery(state, statePath, policy) };
         }
       } else if (samePolicy && snapshot.hash === state.baseline) {
         throw new Error('Integrazione in attesa. Usa /workflow resume per riprendere il commit preparato.');
@@ -896,7 +1002,7 @@ const runWorkflowTask = async (args: {
       }
       if (state.delivered) {
         await assertRepositoryWorkflowDone(policy, statePath);
-        return { phase: 'done', message: renderDelivery(state, statePath) };
+        return { phase: 'done', message: renderDelivery(state, statePath, policy) };
       }
       if (state.plan.questions.length || state.baseline !== snapshot.hash) {
         throw new Error('Il piano ha domande aperte oppure le fonti sono cambiate.');
@@ -935,7 +1041,35 @@ const runWorkflowTask = async (args: {
       let strategies = state.recovery?.strategies ?? [];
       let researchHistory = state.recovery?.research ?? [];
       let researchedAt = state.recovery?.researchedAt ?? 0;
-      let previousChanges = state.recovery?.changes;
+      const approvedFiles = state.plan.files;
+      const usableProposal = (changes: z.infer<typeof changeSchema>['changes']) => {
+        const names = changes.map((item) => item.path);
+        return (
+          new Set(names).size === names.length &&
+          changes.every(
+            ({ path, content }) =>
+              approvedFiles.includes(path) &&
+              policy.editable.includes(path) &&
+              has(snapshot.files, path) &&
+              snapshot.files[path] !== content &&
+              (!!snapshot.files[path] || !!content),
+          )
+        );
+      };
+      const restored = state.recovery?.changes;
+      let previousChanges = restored && usableProposal(restored) ? restored : undefined;
+      let checkedCandidate = state.recovery?.checkedCandidate;
+      const revision = state.revision;
+      const candidateFingerprint = (changes: z.infer<typeof changeSchema>['changes'], checks: CheckResult[]) => digest([revision, changes, checks]);
+      if (
+        checkedCandidate &&
+        (!previousChanges ||
+          checkedCandidate.checks.length !== policy.checks.length ||
+          checkedCandidate.checks.some((result, index) => result.id !== policy.checks[index].id) ||
+          checkedCandidate.fingerprint !== candidateFingerprint(previousChanges, checkedCandidate.checks))
+      ) {
+        checkedCandidate = undefined;
+      }
       let serviceUnavailable = false;
       let feedback: z.infer<typeof recoveryAttempt>['feedback'] | null = attempts.at(-1)?.feedback ?? null;
       const saveRecovery = async (verifyPending = false) => {
@@ -946,6 +1080,7 @@ const runWorkflowTask = async (args: {
             rejected: [...rejected],
             rejectedOutcomes: [...rejectedOutcomes],
             changes: previousChanges,
+            checkedCandidate,
             strategies,
             research: researchHistory,
             researchedAt,
@@ -966,7 +1101,10 @@ const runWorkflowTask = async (args: {
         await saveRecovery(verifyPending);
       };
       const context = Object.fromEntries([...policy.context, ...(policy.optionalInputs ?? [])].map((name) => [name, snapshot.files[name]]));
-      const pendingVerification = state.recovery?.verifyPending ? previousChanges : undefined;
+      // Older checkpoints saved a proposal before staging it. Re-run the checks before using it as measured context.
+      const requalify = !!previousChanges && !checkedCandidate && !state.recovery?.verifyPending;
+      const pendingVerification = state.recovery?.verifyPending || requalify ? previousChanges : undefined;
+      const originalFiles = approvedFiles.map((name) => [name, snapshot.files[name]]);
       const researchThreshold = policy.researchAfterFailures ?? 3;
       const strategyLimit = 3;
       let strategyReviews = 0;
@@ -1023,6 +1161,10 @@ const runWorkflowTask = async (args: {
         }
         let patch: z.infer<typeof changeSchema>;
         try {
+          const checkedFiles =
+            feedback !== null && checkedCandidate && previousChanges
+              ? { ...snapshot.files, ...Object.fromEntries(previousChanges.map(({ path, content }) => [path, content])) }
+              : undefined;
           patch =
             attempt < 0 && pendingVerification
               ? { changes: pendingVerification }
@@ -1030,17 +1172,22 @@ const runWorkflowTask = async (args: {
                   state.kind,
                   feedback !== null ? 'debug' : 'implement',
                   changeSchema,
-                  'Schema: changes [{path, content}]. content è il testo completo o null per una rimozione approvata. Restituisci solo file del piano.',
+                  'Schema: changes [{path, content}]. content è il testo completo o null per una rimozione approvata. Restituisci solo file del piano.' +
+                    (checkedFiles
+                      ? ' In files trovi il candidato su cui sono stati eseguiti candidateChecks. Parti da questi contenuti, conserva le modifiche pertinenti e correggi i fallimenti. originalFiles contiene la base approvata: restituisci tutte le differenze che vuoi consegnare rispetto a quella base, comprese le modifiche già valide. Non rimandare soltanto l’ultima correzione.'
+                      : ''),
                   {
                     plan: state.plan,
+                    ...(state.clarifications && { clarifications: state.clarifications }),
                     projectLessons: await projectLessons([state.request, ...state.plan.files, feedback ? JSON.stringify(feedback) : ''].join(' ')),
                     sources: approvedContext(policy, snapshot.files),
-                    files: state.plan.files.map((name) => [name, snapshot.files[name]]),
-                    context,
+                    files: checkedFiles ? approvedFiles.map((name) => [name, checkedFiles[name]]) : originalFiles,
+                    context: checkedFiles ? Object.fromEntries(Object.entries(context).filter(([name]) => !approvedFiles.includes(name))) : context,
+                    ...(checkedFiles && checkedCandidate && { originalFiles, candidateChecks: checkedCandidate.checks }),
                     baselineChecks,
                     checkDefinitions: policy.checks,
                     skills,
-                    previousChanges,
+                    previousChanges: checkedFiles ? previousChanges : undefined,
                     feedback,
                     ...(attempts.length ? { previousFailures: attempts.slice(-12).map(({ feedback }) => feedback) } : {}),
                     ...(strategies.length ? { strategy: strategies.at(-1), previousStrategies: strategies.slice(-6) } : {}),
@@ -1061,20 +1208,17 @@ const runWorkflowTask = async (args: {
           continue;
         }
         const names = patch.changes.map((item) => item.path);
-        if (
-          new Set(names).size !== names.length ||
-          names.some((name) => !state?.plan.files.includes(name)) ||
-          patch.changes.some((item) => snapshot.files[item.path] === item.content || ((snapshot.files[item.path] ?? '') === '' && (item.content ?? '') === ''))
-        ) {
+        if (!usableProposal(patch.changes)) {
           await recordFailure('La proposta duplica file, contiene file non approvati o non produce una patch di testo applicabile.');
           continue;
         }
         const candidateHash = digest([...patch.changes].sort((a, b) => a.path.localeCompare(b.path)));
-        if (rejected.has(candidateHash)) {
+        if (rejected.has(candidateHash) && !(attempt < 0 && requalify)) {
           await recordFailure('La proposta coincide con un candidato già respinto. Usa le evidenze precedenti e cambia strategia.');
           continue;
         }
         previousChanges = patch.changes;
+        checkedCandidate = undefined;
         await saveRecovery(true);
         const candidate = Object.fromEntries(Object.entries(snapshot.files));
         for (const change of patch.changes) {
@@ -1085,6 +1229,11 @@ const runWorkflowTask = async (args: {
         try {
           await stageFiles(dir, candidate);
           const checks = await runChecks(policy, candidate, dir, signal);
+          checkedCandidate = { fingerprint: candidateFingerprint(patch.changes, checks), checks };
+          if (attempt < 0 && requalify) {
+            await saveRecovery();
+            continue;
+          }
           if (checks.some((check) => !check.passed)) {
             const failures = checks.filter((check) => !check.passed);
             const deterministic = failures.every(({ id }) =>
@@ -1095,6 +1244,7 @@ const runWorkflowTask = async (args: {
           }
           const reviewInput = {
             plan: state.plan,
+            ...(state.clarifications && { clarifications: state.clarifications }),
             changes: patch.changes.map((item) => ({ ...item, before: snapshot.files[item.path] })),
             checks,
             baselineChecks,
@@ -1152,7 +1302,8 @@ const runWorkflowTask = async (args: {
             const baselineDir = await fs.mkdtemp(path.join(jobRoot, 'patch-check-'));
             try {
               await stageFiles(baselineDir, snapshot.files);
-              await run('git', ['apply', '--check', dir + '.patch'], { cwd: baselineDir, timeout: 10_000, signal, windowsHide: true });
+              const options = process.platform === 'win32' ? ['-c', 'core.longpaths=true'] : [];
+              await run('git', [...options, 'apply', '--check', dir + '.patch'], { cwd: baselineDir, timeout: 10_000, signal, windowsHide: true });
             } catch (error) {
               if (signal?.aborted) {
                 throw error;
@@ -1197,12 +1348,12 @@ const runWorkflowTask = async (args: {
             await save(state);
             accepted = true;
             state = await finishIntegration(state, pending);
-            return { phase: 'done', message: renderDelivery(state, statePath) };
+            return { phase: 'done', message: renderDelivery(state, statePath, policy) };
           }
           state = { ...state, delivered };
           await save(state);
           accepted = true;
-          return { phase: 'done', message: renderDelivery(state, statePath) };
+          return { phase: 'done', message: renderDelivery(state, statePath, policy) };
         } catch (error) {
           if (!signal?.aborted && !accepted) {
             await recordFailure(recoveryMessage(error, 'Verifica o preparazione del candidato interrotta.'), undefined, true);
@@ -1227,8 +1378,24 @@ const runWorkflowTask = async (args: {
     if (input.startsWith('/workflow') && !command) {
       throw new Error('Comando workflow non valido.');
     }
-    const kind: WorkflowKind = isWorkflowKind(command?.[1]) ? command[1] : 'feature';
-    const request = command?.[2].trim() ?? input;
+    const incoming = command?.[2].trim() ?? input;
+    const openPlan = state && state.plan.questions.length && !state.approved && !state.projectTaskId && !args.projectTask ? state : undefined;
+    // A new explicit objective starts a fresh plan. Some clients resubmit the original brief with a reply appended.
+    let reply: string | undefined;
+    if (openPlan && (!command || command[1] === openPlan.kind)) {
+      if (incoming === openPlan.request && openPlan.baseline === snapshot.hash) {
+        return { phase: 'plan', message: renderPlan(openPlan) };
+      }
+      if (incoming.startsWith(openPlan.request) && /^\s/.test(incoming.slice(openPlan.request.length))) {
+        reply = incoming.slice(openPlan.request.length).trim();
+      } else if (!command && incoming !== openPlan.request) {
+        reply = incoming;
+      }
+    }
+    const round = openPlan && reply ? { questions: openPlan.plan.questions, reply } : undefined;
+    const earlierRounds = openPlan?.clarifications ?? [];
+    const kind: WorkflowKind = isWorkflowKind(command?.[1]) ? command[1] : (openPlan?.kind ?? 'feature');
+    const request = round && openPlan ? openPlan.request : incoming;
     const checkId = z.enum(policy.checks.map((check) => check.id));
     const availableSkills = (await skillCatalog())?.available ?? [];
     const scopedPlan = planSchema.omit({ design: true, skills: true, catalog: true }).extend({
@@ -1244,16 +1411,23 @@ const runWorkflowTask = async (args: {
         .max(4)
         .optional(),
       components: z.array(z.enum(shadcn.components)).max(3).optional(),
+      ...(round && {
+        answers: answerDecisions.length(round.questions.length),
+      }),
     });
-    const { skillNames, components, ...proposedPlan } = await generate(
+    const { skillNames, components, answers, ...proposedPlan } = await generate(
       kind,
       'plan',
       scopedPlan,
-      'Schema: outcome, delta, files[], reuse[], steps[], criteria[{scenario,check}], reproduction (ID per bug o null), questions[], surface, skillNames[], components[]. Scegli i file da editable e i check dalla configurazione. Collega i criteri alla copertura effettiva delle definizioni dei controlli. Indica surface=none per la sola logica, ui se cambiano interfaccia o interazioni, mobile se è richiesta una UI dedicata al telefono, ui-and-mobile se cambiano entrambe. Seleziona fino a quattro skill pertinenti. Se per la UI serve valutare nuovi componenti e lo stack è compatibile con shadcn, scegli fino a tre tipi da consultare. Quando projectTask è presente, il suo id indica il task attivo e i commit integrati aggiornano il punto di ripresa delle note di stato. projectTask.attestations contiene gli esiti già verificati dalla coda per i prerequisiti del task. Usa questi esiti e il commit attestato, senza chiedere di ripetere la stessa prova.',
+      'Schema: outcome, delta, files[], reuse[], steps[], criteria[{scenario,check}], reproduction (ID per bug o null), questions[], surface, skillNames[], components[]. Scegli i file da editable e i check dalla configurazione. Collega i criteri alla copertura effettiva delle definizioni dei controlli. Per un criterio funzionale usa una prova del comportamento quando disponibile e segnala nel piano ogni comportamento che resta da verificare. Indica surface=none per la sola logica, ui se cambiano interfaccia o interazioni, mobile se è richiesta una UI dedicata al telefono, ui-and-mobile se cambiano entrambe. Seleziona fino a quattro skill pertinenti. Se per la UI serve valutare nuovi componenti e lo stack è compatibile con shadcn, scegli fino a tre tipi da consultare. Quando projectTask è presente, il suo id indica il task attivo e i commit integrati aggiornano il punto di ripresa delle note di stato. projectTask.attestations contiene gli esiti già verificati dalla coda per i prerequisiti del task. Usa questi esiti e il commit attestato, senza chiedere di ripetere la stessa prova.',
       {
         request,
         projectLessons: await projectLessons(request),
-        previous: state ? { request: state.request, outcome: state.plan.outcome, questions: state.plan.questions, delivered: !!state.delivered } : undefined,
+        previous: state && !round ? { request: state.request, outcome: state.plan.outcome, delivered: !!state.delivered } : undefined,
+        ...(round && {
+          clarificationHistory: earlierRounds,
+          currentClarification: { ...round, numbered: numberedAnswers(round.reply) },
+        }),
         sources: approvedContext(policy, snapshot.files),
         files: snapshot.files,
         editable: policy.editable,
@@ -1265,8 +1439,13 @@ const runWorkflowTask = async (args: {
         projectTask: args.projectTask,
       },
     );
+    const methods = new Map(policy.checks.map((check) => [check.id, check.type]));
+    const reviewed = round ? reconcileQuestions(round, answerDecisions.parse(answers), proposedPlan.questions) : undefined;
+    const clarifications = round && reviewed ? [...earlierRounds, { ...round, resolved: reviewed.resolved }] : undefined;
     const plan: State['plan'] = {
       ...proposedPlan,
+      questions: reviewed?.open ?? proposedPlan.questions,
+      criteria: proposedPlan.criteria.map((criterion) => ({ ...criterion, method: methods.get(criterion.check) })),
       files: [...new Set(proposedPlan.files)],
       surface: args.projectTask?.designSurface ?? proposedPlan.surface,
     };
@@ -1301,6 +1480,7 @@ const runWorkflowTask = async (args: {
           files: snapshot.files,
           skills: selectedSkills,
           componentReferences,
+          ...(clarifications && { clarifications }),
           projectTask: args.projectTask,
         },
       );
@@ -1313,7 +1493,7 @@ const runWorkflowTask = async (args: {
       }
       await atomicWriteJsonFile(path.join(jobRoot, state.pendingIntegration.directory + '.json'), state);
       if (args.projectTask && (await isIntegrated(policy, state.pendingIntegration.integration.commit, signal))) {
-        return { phase: 'done', message: renderDelivery(await finishIntegration(state, state.pendingIntegration), statePath) };
+        return { phase: 'done', message: renderDelivery(await finishIntegration(state, state.pendingIntegration), statePath, policy) };
       }
     }
     const attestationRevision = projectAttestationRevision(args.projectTask?.attestations);
@@ -1321,12 +1501,13 @@ const runWorkflowTask = async (args: {
       version: 2,
       kind,
       request,
+      ...(clarifications && { clarifications }),
       baseline: snapshot.hash,
       source: snapshot.source,
       ...(snapshot.commit ? { baseCommit: snapshot.commit } : {}),
       ...(args.projectTask ? { projectTaskId: args.projectTask.id } : {}),
       ...(attestationRevision ? { attestationRevision } : {}),
-      revision: digest([kind, request, plan, snapshot.hash]),
+      revision: digest([kind, request, plan, snapshot.hash, ...(clarifications ?? [])]),
       plan,
       approved: false,
     };

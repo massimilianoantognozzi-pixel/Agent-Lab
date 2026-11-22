@@ -3,6 +3,8 @@ import { isOllamaProvider, OllamaProvider } from '@common/agent';
 import { createOllama } from 'ollama-ai-provider-v2';
 import { simulateStreamingMiddleware, wrapLanguageModel } from 'ai';
 
+import { devstralToolNames, usesLocalDevstralToolNames } from './devstral-tool-names';
+
 import type { LanguageModel } from 'ai';
 
 import { AiderModelMapping, LlmProviderStrategy, LoadModelsResponse } from '@/models';
@@ -106,6 +108,7 @@ export const createOllamaLlm = (profile: ProviderProfile, model: Model, settings
   return wrapLanguageModel({
     model: ollamaInstance(model.id),
     middleware: [
+      ...(usesLocalDevstralToolNames(model.id, normalized) ? [devstralToolNames] : []),
       simulateStreamingMiddleware(),
       {
         specificationVersion: 'v4',

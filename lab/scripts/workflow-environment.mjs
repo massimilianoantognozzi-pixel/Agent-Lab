@@ -34,11 +34,15 @@ const atomicJson = async (file, data) => {
 export const prepareWorkflowEnvironment = async (pilot, root, { fixture = false, remote = true } = {}) => {
   const repository = path.join(root, 'repository-example');
   for (const [name, content] of Object.entries(demoFiles)) await writeInitial(path.join(repository, name), content);
+  const contract = 'checks/verify-turni.mjs';
+  await writeInitial(path.join(repository, contract), await fs.readFile(new URL('./verify-turni-contract.mjs', import.meta.url)));
   await fs.access(path.join(repository, '.git')).catch(async error => {
     if (error.code !== 'ENOENT') throw error;
     await run('git', ['init', '--initial-branch=main', repository], { windowsHide: true });
   });
   const configuration = path.join(pilot.data, 'managed-workflow.json');
+  const examplePath = fixture ? configuration : path.join(pilot.data, 'managed-workflow.example.json');
+  const pinnedNode = 'sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205';
   const example = {
     version: 1,
     projects: [{
@@ -51,16 +55,23 @@ export const prepareWorkflowEnvironment = async (pilot, root, { fixture = false,
         { path: 'docs/blueprint.md', role: 'blueprint' },
         { path: 'docs/design.md', role: 'design' },
       ],
-      context: ['src/turni.ts', 'src/labels.json'],
+      context: ['src/turni.ts', 'src/labels.json', contract],
       editable: ['src/turni.ts', 'src/labels.json'],
       checks: [
         { id: 'syntax', type: 'typescript', file: 'src/turni.ts' },
-        { id: 'regression-filter', type: 'typescript-expression', file: 'src/turni.ts', variable: 'activeShifts', expected: 'items.filter(item => item.active === true)' },
+        { id: 'regression-filter', type: 'docker', image: pinnedNode, args: ['node', '/workspace/' + contract] },
         { id: 'labels', type: 'json', file: 'src/labels.json' },
       ],
     }],
   };
-  await writeInitial(fixture ? configuration : path.join(pilot.data, 'managed-workflow.example.json'), JSON.stringify(example, null, 2));
+  await fs.access(examplePath).catch(async error => {
+    if (error.code !== 'ENOENT') throw error;
+    // The classic Docker image store and containerd can report different local IDs for one pinned registry image.
+    const inspected = await run('docker', ['image', 'inspect', 'node@' + pinnedNode, '--format', '{{.Id}}'], { timeout: 2500, windowsHide: true }).catch(() => null);
+    const localId = inspected?.stdout.trim();
+    if (localId && /^sha256:[a-f0-9]{64}$/.test(localId)) example.projects[0].checks.find(check => check.id === 'regression-filter').image = localId;
+    await writeInitial(examplePath, JSON.stringify(example, null, 2));
+  });
   if (fixture) {
     const settingsFile = path.join(pilot.data, 'config.json');
     const settings = JSON.parse(await fs.readFile(settingsFile, 'utf8'));

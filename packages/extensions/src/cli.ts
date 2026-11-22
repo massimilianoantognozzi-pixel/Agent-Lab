@@ -17,7 +17,9 @@ const __dirname = dirname(__filename);
 const EXTENSIONS_JSON_PATH = join(__dirname, '..', 'extensions.json');
 const EXTENSIONS_DIR = join(__dirname, '..', 'extensions');
 const PACKAGE_VERSION = require('../package.json').version;
-const CACHE_FILE = join(homedir(), '.aider-desk', 'extension-cache.json');
+const PROJECT_DATA_DIR = process.env.AIDER_DESK_DIR || '.aider-desk';
+const GLOBAL_DATA_DIR = process.env.AIDER_DESK_HOME_DIR || join(homedir(), PROJECT_DATA_DIR);
+const CACHE_FILE = join(GLOBAL_DATA_DIR, 'extension-cache.json');
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour in milliseconds
 const GITHUB_API_URL = 'https://api.github.com/repos/hotovo/aider-desk/contents/packages/extensions/extensions';
 
@@ -223,11 +225,11 @@ function getInstallDirectory(options: { global?: boolean; directory?: string }):
   }
 
   if (options.global) {
-    return join(homedir(), '.aider-desk', 'extensions');
+    return join(GLOBAL_DATA_DIR, 'extensions');
   }
 
   // Default to project-local extensions
-  return join(process.cwd(), '.aider-desk', 'extensions');
+  return join(process.cwd(), PROJECT_DATA_DIR, 'extensions');
 }
 
 function isUrl(str: string): boolean {
@@ -530,7 +532,7 @@ async function main() {
     .command('install [extension]')
     .description('Install AiderDesk extensions interactively, by ID, or from a URL')
     .option('-d, --directory <path>', 'Custom installation directory')
-    .option('-g, --global', 'Install to global directory (~/.aider-desk/extensions)')
+    .option('-g, --global', 'Install to the global extensions directory')
     .action(async (extension: string | undefined, options: { directory?: string; global?: boolean }) => {
       const targetDir = getInstallDirectory(options);
       const examples = await loadExtensions();

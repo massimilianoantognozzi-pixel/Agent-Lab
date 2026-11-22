@@ -127,7 +127,7 @@
     "nextResult": "Risultato successivo (F3)"
   },
   "onboarding": {
-    "title": "Benvenuto in AiderDesk",
+    "title": "Benvenuto in Agent-Lab",
     "description": "Orchestrazione IA trasparente e controllabile per sviluppatori professionisti. Più di un'interfaccia grafica per Aider: un sistema completo di orchestrazione che ti aiuta a:",
     "skipForNow": "Salta per ora",
     "finish": "Completa configurazione",
@@ -151,7 +151,7 @@
       "configure": "Configura"
     },
     "choice": {
-      "title": "Come userai AiderDesk?",
+      "title": "Come userai Agent-Lab?",
       "description": "Questa scelta adatta la configurazione e imposta la modalità predefinita. Puoi cambiarla in qualsiasi momento in Impostazioni → Generali.",
       "recommended": "Consigliato",
       "agent": {
@@ -196,7 +196,7 @@
       "description": "Configura i provider LLM da usare nelle modalità Aider e Agente. Puoi impostare chiavi API e altre opzioni per i vari provider.",
       "configureLater": "Se preferisci, puoi configurarli in seguito nelle Impostazioni.",
       "connectTitle": "Collega il tuo modello IA",
-      "connectDescription": "AiderDesk supporta diversi provider IA, tra cui OpenAI, Anthropic, Google Gemini e altri. Le chiavi API vengono conservate in modo sicuro sul tuo computer e non vengono mai condivise.",
+      "connectDescription": "Agent-Lab supporta diversi provider IA, tra cui OpenAI, Anthropic, Google Gemini e altri. Le chiavi API vengono conservate in modo sicuro sul tuo computer e non vengono mai condivise.",
       "advancedUsersNote": "Utenti esperti: potete configurare i provider anche tramite variabili d'ambiente nella sezione di configurazione di Aider del passaggio successivo.",
       "advancedSettings": "Impostazioni avanzate",
       "order": "Ordine",
@@ -219,7 +219,7 @@
     },
     "agent": {
       "title": "Scopri il tuo agente IA",
-      "description": "Scopri l'assistenza IA autonoma con la modalità Agente di AiderDesk. Il tuo agente IA può lavorare in autonomia per completare attività complesse.",
+      "description": "Scopri l'assistenza IA autonoma con la modalità Agente di Agent-Lab. Il tuo agente IA può lavorare in autonomia per completare attività complesse.",
       "capabilities": "Capacità dell'agente:",
       "autonomousPlanning": "Pianificazione autonoma delle attività:",
       "autonomousPlanningDesc": "Suddivide richieste complesse in passaggi gestibili e li esegue in modo sistematico.",
@@ -234,13 +234,13 @@
     },
     "complete": {
       "title": "Configurazione completata!",
-      "description": "Hai configurato AiderDesk. Ora puoi guidare lo sviluppo assistito dall'IA con piena trasparenza e controllo.",
+      "description": "Hai configurato Agent-Lab. Ora puoi guidare lo sviluppo assistito dall'IA con piena trasparenza e controllo.",
       "ready": "Fai clic su 'Completa configurazione' per iniziare a sviluppare.",
-      "success": "Configurazione iniziale completata! Benvenuto in AiderDesk.",
+      "success": "Configurazione iniziale completata! Benvenuto in Agent-Lab.",
       "mode": "Le nuove attività partiranno in modalità {{mode}}. Puoi cambiarla in qualsiasi momento in Impostazioni → Generali.",
       "modeAgent": "Agente",
       "modeCode": "Codice",
-      "customizeTitle": "Personalizza AiderDesk",
+      "customizeTitle": "Personalizza Agent-Lab",
       "customizeDescription": "C'è altro da esplorare. Ecco alcune sezioni da scoprire:",
       "general": {
         "title": "Impostazioni → Generali",
@@ -722,6 +722,22 @@
       "openEditor": "Apri editor"
     },
     "gui": "Aspetto",
+    "imageGeneration": {
+      "title": "Generazione immagini",
+      "off": "Disattivata",
+      "unavailable": "Profilo non disponibile",
+      "configure": "Nella Libreria modelli puoi configurare un profilo API OpenAI attivo con chiave propria e senza intestazioni personalizzate.",
+      "quality": "Qualità",
+      "size": "Dimensioni",
+      "credits": "Prima della conferma vedrai una stima del costo dell’output. Gli input e le immagini di riferimento possono consumare altri crediti API.",
+      "qualities": {
+        "low": "Bassa",
+        "medium": "Media",
+        "high": "Alta",
+        "xhigh": "Molto alta",
+        "max": "Massima"
+      }
+    },
     "voice": {
       "title": "Voce",
       "providerProfile": "Profilo del provider",
@@ -812,7 +828,7 @@
       "title": "Titolo della finestra"
     },
     "windowTitleTemplateLabel": "Formato del titolo della finestra",
-    "windowTitleTemplateTooltip": "Usa {project} per il nome del progetto e {task} per il nome dell'attività corrente. Esempio: 'AiderDesk - {project}' o '{project} - {task}'",
+    "windowTitleTemplateTooltip": "Usa {project} per il nome del progetto e {task} per il nome dell'attività corrente. Esempio: 'Agent-Lab - {project}' o '{project} - {task}'",
     "agent": {
       "tabs": {
         "general": "Generali",
@@ -1030,6 +1046,7 @@
       "credentialsPlaceholder": "Inserisci il JSON delle credenziali Google Cloud"
     },
     "about": {
+      "baseProject": "Basato su AiderDesk 0.88.0 · Licenza Apache 2.0",
       "version": "Versione",
       "notAvailable": "N/D",
       "checkForUpdates": "Verifica aggiornamenti",
@@ -1079,7 +1096,7 @@
       "noProxyDescription": "Elenco di host o domini che non devono usare il proxy, separati da virgole. Supporta nomi host esatti, indirizzi IP e domini con caratteri jolly (es. .example.com)"
     },
     "server": {
-      "description": "Abilita il server sulla porta 24337 per accedere ad AiderDesk da applicazioni esterne",
+      "description": "Consente ad applicazioni esterne di accedere al server locale di Agent-Lab.",
       "status": "Stato",
       "running": "In esecuzione",
       "enableBasicAuth": "Abilita autenticazione di base",
@@ -1271,7 +1288,7 @@
     "openLocalProject": "Apri locale",
     "cloneFromGit": "Clona da Git",
     "repositoryUrlPlaceholder": "es. https://github.com/owner/repo.git o git@github.com:owner/repo.git",
-    "cloneDestinationPlaceholder": "predefinita: ~/.aider-desk/projects",
+    "cloneDestinationPlaceholder": "Lascia vuoto per usare la cartella progetti del profilo",
     "repositoryUrlLabel": "URL del repository",
     "cloneDestinationLabel": "Cartella di destinazione",
     "cloningProject": "Clonazione del repository...",

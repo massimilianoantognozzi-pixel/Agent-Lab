@@ -70,6 +70,8 @@ import { extractProposedPlan, planResponseText, ProposedPlanParser } from './pro
 import { createMemoryToolset } from './tools/memory';
 import { createSkillsToolset } from './tools/skills';
 import { createGeneralKnowledgeTools } from './tools/general-knowledge';
+import { createComputerUseTools } from './tools/computer-use';
+import { ProjectImageJobs } from './tools/project-images';
 import { DesktopStopBoundary, checkoutIsClosing } from './desktop-stop';
 import { McpManager } from './mcp-manager';
 import { ApprovalManager } from './tools/approval-manager';
@@ -122,7 +124,7 @@ import { createSubagentsToolset } from '@/agent/tools/subagents';
 import { AgentProfileManager } from '@/agent/agent-profile-manager';
 import { McpConfigManager } from '@/agent/mcp-config-manager';
 import { ExtensionManager } from '@/extensions/extension-manager';
-import { assertLabToolInput, isAllowedLabToolName, isLabMode, isGeneralMode } from '@/lab-mode';
+import { assertLabToolInput, isAllowedLabToolName, isLabMode, isGeneralMode, isComputerUseDesktop } from '@/lab-mode';
 import { beginGeneralKnowledgeRun, observeGeneralToolResult, compileGeneralKnowledge, endGeneralKnowledgeRun } from '@/general-knowledge';
 import { isLocalLabEnabled } from '@/lab-local-model';
 import { isFreelanceEnabled } from '@/lab-projects/policy';
@@ -213,8 +215,16 @@ const isContextOverflow = (error: unknown): boolean => {
   );
 };
 
+// SDK errors may carry full request bodies, including a shared window's text and images.
+const protectAgentContent = () => isGeneralMode() || isComputerUseDesktop();
+const diagnosticError = (error: unknown) =>
+  protectAgentContent()
+    ? { name: error instanceof Error ? error.name : typeof error, status: APICallError.isInstance(error) ? error.statusCode : undefined }
+    : error;
+
 export class Agent {
   readonly desktopStop = new DesktopStopBoundary();
+  private computerSessions = new Set<() => Promise<void>>();
   get hasDesktopProcesses() {
     return this.pendingCommands.size > 0;
   }
@@ -257,6 +267,7 @@ export class Agent {
   private getTelemetrySettings(): TelemetryOptions {
     return {
       isEnabled: true,
+      ...(protectAgentContent() ? { recordInputs: false, recordOutputs: false } : {}),
       metadata: {
         // PostHog specific metadata
         posthog_distinct_id: this.store.getUserId(),
@@ -559,6 +570,8 @@ export class Agent {
     createGoal?: CreateGoalInTurn,
     goalUsage?: AgentGoalUsage,
     executedGoalTools?: Set<string>,
+    onComputerSession?: (release: () => Promise<void>) => void,
+    imageJobs?: ProjectImageJobs,
   ): Promise<ToolSet> {
     logger.debug('getAvailableTools', {
       enabledServers: profile.enabledServers,
@@ -568,6 +581,9 @@ export class Agent {
     const approvalManager = new ApprovalManager(task, profile);
 
     const toolSet: ToolSet = {};
+    if (imageJobs) {
+      Object.assign(toolSet, imageJobs.tools);
+    }
     let nativeShell: ToolSet[string] | undefined;
     let nativeShellPoll: ToolSet[string] | undefined;
     let nativeShellPollExecute: ToolSet[string]['execute'] | null = null;
@@ -672,6 +688,12 @@ export class Agent {
     Object.assign(toolSet, helperTools);
     if (getGoalTurn) {
       Object.assign(toolSet, createAgentGoalTools(getGoalTurn, createGoal));
+    }
+    if (isComputerUseDesktop() && !profile.isSubagent && mode !== CODEX_PLAN_MODE && abortSignal) {
+      Object.assign(
+        toolSet,
+        createComputerUseTools(task, provider.id + '/' + model, AbortSignal.any([abortSignal, this.desktopStop.signal]), onComputerSession),
+      );
     }
     if (isGeneralMode()) {
       Object.assign(
@@ -1139,27 +1161,29 @@ export class Agent {
       logger.info('User request message created:', {
         id: userRequestMessage.id,
         contentType: typeof userRequestMessage.content === 'string' ? 'string' : 'parts',
-        ...(typeof userRequestMessage.content === 'string'
-          ? { contentPreview: userRequestMessage.content.substring(0, 200) }
-          : {
-              parts: (
-                userRequestMessage.content as Array<{
-                  type: string;
-                  text?: string;
-                  mediaType?: string;
-                  data?: string;
-                }>
-              ).map((part) => ({
-                type: part.type,
-                ...(part.type === 'text' ? { textPreview: part.text?.substring(0, 100) } : {}),
-                ...(part.type === 'file'
-                  ? {
-                      mediaType: part.mediaType,
-                      dataPreview: typeof part.data === 'string' ? part.data.substring(0, 80) : typeof part.data,
-                    }
-                  : {}),
-              })),
-            }),
+        ...(protectAgentContent()
+          ? {}
+          : typeof userRequestMessage.content === 'string'
+            ? { contentPreview: userRequestMessage.content.substring(0, 200) }
+            : {
+                parts: (
+                  userRequestMessage.content as Array<{
+                    type: string;
+                    text?: string;
+                    mediaType?: string;
+                    data?: string;
+                  }>
+                ).map((part) => ({
+                  type: part.type,
+                  ...(part.type === 'text' ? { textPreview: part.text?.substring(0, 100) } : {}),
+                  ...(part.type === 'file'
+                    ? {
+                        mediaType: part.mediaType,
+                        dataPreview: typeof part.data === 'string' ? part.data.substring(0, 80) : typeof part.data,
+                      }
+                    : {}),
+                })),
+              }),
       });
     }
 
@@ -1204,15 +1228,20 @@ export class Agent {
 
     this.telemetryManager.captureAgentRun(profile, task.task, Object.keys(this.mcpConfigManager.getMergedServers(task.getProjectDir())).length);
 
-    logger.debug('runAgent', {
-      taskId: task.taskId,
-      profile,
-      prompt,
-      promptContext,
-      contextMessages,
-      contextFiles,
-      systemPrompt: systemPrompt?.substring(0, 100),
-    });
+    logger.debug(
+      'runAgent',
+      protectAgentContent()
+        ? { taskId: task.taskId, messageCount: contextMessages.length }
+        : {
+            taskId: task.taskId,
+            profile,
+            prompt,
+            promptContext,
+            contextMessages,
+            contextFiles,
+            systemPrompt: systemPrompt?.substring(0, 100),
+          },
+    );
 
     const shouldCreateAbortController = !modelCallSettings.abortSignal;
     let controllerId: string | null = null;
@@ -1293,7 +1322,18 @@ export class Agent {
 
     const knowledgeRunId = isGeneralMode() ? uuidv4() : undefined;
     const toolLifetime = new AbortController();
+    let closeComputer: (() => Promise<void>) | undefined;
     const toolSignal = effectiveAbortSignal ? AbortSignal.any([effectiveAbortSignal, toolLifetime.signal]) : toolLifetime.signal;
+    const imageJobs =
+      settings.imageGeneration &&
+      !!process.versions.electron &&
+      process.env.AIDER_DESK_HEADLESS !== 'true' &&
+      !isLabMode() &&
+      !isFreelanceEnabled() &&
+      profile.toolApprovals?.['images---generate'] !== ToolApprovalState.Never &&
+      ((mode === 'agent' && !profile.isSubagent && !promptContext?.group) || (mode === 'subagent' && ['opencode-designer', 'designer'].includes(profile.id)))
+        ? new ProjectImageJobs(task, this.store, AbortSignal.any([toolSignal, this.desktopStop.signal]), this.desktopStop)
+        : undefined;
     const executedGoalTools = new Set<string>();
     const toolSet = await this.getAvailableTools(
       task,
@@ -1324,6 +1364,11 @@ export class Agent {
         : undefined,
       goalUsage,
       executedGoalTools,
+      (release) => {
+        closeComputer = release;
+        this.computerSessions.add(release);
+      },
+      imageJobs,
     );
 
     logger.info(`Running prompt with ${Object.keys(toolSet).length} tools.`);
@@ -1396,10 +1441,15 @@ export class Agent {
         } else if (InvalidToolInputError.isInstance(error)) {
           // If the arguments are invalid, return a call to the helper tool
           // to inform the LLM about the argument error.
-          logger.warn(`Invalid input for tool: ${error.toolName}`, {
-            input: error.toolInput,
-            error: error.message,
-          });
+          logger.warn(
+            `Invalid input for tool: ${error.toolName}`,
+            protectAgentContent()
+              ? { name: error.name }
+              : {
+                  input: error.toolInput,
+                  error: error.message,
+                },
+          );
           return {
             ...toolCall,
             toolName: `helpers${TOOL_GROUP_NAME_SEPARATOR}invalid_tool_arguments`,
@@ -1451,7 +1501,9 @@ export class Agent {
           if (goalUsage) {
             await goalUsage.onUsage(uncachedGoalTokens(result.totalUsage), false);
           }
-          logger.debug('Repair tool call result:', result);
+          if (!protectAgentContent()) {
+            logger.debug('Repair tool call result:', result);
+          }
           const newToolCall = result.toolCalls.find((newToolCall) => newToolCall.toolName === toolCall.toolName);
           return newToolCall != null
             ? {
@@ -1461,7 +1513,7 @@ export class Agent {
               }
             : null; // Return null if the LLM couldn't repair the call
         } catch (repairError) {
-          logger.error('Error during tool call repair:', repairError);
+          logger.error('Error during tool call repair:', diagnosticError(repairError));
           return null;
         }
       };
@@ -1723,7 +1775,7 @@ export class Agent {
             return;
           }
           if (finishReason === 'error') {
-            logger.error('Error during prompt:', { stepResult });
+            logger.error('Error during prompt:', protectAgentContent() ? { finishReason } : { stepResult });
             iterationError ??= new Error('Il provider ha terminato il passaggio con un errore.');
             return;
           }
@@ -1860,7 +1912,7 @@ export class Agent {
             // The AI SDK swallows errors thrown in onStepEnd callbacks, so
             // capture them here to stop the loop instead of silently re-sending
             // the same prompt on the next iteration
-            logger.error('Error processing step result:', error);
+            logger.error('Error processing step result:', diagnosticError(error));
             iterationError = error;
             if (typeof error === 'string') {
               task.addLogMessage('error', error, false, promptContext);
@@ -1956,7 +2008,7 @@ export class Agent {
           if (!budgetWrapUp || effectiveAbortSignal.aborted) {
             throw error;
           }
-          logger.warn('Goal budget summary could not be prepared:', error);
+          logger.warn('Goal budget summary could not be prepared:', diagnosticError(error));
           break;
         }
         sampledGoal = goalTurn;
@@ -1987,7 +2039,7 @@ export class Agent {
                 return;
               }
 
-              logger.error('Error during prompt:', { error });
+              logger.error('Error during prompt:', diagnosticError(error));
               iterationError = error;
               if (isContextOverflow(error)) {
                 return;
@@ -2044,7 +2096,7 @@ export class Agent {
           };
           try {
             for await (const chunk of result.stream) {
-              logger.debug('Chunk:', { chunk, responseMessageIndex });
+              logger.debug('Chunk:', protectAgentContent() ? { type: chunk.type, responseMessageIndex } : { chunk, responseMessageIndex });
 
               const responseMessageId = !planParser && responseMessageIndex > 0 ? `${currentResponseId}-${responseMessageIndex}` : currentResponseId;
               if (chunk.type === 'text-start') {
@@ -2137,7 +2189,7 @@ export class Agent {
           effectiveAbortSignal.throwIfAborted();
           if (budgetWrapUp) {
             this.removeUnfinishedStreamingMessages(task, streamingMessageIds);
-            logger.warn('Goal budget summary could not be generated:', iterationError);
+            logger.warn('Goal budget summary could not be generated:', diagnosticError(iterationError));
             break;
           }
           if (replaySafe && !recoveringContext && isContextOverflow(iterationError)) {
@@ -2148,7 +2200,7 @@ export class Agent {
           }
           const retryable = canRetryProvider(iterationError);
           if (waitingForConnection && continueGoal && (retryable || !APICallError.isInstance(iterationError))) {
-            logger.warn('Provider connection could not be established:', iterationError);
+            logger.warn('Provider connection could not be established:', diagnosticError(iterationError));
             this.removeUnfinishedStreamingMessages(task, streamingMessageIds);
             task.addLogMessage('loading', 'Riconnessione al provider in attesa della rete…', false, promptContext);
             await wait(connectionRetryDelay, undefined, { signal: effectiveAbortSignal });
@@ -2156,7 +2208,7 @@ export class Agent {
             iterationCount--;
             continue;
           }
-          logger.error('Error during iteration:', iterationError);
+          logger.error('Error during iteration:', diagnosticError(iterationError));
           const canRetry = continueGoal && providerRetryCount < maxProviderRetries && retryable;
           if (replaySafe && canRetry) {
             const delay = retryDelay(iterationError, providerRetryCount++);
@@ -2226,6 +2278,15 @@ export class Agent {
 
         if (effectiveAbortSignal?.aborted) {
           effectiveAbortSignal.throwIfAborted();
+        }
+
+        const graphicResults = await imageJobs?.notifications(finishReason === 'stop');
+        if (graphicResults?.length) {
+          messages.push(...(graphicResults as ModelMessage[]));
+          resultMessages.push(...graphicResults);
+          if (finishReason === 'stop') {
+            continue;
+          }
         }
 
         const activeCommands =
@@ -2413,6 +2474,9 @@ export class Agent {
         }
       }
 
+      if (imageJobs) {
+        resultMessages.push(...(await imageJobs.notifications(true)));
+      }
       if (isGeneralMode() && (await canSampleWithinGoalBudget())) {
         try {
           const entry = await compileGeneralKnowledge(
@@ -2482,7 +2546,7 @@ export class Agent {
         return resultMessages;
       }
 
-      logger.error('Error running prompt:', error);
+      logger.error('Error running prompt:', diagnosticError(error));
 
       if (error instanceof Error && (error.message.includes('API key') || error.message.includes('credentials'))) {
         task.addLogMessage('error', `${error.message}. Configure credentials in the Model Library.`, false, promptContext);
@@ -2514,6 +2578,13 @@ export class Agent {
           taskId: task.taskId,
           controllerId: controllerId,
         });
+      }
+      if (closeComputer) {
+        try {
+          await closeComputer();
+        } finally {
+          this.computerSessions.delete(closeComputer);
+        }
       }
     }
 
@@ -2834,7 +2905,7 @@ export class Agent {
       modelName,
       reasoning: reasoning ?? 'provider-default',
       systemPrompt: systemPrompt.substring(0, 100),
-      prompt: prompt.substring(0, 100),
+      ...(protectAgentContent() ? { promptLength: prompt.length } : { prompt: prompt.substring(0, 100) }),
     });
 
     messages.push({
@@ -2875,7 +2946,7 @@ export class Agent {
         logger.info('Generating text aborted by user');
         return undefined;
       }
-      logger.error('Error generating text:', error);
+      logger.error('Error generating text:', diagnosticError(error));
       throw error;
     } finally {
       if (newController) {
@@ -2895,6 +2966,7 @@ export class Agent {
     abortable = true,
     abortSignal?: AbortSignal,
     sessionId?: string,
+    reasoning?: Reasoning,
   ): Promise<T | undefined> {
     const [providerId, modelName] = extractProviderModel(modelId);
     const providers = this.modelManager.getProviders();
@@ -2906,8 +2978,8 @@ export class Agent {
     const settings = this.store.getSettings();
     const model = await this.modelManager.createLlm(provider, modelName, settings, projectDir, undefined, systemPrompt, undefined, sessionId);
     const cacheControl = this.modelManager.getCacheControl(provider, modelName);
-    const providerOptions = this.modelManager.getProviderOptions(provider, modelName);
-    const providerParameters = this.modelManager.getProviderParameters(provider, modelName);
+    const providerOptions = this.modelManager.getProviderOptions(provider, modelName, reasoning);
+    const providerParameters = this.modelManager.getProviderParameters(provider, modelName, reasoning);
 
     const controllerId = uuidv4();
     const newController = abortable ? new AbortController() : null;
@@ -2921,7 +2993,7 @@ export class Agent {
       providerName: provider.provider.name,
       modelName,
       systemPrompt: systemPrompt.substring(0, 100),
-      prompt: prompt.substring(0, 100),
+      ...(protectAgentContent() ? { promptLength: prompt.length } : { prompt: prompt.substring(0, 100) }),
     });
 
     messages.push({
@@ -2935,6 +3007,7 @@ export class Agent {
         model,
         output: Output.object({ schema }),
         instructions: systemPrompt,
+        ...(reasoning !== undefined && { reasoning }),
         messages: await prepareMessagesForModel(messages as ModelMessage[], cacheControl),
         abortSignal: effectiveAbortSignal,
         providerOptions,
@@ -2948,7 +3021,7 @@ export class Agent {
         logger.info('Generating object aborted by user');
         return undefined;
       }
-      logger.error('Error generating object:', error);
+      logger.error('Error generating object:', diagnosticError(error));
       throw error;
     } finally {
       if (newController) {
@@ -3027,9 +3100,14 @@ export class Agent {
     this.invalidateCommandVerifications();
     this.goalOwnedCommands.clear();
     this.commandSession.controller.abort();
+    const closing = await Promise.allSettled([...this.computerSessions].map((close) => close()));
     await Promise.allSettled(this.pendingCommands);
     this.commandSession.commands.clear();
     this.commandSession.controller = new AbortController();
+    const failed = closing.find((result) => result.status === 'rejected');
+    if (failed) {
+      throw new Error('Chiusura del computer use non confermata.', { cause: failed.reason });
+    }
   }
 
   async stopAtDesktopBoundary(): Promise<void> {
@@ -3070,8 +3148,7 @@ export class Agent {
   ): Promise<ContextMessage[]> {
     logger.info(`Step finished. Reason: ${finishReason} (${rawFinishReason})`, {
       currentResponseId,
-      reasoningText: reasoningText?.substring(0, 100), // Log truncated reasoning
-      text: text?.substring(0, 100), // Log truncated text
+      ...(protectAgentContent() ? {} : { reasoningText: reasoningText?.substring(0, 100), text: text?.substring(0, 100) }),
       toolCalls: toolCalls?.map((tc) => tc.toolName),
       toolResults: toolResults?.map((tr) => tr.toolName),
       usage: {

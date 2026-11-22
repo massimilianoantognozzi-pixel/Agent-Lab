@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 
 import type { CompactionStudioStateMap, CompactionStudioTaskState } from './types';
 
-const STATE_DIR = '.aider-desk';
+const STATE_DIR = process.env.AIDER_DESK_DIR || '.aider-desk';
 const STATE_FILE = 'compaction-studio.json';
 
 const getStatePath = (baseDir: string): string => join(baseDir, STATE_DIR, STATE_FILE);

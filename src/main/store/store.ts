@@ -31,6 +31,7 @@ import { migrateV11ToV12 } from './migrations/v11-to-v12';
 import { migrateV12ToV13 } from './migrations/v12-to-v13';
 
 import { getDefaultProjectSettings } from '@/utils';
+import { isLocalAgentLabInstall } from '@/desktop-product';
 import logger from '@/logger';
 import { migrateProvidersV13toV14 } from '@/store/migrations/v13-to-v14';
 import { migrateSettingsV14toV15 } from '@/store/migrations/v14-to-v15';
@@ -43,7 +44,7 @@ import { migrateProvidersV20toV21 } from '@/store/migrations/v20-to-v21';
 import { migrateSettingsV21toV22 } from '@/store/migrations/v21-to-v22';
 
 export const DEFAULT_SETTINGS: SettingsData = {
-  language: 'en',
+  language: isLocalAgentLabInstall() ? 'it' : 'en',
   startupMode: ProjectStartMode.Empty,
   zoomLevel: 1,
   notificationsEnabled: false,
@@ -51,7 +52,7 @@ export const DEFAULT_SETTINGS: SettingsData = {
   font: 'Sono',
   renderMarkdown: true,
   fullMessageRendering: false,
-  aiderDeskAutoUpdate: true,
+  aiderDeskAutoUpdate: !isLocalAgentLabInstall(),
   messageViewMode: MessageViewMode.Compact,
   showMessageMap: true,
   diffViewMode: DiffViewMode.SideBySide,
@@ -66,8 +67,8 @@ export const DEFAULT_SETTINGS: SettingsData = {
   },
   preferredModels: [],
   llmProviders: {},
-  telemetryEnabled: true,
-  windowTitleTemplate: 'AiderDesk - {project}',
+  telemetryEnabled: !isLocalAgentLabInstall(),
+  windowTitleTemplate: 'Agent-Lab - {project}',
   promptBehavior: {
     suggestionMode: SuggestionMode.Automatically,
     suggestionDelay: 100,

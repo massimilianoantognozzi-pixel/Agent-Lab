@@ -266,6 +266,36 @@ export class ContextManager {
     return [...this.files];
   }
 
+  restoreTurnMessages(contextMessages: ContextMessage[]) {
+    // Checkpoints carry text-only tool results. Keep desktop receipts saved while the model or a Designer was working.
+    const imageResults = this.messages.filter((message) => message.role === 'tool' && message.imagePreview);
+    if (!imageResults.length) {
+      this.setContextMessages(contextMessages);
+      return;
+    }
+    const calls = new Set(
+      imageResults.flatMap((message) =>
+        message.role === 'tool' ? message.content.filter((part) => part.toolName === 'images---result').map((part) => part.toolCallId) : [],
+      ),
+    );
+    const saved = new Map(
+      this.messages
+        .filter(
+          (message) =>
+            (message.role === 'assistant' || message.role === 'tool') &&
+            Array.isArray(message.content) &&
+            message.content.some((part) => (part.type === 'tool-result' || part.type === 'tool-call') && calls.has(part.toolCallId)),
+        )
+        .map((message) => [message.id, message]),
+    );
+    const restored = contextMessages.map((message) => {
+      const local = saved.get(message.id);
+      saved.delete(message.id);
+      return local ?? message;
+    });
+    this.setContextMessages([...restored, ...saved.values()]);
+  }
+
   setContextMessages(contextMessages: ContextMessage[], save = true) {
     logger.debug('Setting task context messages', {
       taskId: this.taskId,
@@ -1021,6 +1051,16 @@ export class ContextManager {
 
   public getContextMessagesData(contextMessages: ContextMessage[] = this.messages): (UserMessageData | ResponseCompletedData | ToolData)[] {
     const messagesData: (UserMessageData | ResponseCompletedData | ToolData)[] = [];
+    const desktopImageReceipts = new Set<string>();
+    for (const message of contextMessages) {
+      if (message.role === 'tool' && message.imagePreview) {
+        for (const part of message.content) {
+          if (part.toolName === 'images---result') {
+            desktopImageReceipts.add(part.toolCallId);
+          }
+        }
+      }
+    }
 
     for (const message of contextMessages) {
       const processToolResult = (part: ToolResultPart) => {
@@ -1029,9 +1069,18 @@ export class ContextManager {
         const toolMessage = messagesData.find((message) => message.type === 'tool' && message.id === part.toolCallId) as ToolData | undefined;
 
         if (toolMessage) {
-          toolMessage.response = JSON.stringify(
-            part.output.type === 'error-text' ? { isError: true, content: [{ type: 'text', text: part.output.value }] } : part.output.value,
-          );
+          if (part.toolName === 'images---result' && message.role === 'tool' && message.imagePreview && part.output.type === 'text') {
+            toolMessage.response = JSON.stringify({
+              content: [
+                { type: 'text', text: part.output.value },
+                { type: 'image', mimeType: 'image/png', data: message.imagePreview },
+              ],
+            });
+          } else {
+            toolMessage.response = JSON.stringify(
+              part.output.type === 'error-text' ? { isError: true, content: [{ type: 'text', text: part.output.value }] } : part.output.value,
+            );
+          }
           toolMessage.usageReport = message.usageReport || toolMessage.usageReport;
           toolMessage.promptContext = promptContext;
           toolMessage.finished = true;
@@ -1113,6 +1162,9 @@ export class ContextManager {
                   // Process tool-call parts
                   for (const subPart of subMessage.content) {
                     if (subPart.type === 'tool-call' && subPart.toolCallId) {
+                      if (subPart.toolName === 'images---result' && desktopImageReceipts.has(subPart.toolCallId)) {
+                        continue;
+                      }
                       const [subServerName, subToolName] = extractServerNameToolName(subPart.toolName);
                       const toolData: ToolData = {
                         type: 'tool',
@@ -1146,6 +1198,9 @@ export class ContextManager {
               } else if (subMessage.role === 'tool') {
                 for (const subPart of subMessage.content) {
                   if (subPart.type === 'tool-result') {
+                    if (subPart.toolName === 'images---result' && desktopImageReceipts.has(subPart.toolCallId)) {
+                      continue;
+                    }
                     const toolMessage = messagesData.find((message) => message.type === 'tool' && message.id === subPart.toolCallId) as ToolData | undefined;
                     if (toolMessage) {
                       toolMessage.response = JSON.stringify(subPart.output.value);

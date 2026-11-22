@@ -1,17 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { digest } from './policy';
+import { verifiedGitleaks } from '@/utils/verified-gitleaks';
 
 const execute = promisify(execFile);
-const executable = path.join(os.homedir(), 'go', 'bin', 'gitleaks.exe');
 export const checkSecrets = async (source: string, job: string, signal?: AbortSignal): Promise<void> => {
-  if (digest(await fs.readFile(executable)) !== '17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c') {
-    throw new Error('Gitleaks non disponibile nella versione verificata.');
-  }
+  const executable = await verifiedGitleaks();
   const config = path.join(job, 'gitleaks-controller.toml');
   await fs.writeFile(config, '[extend]\nuseDefault = true\n', { flag: 'wx' });
   const report = path.join(job, 'secret-check.json');

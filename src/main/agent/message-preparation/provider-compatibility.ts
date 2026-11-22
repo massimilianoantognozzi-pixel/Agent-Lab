@@ -1,8 +1,37 @@
+import { toolModelMessageSchema } from 'ai';
+import { z } from 'zod';
+
 import { convertMcpResultToModelOutput } from '../utils';
 
 import type { ModelMessage, ToolResultPart, FilePart, TextPart, UserModelMessage } from 'ai';
 
 import logger from '@/logger';
+
+const legacyMedia = z.strictObject({ type: z.literal('media'), data: z.string(), mediaType: z.string() });
+const isLegacyMedia = (part: { type: string } | null) => part?.type === 'media';
+
+// Only the cloned conversation is changed. SDK v5 stored inline media before the tagged file format existed.
+export const normalizeLegacyToolMedia = (messages: ModelMessage[]): void => {
+  for (const message of messages) {
+    if (message.role !== 'tool' || !Array.isArray(message.content)) {
+      continue;
+    }
+    for (const part of message.content) {
+      if (part.type !== 'tool-result' || part.output?.type !== 'content' || !Array.isArray(part.output.value) || !part.output.value.some(isLegacyMedia)) {
+        continue;
+      }
+      part.output.value = part.output.value.map((item) => {
+        if (!isLegacyMedia(item)) {
+          return item;
+        }
+        const media = legacyMedia.parse(item);
+        return { type: 'file', data: { type: 'data', data: media.data }, mediaType: media.mediaType };
+      });
+      // Validate the upgraded receipt before duplicate filtering or image extraction can remove another invalid part.
+      toolModelMessageSchema.parse({ role: 'tool', content: [part] });
+    }
+  }
+};
 
 /**
  * Converts tool results containing image data (from MCP tools that return

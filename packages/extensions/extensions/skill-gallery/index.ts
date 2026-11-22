@@ -13,10 +13,11 @@ const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const HOME_DIR = process.env.AIDER_DESK_HOME_DIR || join(homedir(), '.aider-desk');
+const PROJECT_DATA_DIR = process.env.AIDER_DESK_DIR || '.aider-desk';
+const HOME_DIR = process.env.AIDER_DESK_HOME_DIR || join(homedir(), PROJECT_DATA_DIR);
 const GLOBAL_SKILLS_DIR = join(HOME_DIR, 'skills');
 const CACHE_DIR = join(HOME_DIR, 'cache', 'skill-gallery');
-const PROJECT_SKILLS_SUBPATH = join('.aider-desk', 'skills');
+const PROJECT_SKILLS_SUBPATH = join(PROJECT_DATA_DIR, 'skills');
 
 const galleryJsx = readFileSync(join(__dirname, './ui/SkillGallery.jsx'), 'utf-8');
 

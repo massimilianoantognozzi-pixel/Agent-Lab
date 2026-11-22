@@ -23,7 +23,7 @@ import { simpleGit } from 'simple-git';
 import type { GitAskpassManager } from '@/git/git-askpass-manager';
 
 import { execWithShellPath, withLock } from '@/utils';
-import { AIDER_DESK_TASKS_DIR } from '@/constants';
+import { AIDER_DESK_DIR, AIDER_DESK_TASKS_DIR } from '@/constants';
 import logger from '@/logger';
 import { isFileNotFoundError } from '@/utils/errors';
 
@@ -857,25 +857,31 @@ export class GitManager {
 
   private async ensureGitignoreEntry(projectPath: string): Promise<void> {
     const gitignorePath = path.join(projectPath, '.gitignore');
+    const privateDir = path
+      .normalize(AIDER_DESK_DIR)
+      .split(path.sep)
+      .join('/')
+      .replace(/\/+$/, '')
+      .replace(/[\\*?[\]!#]/g, '\\$&');
 
     try {
       const existing = await fs.readFile(gitignorePath, 'utf8').catch(() => null);
 
       if (existing === null) {
-        await fs.writeFile(gitignorePath, '.aider-desk/\n', 'utf8');
+        await fs.writeFile(gitignorePath, privateDir + '/\n', 'utf8');
         return;
       }
 
       const hasEntry = existing.split('\n').some((line) => {
         const trimmed = line.trim();
-        return trimmed === '.aider-desk/' || trimmed === '.aider-desk';
+        return trimmed === privateDir + '/' || trimmed === privateDir;
       });
       if (!hasEntry) {
         const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-        await fs.appendFile(gitignorePath, `${separator}.aider-desk/\n`, 'utf8');
+        await fs.appendFile(gitignorePath, `${separator}${privateDir}/\n`, 'utf8');
       }
     } catch (error) {
-      logger.warn('Failed to add .aider-desk/ to .gitignore:', { error });
+      logger.warn('Failed to add the project data directory to .gitignore:', { error });
     }
   }
 

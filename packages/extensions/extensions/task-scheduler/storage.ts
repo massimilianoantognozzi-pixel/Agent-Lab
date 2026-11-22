@@ -3,7 +3,7 @@ import { join, dirname } from 'node:path';
 
 import type { ScheduleMap } from './types';
 
-const SCHEDULES_DIR = '.aider-desk';
+const SCHEDULES_DIR = process.env.AIDER_DESK_DIR || '.aider-desk';
 const SCHEDULES_FILE = 'schedules.json';
 
 const getSchedulesPath = (baseDir: string): string => join(baseDir, SCHEDULES_DIR, SCHEDULES_FILE);

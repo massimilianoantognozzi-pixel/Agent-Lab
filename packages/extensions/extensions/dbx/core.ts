@@ -18,7 +18,7 @@ export const CONTAINER_STARTUP_TIMEOUT_MS = 120_000;
 
 // Persistent server-side storage lives OUTSIDE the extension folder so it
 // survives extension updates/reinstalls and lives next to the dbx db.
-export const getDataDir = (): string => join(homedir(), '.aider-desk', 'extension-state', 'dbx', 'dbx-data');
+export const getDataDir = (): string => join(process.env.AIDER_DESK_HOME_DIR || join(homedir(), process.env.AIDER_DESK_DIR || '.aider-desk'), 'extension-state', 'dbx', 'dbx-data');
 
 export enum ContainerState {
   Idle = 'idle',

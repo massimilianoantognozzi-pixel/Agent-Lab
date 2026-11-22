@@ -1,0 +1,9 @@
+Agent-Lab, basato su AiderDesk
+
+Agent-Lab deriva da AiderDesk 0.88.0 di Hotovo, distribuito con Apache License 2.0.
+Sorgente originale: https://github.com/hotovo/aider-desk/tree/v0.88.0
+Sorgente del fork: https://github.com/massimilianoantognozzi-pixel/Agent-Lab
+
+La confezione Windows del fork utilizza una propria identità applicativa.
+Il testo integrale della licenza originale è incluso nell'applicazione come LICENSE e nelle risorse come LICENSE-Agent-Lab.txt.
+Restano validi gli avvisi e i crediti dei rispettivi progetti.

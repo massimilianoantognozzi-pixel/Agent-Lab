@@ -907,7 +907,7 @@ export const ProjectView = ({ projectDir, isProjectActive = false, initialTaskId
               {(() => {
                 const projectName = projectDir.split(/[\\/]/).pop() || '';
                 const taskName = activeTask?.name || '';
-                const template = windowTitleTemplate ?? 'AiderDesk - {project}';
+                const template = windowTitleTemplate ?? 'Agent-Lab - {project}';
                 return template.replace('{project}', projectName).replace('{task}', taskName);
               })()}
             </title>

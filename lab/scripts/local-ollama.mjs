@@ -11,8 +11,11 @@ const runtime = path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Ollama'
 const baseURL = 'http://127.0.0.1:11435';
 const model = 'devstral-small-2:24b-instruct-2512-q4_K_M';
 const expectedModelDigest = '24277f07f62db8f9cb68e9dfc679ea1818a7fbac47a50eff0a701d3f645b63c8';
-// Ollama 0.40.16: official Windows x64 release member and valid Authenticode signature verified 2026-11-15.
-const expectedRuntimeDigest = '4ccefcbfecc50fb6526471adabbc20869dd614e29e351120b15083cb174b0b8a';
+// Official, signed Windows x64 release members from Ollama 0.40.16 and 0.40.17.
+const expectedRuntimeDigests = new Set([
+  '4ccefcbfecc50fb6526471adabbc20869dd614e29e351120b15083cb174b0b8a',
+  '929941de0cd0ef8fb95f9f2c7fe8f9645897942a6492539915a5383066b47207',
+]);
 const home = path.join(labRoot, 'profile', 'ollama-local-home');
 const modelDir = path.join(labRoot, 'profile', 'local-models');
 const artifactRoot = path.join(labRoot, 'artifacts', 'local-devstral');
@@ -25,7 +28,7 @@ for (const dir of [home, modelDir, artifacts, work, path.join(home, 'AppData', '
 const mode = process.argv[2];
 if (!['pull', 'probe', 'code', 'fix', 'serve'].includes(mode)) throw new Error('Use pull, probe, code, fix or serve.');
 if (!fs.existsSync(runtime)) throw new Error('Existing signed Ollama runtime not found. No installer will be run.');
-if (createHash('sha256').update(fs.readFileSync(runtime)).digest('hex') !== expectedRuntimeDigest) {
+if (!expectedRuntimeDigests.has(createHash('sha256').update(fs.readFileSync(runtime)).digest('hex'))) {
   throw new Error('Ollama binary changed since signature verification; recheck provenance before running.');
 }
 const runLog = path.join(work, `server-${Date.now()}-${process.pid}.log`);

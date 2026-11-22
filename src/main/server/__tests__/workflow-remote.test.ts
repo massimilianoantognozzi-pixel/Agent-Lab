@@ -152,7 +152,9 @@ describe('workflow remote', () => {
       try {
         expect((await send('/api/tasks')).status).toBe(401);
         expect((await send('/api/action', { action: 'create' })).status).toBe(401);
-      } finally { clock.mockRestore(); }
+      } finally {
+        clock.mockRestore();
+      }
       expect((await send('/api/tasks')).status).toBe(200);
       expect(deviceReady).not.toHaveBeenCalled();
       expect((await send('/api/action', { action: 'device-ready' }, 'https://wrong.example')).status).toBe(403);

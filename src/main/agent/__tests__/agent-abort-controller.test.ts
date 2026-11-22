@@ -140,6 +140,39 @@ const stopExpected = async (promise: Promise<unknown>) =>
     }
   });
 
+describe('Agent.generateObject reasoning', () => {
+  it.each([undefined, 'high'] as const)('preserves the structured default and forwards an explicit reasoning override (%s)', async (reasoning) => {
+    const { agent } = createAgent();
+    const manager = agent['modelManager'];
+    vi.mocked(manager.createLlm).mockResolvedValue('test-provider/test-model');
+    generateTextMock.mockReset().mockResolvedValue({ output: { value: 'ok' } });
+    const schema = z.object({ value: z.string() });
+    const signal = new AbortController().signal;
+    const result = await agent.generateObject(
+      'test-provider/test-model',
+      'system',
+      'prompt',
+      schema,
+      '/test/project',
+      [],
+      false,
+      signal,
+      'test-session',
+      reasoning,
+    );
+    expect(result).toEqual({ value: 'ok' });
+    expect(manager.getProviderOptions).toHaveBeenCalledWith(expect.objectContaining({ id: 'test-provider' }), 'test-model', reasoning);
+    expect(manager.getProviderParameters).toHaveBeenCalledWith(expect.objectContaining({ id: 'test-provider' }), 'test-model', reasoning);
+    const options = generateTextMock.mock.calls[0][0];
+    expect(options.abortSignal).toBe(signal);
+    if (reasoning === undefined) {
+      expect(options).not.toHaveProperty('reasoning');
+    } else {
+      expect(options.reasoning).toBe(reasoning);
+    }
+  });
+});
+
 describe('Agent.runAgent abort controller registration', () => {
   it.each([
     { failSave: false, pending: false, worker: false, steering: false },

@@ -111,7 +111,6 @@ export class DataManager {
         cache_write_tokens: usageReport?.cacheWriteTokens,
         cache_read_tokens: usageReport?.cacheReadTokens,
         cost: usageReport?.messageCost,
-        message_content_json: content,
       });
 
       this.db

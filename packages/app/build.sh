@@ -20,14 +20,14 @@ echo ""
 # Step 1: Build runner.js and cli.js via vite
 echo "--- Building runner.js & cli.js ---"
 cd "$SCRIPT_DIR"
-POSTHOG_PUBLIC_API_KEY="${POSTHOG_PUBLIC_API_KEY:-}" NODE_ENV=npx vite build
+POSTHOG_PUBLIC_API_KEY="${POSTHOG_PUBLIC_API_KEY:-}" NODE_ENV=production "$ROOT_DIR/node_modules/.bin/vite" build
 echo "runner.js & cli.js built successfully."
 echo ""
 
 # Step 2: Build and copy renderer
 echo "--- Building renderer ---"
 cd "$ROOT_DIR"
-POSTHOG_PUBLIC_API_KEY="${POSTHOG_PUBLIC_API_KEY:-}" npx electron-vite build
+POSTHOG_PUBLIC_API_KEY="${POSTHOG_PUBLIC_API_KEY:-}" "$ROOT_DIR/node_modules/.bin/electron-vite" build
 mkdir -p "$SCRIPT_DIR/out/renderer"
 cp -r "$ROOT_DIR/out/renderer/." "$SCRIPT_DIR/out/renderer/"
 echo "Renderer copied successfully."
@@ -53,11 +53,14 @@ echo "--- Generating package.json ---"
 SKIP_VERSION_SYNC=1 node "$SCRIPT_DIR/scripts/generate-package.mjs"
 echo ""
 
-# Step 6: Install dependencies (rebuilds native deps)
-echo "--- Installing dependencies ---"
+# Step 6: Prepare the private SDKs from the reviewed lock.
 cd "$SCRIPT_DIR"
-npm install --ignore-scripts --legacy-peer-deps
-npm audit fix
+npm run prepare:sdks
+
+# Check the reviewed lock without mutating the release inputs.
+echo "--- Auditing locked dependencies ---"
+# Requesty and Transformers ship from build inputs in the private SDK directory. Include them in the audit.
+npm audit --package-lock-only --include=dev
 echo ""
 
 echo "=== Build complete! ==="

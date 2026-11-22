@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { createHash } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { AIDER_DESK_DATA_DIR } from '@/constants';
+import { verifiedGitleaks } from '@/utils/verified-gitleaks';
 
 export const sanitizeKnowledgeText = (text: string): string =>
   text
@@ -25,14 +25,7 @@ export const sanitizeKnowledgeText = (text: string): string =>
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ADDRESS REDACTED]');
 
 const verifiedScanner = async () => {
-  const executable = path.join(os.homedir(), 'go', 'bin', 'gitleaks.exe');
-  if (
-    createHash('sha256')
-      .update(await fs.readFile(executable))
-      .digest('hex') !== '17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c'
-  ) {
-    throw new Error('Controllo privacy KB non disponibile nella versione verificata.');
-  }
+  const executable = await verifiedGitleaks();
   const config = path.join(process.env.AIDER_DESK_DATA_DIR ?? AIDER_DESK_DATA_DIR, 'knowledge-base', 'privacy.toml');
   await fs.mkdir(path.dirname(config), { recursive: true });
   const body = '[extend]\nuseDefault = true\n';

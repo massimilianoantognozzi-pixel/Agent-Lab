@@ -5,7 +5,7 @@ description: Create and configure AiderDesk agent profiles by defining tool grou
 
 # Agent Profile Creator
 
-Create agent profiles stored as `config.json` in `~/.aider-desk/agents/{name}/` (global) or `{project}/.aider-desk/agents/{name}/` (project-level).
+Create `agents/{name}/config.json` under the selected project or global data directory. For a project, join the active project root with the app’s `AIDER_DESK_DIR`. For a global profile, use `AIDER_DESK_HOME_DIR` when set, otherwise join the operating-system home with the same `AIDER_DESK_DIR`. The default directory name is `.aider-desk`. Packaged Agent-Lab on Windows selects `.agent-lab` unless explicitly configured. Use these resolved paths for the examples in the references as well.
 
 Read all reference files before proposing a profile to ensure accuracy:
 - `references/agent-profile-schema.md` — Complete property reference
@@ -75,7 +75,7 @@ If yes, gather:
 - Max tokens
 - Min time between tool calls (rate limiting, in ms)
 - MCP servers to enable (`enabledServers`)
-- Rule files (markdown files placed in `~/.aider-desk/agents/{name}/rules/`)
+- Rule files (markdown files in `rules/` beside the selected profile’s `config.json`)
 - Auto-compaction overrides (`autoCompactThresholdPercentage`, `autoCompactThresholdTokens`, `autoCompactionType`)
 - Bash tool settings (`allowedPattern` / `deniedPattern` regex)
 

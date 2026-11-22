@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { modelMessageSchema } from 'ai';
 import { AIDER_TOOL_GROUP_NAME, AIDER_TOOL_RUN_PROMPT, SUBAGENTS_TOOL_GROUP_NAME, SUBAGENTS_TOOL_RUN_TASK, TOOL_GROUP_NAME_SEPARATOR } from '@common/tools';
 
 import { prepareMessagesForModel } from '../message-preparation';
@@ -147,6 +148,38 @@ describe('message preparation hooks', () => {
 });
 
 describe('duplicate screenshot preservation', () => {
+  it('preserves both AI SDK v5 media receipts through replay without changing stored messages', async () => {
+    const exchange = (toolCallId: string, data: string) => [
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId, toolName: 'capture', input: {} }] },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId, toolName: 'capture', output: { type: 'content', value: [{ type: 'media', data, mediaType: 'image/png' }] } },
+        ],
+      },
+    ];
+    const saved = [...exchange('first', 'Zmlyc3Q='), ...exchange('second', 'c2Vjb25k')];
+    const original = structuredClone(saved);
+    const prepared = await prepareMessagesForModel(saved as ModelMessage[]);
+    expect(prepared.every((message) => modelMessageSchema.safeParse(message).success)).toBe(true);
+    expect(
+      prepared.flatMap((message) => (message.role === 'tool' ? message.content.map((part) => ('toolCallId' in part ? part.toolCallId : null)) : [])),
+    ).toEqual(['first', 'second']);
+    expect(prepared.filter((message) => message.role === 'user').map((message) => message.content)).toEqual([
+      [{ type: 'file', data: { type: 'data', data: 'Zmlyc3Q=' }, mediaType: 'image/png' }],
+      [{ type: 'file', data: { type: 'data', data: 'c2Vjb25k' }, mediaType: 'image/png' }],
+    ]);
+    expect(saved).toEqual(original);
+  });
+
+  it('refuses malformed legacy media before optimization can discard it', async () => {
+    const result = toolMessage('capture', {
+      type: 'content',
+      value: [{ type: 'media', data: 42, mediaType: 'image/png' }],
+    } as unknown as ToolResultPart['output']);
+    await expect(prepareMessagesForModel([result])).rejects.toThrow();
+  });
+
   const formats: Array<{ name: string; output: (data: string) => ToolResultPart['output'] }> = [
     { name: 'MCP JSON', output: (data) => ({ type: 'json', value: { content: [{ type: 'image', data, mimeType: 'image/png' }] } }) },
     { name: 'MCP text JSON', output: (data) => ({ type: 'text', value: JSON.stringify({ content: [{ type: 'image', data, mimeType: 'image/png' }] }) }) },

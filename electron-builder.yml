@@ -1,50 +1,51 @@
-appId: com.hotovo.aider-desk
-productName: aider-desk
+extends: file:lab/packaging/builder-identity.cjs
 directories:
   buildResources: build
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!resources/*'
-  - '!docs-site/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
-  - '!.aider-desk/*'
-  - '!llms.txt'
-  - '!packages/*'
+  - 'out/main/**/*'
+  - 'out/preload/**/*'
+  - 'out/renderer/**/*'
+  - 'package.json'
+  - 'LICENSE'
   - '!node_modules/react-icons/**'
   - '!node_modules/mermaid/**'
   - '!node_modules/@mermaid-js/**'
   - '!node_modules/@shikijs/**'
 extraResources:
+  - from: ./resources/icon.png
+    to: icon.png
   - from: ./resources/connector
     to: connector
     filter:
-      - '**/*'
+      - 'connector.py'
   - from: ./resources/prompts
     to: prompts
     filter:
-      - '**/*'
+      - '*.hbs'
   - from: ./resources/skills
     to: skills
     filter:
-      - '**/*'
-beforePack: scripts/before-pack.js
-afterPack: scripts/after-pack.js
+      - 'agent-creator/**'
+      - 'extension-creator/**'
+beforePack: lab/packaging/windows-hooks.cjs
+afterPack: lab/packaging/windows-hooks.cjs
+artifactBuildStarted: lab/packaging/windows-hooks.cjs
 win:
-  executableName: aider-desk
+  appId: io.github.massimilianoantognozzi-pixel.agentlab
+  executableName: Agent-Lab
+  publish: null
   icon: resources/icon.png
   extraResources:
+    - from: ./lab/packaging/NOTICE-Agent-Lab.txt
+      to: NOTICE-Agent-Lab.txt
     - from: ./resources/win
       to: win
       filter:
-        - '**/*'
+        - 'probe.exe'
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
+  artifactName: Agent-Lab-${version}-setup.${ext}
+  shortcutName: Agent-Lab Desktop
+  uninstallDisplayName: Agent-Lab
   createDesktopShortcut: always
 mac:
   category: public.app-category.developer-tools
@@ -63,7 +64,7 @@ mac:
     - from: ./resources/macos
       to: macos
       filter:
-        - '**/*'
+        - 'probe'
 dmg:
   artifactName: ${name}-${version}-macos-${arch}.${ext}
 linux:
@@ -77,14 +78,9 @@ linux:
     - from: ./resources/linux
       to: linux
       filter:
-        - '**/*'
+        - 'probe'
 appImage:
   artifactName: ${name}-${version}-${arch}.${ext}
 deb:
   compression: 'gz'
 npmRebuild: true
-publish:
-  provider: github
-  releaseType: draft
-  vPrefixedTagName: true
-  publishAutoUpdate: true

@@ -1,0 +1,717 @@
+{
+  "regressioniSuperate": 45,
+  "proveCollegate": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F"
+  ],
+  "conteggiPerIntento": {
+    "attuale": {
+      "giuste": 9,
+      "sbagliate": 7,
+      "mancanti": 2,
+      "falsiAllarmi": 10,
+      "scartiCorretti": 2
+    },
+    "ibrida": {
+      "giuste": 10,
+      "sbagliate": 8,
+      "mancanti": 0,
+      "falsiAllarmi": 12,
+      "scartiCorretti": 0
+    },
+    "ibridaSoglia19": {
+      "giuste": 0,
+      "sbagliate": 0,
+      "mancanti": 18,
+      "falsiAllarmi": 0,
+      "scartiCorretti": 12
+    },
+    "lessicaleVerificata": {
+      "giuste": 9,
+      "sbagliate": 0,
+      "mancanti": 9,
+      "falsiAllarmi": 3,
+      "scartiCorretti": 9
+    },
+    "ibridaVerificata": {
+      "giuste": 12,
+      "sbagliate": 0,
+      "mancanti": 6,
+      "falsiAllarmi": 3,
+      "scartiCorretti": 9
+    }
+  },
+  "conteggiPerRiscontro": {
+    "attuale": {
+      "giuste": 8,
+      "sbagliate": 5,
+      "mancanti": 2,
+      "falsiAllarmi": 13,
+      "scartiCorretti": 2
+    },
+    "ibrida": {
+      "giuste": 11,
+      "sbagliate": 4,
+      "mancanti": 0,
+      "falsiAllarmi": 15,
+      "scartiCorretti": 0
+    },
+    "ibridaSoglia19": {
+      "giuste": 0,
+      "sbagliate": 0,
+      "mancanti": 15,
+      "falsiAllarmi": 0,
+      "scartiCorretti": 15
+    },
+    "lessicaleVerificata": {
+      "giuste": 12,
+      "sbagliate": 0,
+      "mancanti": 3,
+      "falsiAllarmi": 0,
+      "scartiCorretti": 15
+    },
+    "ibridaVerificata": {
+      "giuste": 15,
+      "sbagliate": 0,
+      "mancanti": 0,
+      "falsiAllarmi": 0,
+      "scartiCorretti": 15
+    }
+  },
+  "casi": [
+    {
+      "id": "N01",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "E",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "E",
+        "F",
+        "D"
+      ],
+      "picks": {
+        "attuale": "E",
+        "ibrida": "E",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N02",
+      "expected": "C",
+      "evidenceExpected": "C",
+      "lessicale": [
+        "B",
+        "A",
+        "C"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "B"
+      ],
+      "picks": {
+        "attuale": "B",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "C",
+        "ibridaVerificata": "C"
+      }
+    },
+    {
+      "id": "N03",
+      "expected": "A",
+      "evidenceExpected": "A",
+      "lessicale": [
+        "F",
+        "A",
+        "E"
+      ],
+      "ibridaPrimeTre": [
+        "A",
+        "D",
+        "B"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "A",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "A",
+        "ibridaVerificata": "A"
+      }
+    },
+    {
+      "id": "N04",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "B",
+        "A",
+        "C"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "B"
+      ],
+      "picks": {
+        "attuale": "B",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N05",
+      "expected": "F",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "F"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "E"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N06",
+      "expected": "F",
+      "evidenceExpected": "F",
+      "lessicale": [
+        "F"
+      ],
+      "ibridaPrimeTre": [
+        "C",
+        "F",
+        "B"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "C",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "F",
+        "ibridaVerificata": "F"
+      }
+    },
+    {
+      "id": "N07",
+      "expected": "-",
+      "evidenceExpected": "A",
+      "lessicale": [
+        "A",
+        "B",
+        "E"
+      ],
+      "ibridaPrimeTre": [
+        "A",
+        "B",
+        "C"
+      ],
+      "picks": {
+        "attuale": "A",
+        "ibrida": "A",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "A",
+        "ibridaVerificata": "A"
+      }
+    },
+    {
+      "id": "N08",
+      "expected": "D",
+      "evidenceExpected": "D",
+      "lessicale": [
+        "D",
+        "E",
+        "F",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "D",
+        "F",
+        "C"
+      ],
+      "picks": {
+        "attuale": "D",
+        "ibrida": "D",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "D",
+        "ibridaVerificata": "D"
+      }
+    },
+    {
+      "id": "N09",
+      "expected": "D",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "D",
+        "E",
+        "F",
+        "C"
+      ],
+      "ibridaPrimeTre": [
+        "D",
+        "F",
+        "C"
+      ],
+      "picks": {
+        "attuale": "D",
+        "ibrida": "D",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N10",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "F"
+      ],
+      "ibridaPrimeTre": [
+        "C",
+        "A",
+        "F"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "C",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N11",
+      "expected": "A",
+      "evidenceExpected": "A",
+      "lessicale": [],
+      "ibridaPrimeTre": [
+        "A",
+        "F",
+        "D"
+      ],
+      "picks": {
+        "attuale": "-",
+        "ibrida": "A",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "A"
+      }
+    },
+    {
+      "id": "N12",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "B",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "B",
+        "A",
+        "F"
+      ],
+      "picks": {
+        "attuale": "B",
+        "ibrida": "B",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N13",
+      "expected": "F",
+      "evidenceExpected": "F",
+      "lessicale": [
+        "F"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "E"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "F",
+        "ibridaVerificata": "F"
+      }
+    },
+    {
+      "id": "N14",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [],
+      "ibridaPrimeTre": [
+        "C",
+        "B",
+        "A"
+      ],
+      "picks": {
+        "attuale": "-",
+        "ibrida": "C",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N15",
+      "expected": "D",
+      "evidenceExpected": "D",
+      "lessicale": [],
+      "ibridaPrimeTre": [
+        "F",
+        "D",
+        "E"
+      ],
+      "picks": {
+        "attuale": "-",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "D"
+      }
+    },
+    {
+      "id": "N16",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "F"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "E"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N17",
+      "expected": "B",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "B",
+        "D",
+        "A",
+        "C"
+      ],
+      "ibridaPrimeTre": [
+        "C",
+        "B",
+        "D"
+      ],
+      "picks": {
+        "attuale": "B",
+        "ibrida": "C",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N18",
+      "expected": "E",
+      "evidenceExpected": "E",
+      "lessicale": [
+        "E",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "E",
+        "F",
+        "D"
+      ],
+      "picks": {
+        "attuale": "E",
+        "ibrida": "E",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "E",
+        "ibridaVerificata": "E"
+      }
+    },
+    {
+      "id": "N19",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "F",
+        "B"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "A"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N20",
+      "expected": "B",
+      "evidenceExpected": "B",
+      "lessicale": [
+        "B",
+        "F",
+        "D",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "B",
+        "A",
+        "F"
+      ],
+      "picks": {
+        "attuale": "B",
+        "ibrida": "B",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "B",
+        "ibridaVerificata": "B"
+      }
+    },
+    {
+      "id": "N21",
+      "expected": "E",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "A",
+        "F",
+        "E"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "E",
+        "A"
+      ],
+      "picks": {
+        "attuale": "A",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N22",
+      "expected": "-",
+      "evidenceExpected": "D",
+      "lessicale": [
+        "D",
+        "E"
+      ],
+      "ibridaPrimeTre": [
+        "D",
+        "E",
+        "B"
+      ],
+      "picks": {
+        "attuale": "D",
+        "ibrida": "D",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "D",
+        "ibridaVerificata": "D"
+      }
+    },
+    {
+      "id": "N23",
+      "expected": "C",
+      "evidenceExpected": "C",
+      "lessicale": [
+        "F",
+        "E"
+      ],
+      "ibridaPrimeTre": [
+        "C",
+        "F",
+        "E"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "C",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "C"
+      }
+    },
+    {
+      "id": "N24",
+      "expected": "B",
+      "evidenceExpected": "B",
+      "lessicale": [
+        "B",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "B",
+        "A",
+        "F"
+      ],
+      "picks": {
+        "attuale": "B",
+        "ibrida": "B",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "B",
+        "ibridaVerificata": "B"
+      }
+    },
+    {
+      "id": "N25",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "D",
+        "E",
+        "F",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "D",
+        "F",
+        "C"
+      ],
+      "picks": {
+        "attuale": "D",
+        "ibrida": "D",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N26",
+      "expected": "A",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "D",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "C",
+        "A",
+        "D"
+      ],
+      "picks": {
+        "attuale": "D",
+        "ibrida": "C",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N27",
+      "expected": "-",
+      "evidenceExpected": "-",
+      "lessicale": [],
+      "ibridaPrimeTre": [
+        "A",
+        "F",
+        "D"
+      ],
+      "picks": {
+        "attuale": "-",
+        "ibrida": "A",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N28",
+      "expected": "-",
+      "evidenceExpected": "F",
+      "lessicale": [
+        "D",
+        "F"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "B"
+      ],
+      "picks": {
+        "attuale": "D",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "F",
+        "ibridaVerificata": "F"
+      }
+    },
+    {
+      "id": "N29",
+      "expected": "C",
+      "evidenceExpected": "-",
+      "lessicale": [
+        "F",
+        "A"
+      ],
+      "ibridaPrimeTre": [
+        "F",
+        "C",
+        "E"
+      ],
+      "picks": {
+        "attuale": "F",
+        "ibrida": "F",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "-",
+        "ibridaVerificata": "-"
+      }
+    },
+    {
+      "id": "N30",
+      "expected": "E",
+      "evidenceExpected": "E",
+      "lessicale": [
+        "D",
+        "A",
+        "E",
+        "B"
+      ],
+      "ibridaPrimeTre": [
+        "D",
+        "A",
+        "E"
+      ],
+      "picks": {
+        "attuale": "D",
+        "ibrida": "D",
+        "ibridaSoglia19": "-",
+        "lessicaleVerificata": "E",
+        "ibridaVerificata": "E"
+      }
+    }
+  ]
+}

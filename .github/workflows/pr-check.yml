@@ -1,0 +1,55 @@
+name: PR Check
+
+on:
+  pull_request:
+
+jobs:
+  validate:
+    name: Linux · Node 24
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare the pinned Gitleaks scanner for tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --location --silent --show-error --output gitleaks-linux.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks-linux.tar.gz" | sha256sum --check
+          tar -xzf gitleaks-linux.tar.gz gitleaks
+          echo "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509  gitleaks" | sha256sum --check
+          echo "AIDER_DESK_GITLEAKS_PATH=$RUNNER_TEMP/gitleaks" >> "$GITHUB_ENV"
+
+      - name: Run lint
+        run: npm run lint:check
+
+      - name: Typecheck and build the application
+        run: npm run build
+
+      - name: Prepare the pinned Node image for behavioral tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=node@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
+          docker pull "$image"
+          echo "AIDER_DESK_DOCKER_TEST_IMAGE=$(docker image inspect "$image" --format '{{.Id}}')" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Verify the generated workflow example
+        run: node lab/scripts/verify-workflow-example.mjs

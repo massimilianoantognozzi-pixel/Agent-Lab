@@ -10,7 +10,9 @@ describe('persistent remote device expiration', () => {
   let directory: string;
   const scope = 'a'.repeat(64);
   const usedCode = 'b'.repeat(64);
-  beforeEach(async () => { directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agentlab-device-expiry-')); });
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agentlab-device-expiry-'));
+  });
   afterEach(async () => {
     vi.restoreAllMocks();
     expect(path.dirname(await fs.realpath(directory))).toBe(await fs.realpath(os.tmpdir()));

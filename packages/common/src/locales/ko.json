@@ -127,7 +127,7 @@
     "nextResult": "다음 결과 (F3)"
   },
   "onboarding": {
-    "title": "AiderDesk에 오신 것을 환영합니다",
+    "title": "Agent-Lab에 오신 것을 환영합니다",
     "description": "전문 소프트웨어 엔지니어를 위한 투명하고 제어 가능한 AI 오케스트레이션입니다. 단순한 Aider용 GUI를 넘어, 다음을 도와주는 완전한 오케스트레이션 레이어입니다:",
     "skipForNow": "나중에 하기",
     "finish": "설정 완료",
@@ -151,7 +151,7 @@
       "configure": "구성"
     },
     "choice": {
-      "title": "AiderDesk를 어떻게 사용하실 건가요?",
+      "title": "Agent-Lab를 어떻게 사용하실 건가요?",
       "description": "이 선택에 따라 설정 과정이 맞춤화되고 기본 모드가 지정됩니다. 설정 → 일반에서 언제든 변경할 수 있습니다.",
       "recommended": "추천",
       "agent": {
@@ -196,7 +196,7 @@
       "description": "Aider와 에이전트 모드에서 함께 사용할 LLM 공급자를 구성하세요. 다양한 공급자에 대한 API 키와 추가 설정을 지정할 수 있습니다.",
       "configureLater": "원하는 경우 나중에 설정에서 구성할 수 있습니다.",
       "connectTitle": "AI 모델 연결",
-      "connectDescription": "AiderDesk는 OpenAI, Anthropic, Google Gemini 등 여러 AI 공급자를 지원합니다. API 키는 로컬 컴퓨터에 안전하게 저장되며 절대 공유되지 않습니다.",
+      "connectDescription": "Agent-Lab는 OpenAI, Anthropic, Google Gemini 등 여러 AI 공급자를 지원합니다. API 키는 로컬 컴퓨터에 안전하게 저장되며 절대 공유되지 않습니다.",
       "advancedUsersNote": "고급 사용자: 다음 단계의 Aider 구성 섹션에서 환경 변수를 사용하여 공급자를 구성할 수도 있습니다.",
       "advancedSettings": "고급 설정",
       "order": "순서",
@@ -219,7 +219,7 @@
     },
     "agent": {
       "title": "AI 에이전트 소개",
-      "description": "AiderDesk의 에이전트 모드로 자율 AI 지원의 힘을 경험해 보세요. AI 에이전트는 복잡한 작업을 독립적으로 수행할 수 있습니다.",
+      "description": "Agent-Lab의 에이전트 모드로 자율 AI 지원의 힘을 경험해 보세요. AI 에이전트는 복잡한 작업을 독립적으로 수행할 수 있습니다.",
       "capabilities": "에이전트 기능:",
       "autonomousPlanning": "자율 작업 계획:",
       "autonomousPlanningDesc": "복잡한 요청을 관리 가능한 단계로 나누어 체계적으로 실행합니다.",
@@ -234,13 +234,13 @@
     },
     "complete": {
       "title": "설정 완료!",
-      "description": "축하합니다! AiderDesk 설정을 성공적으로 완료했습니다. 이제 완전한 투명성과 제어로 AI 지원 개발을 이끌어 나갈 준비가 되었습니다.",
+      "description": "축하합니다! Agent-Lab 설정을 성공적으로 완료했습니다. 이제 완전한 투명성과 제어로 AI 지원 개발을 이끌어 나갈 준비가 되었습니다.",
       "ready": "'설정 완료'를 클릭하여 코딩 여정을 시작하세요.",
-      "success": "온보딩이 성공적으로 완료되었습니다! AiderDesk에 오신 것을 환영합니다.",
+      "success": "온보딩이 성공적으로 완료되었습니다! Agent-Lab에 오신 것을 환영합니다.",
       "mode": "새 작업은 {{mode}} 모드로 시작됩니다 — 설정 → 일반에서 언제든 변경할 수 있습니다.",
       "modeAgent": "에이전트",
       "modeCode": "Code",
-      "customizeTitle": "AiderDesk를 나에게 맞게",
+      "customizeTitle": "Agent-Lab를 나에게 맞게",
       "customizeDescription": "더 살펴볼 만한 곳들이 있습니다:",
       "general": {
         "title": "설정 → 일반",
@@ -720,6 +720,22 @@
       "openEditor": "에디터 열기"
     },
     "gui": "모양",
+    "imageGeneration": {
+      "title": "이미지 생성",
+      "off": "사용 안 함",
+      "unavailable": "사용할 수 없는 프로필",
+      "configure": "모델 라이브러리에서 자체 API 키가 있는 OpenAI API 프로필을 활성화하고 사용자 지정 헤더는 비워 두세요.",
+      "quality": "품질",
+      "size": "이미지 크기",
+      "credits": "확인하기 전에 예상 출력 비용이 표시됩니다. 입력 내용과 참고 이미지에는 API 크레딧이 추가로 사용될 수 있습니다.",
+      "qualities": {
+        "low": "낮음",
+        "medium": "중간",
+        "high": "높음",
+        "xhigh": "매우 높음",
+        "max": "최고"
+      }
+    },
     "voice": {
       "title": "음성",
       "providerProfile": "공급자 프로필",
@@ -810,7 +826,7 @@
       "title": "창 제목"
     },
     "windowTitleTemplateLabel": "창 제목 템플릿",
-    "windowTitleTemplateTooltip": "프로젝트 이름에는 {project}를, 현재 작업 이름에는 {task}를 사용하세요. 예: 'AiderDesk - {project}' 또는 '{project} - {task}'",
+    "windowTitleTemplateTooltip": "프로젝트 이름에는 {project}를, 현재 작업 이름에는 {task}를 사용하세요. 예: 'Agent-Lab - {project}' 또는 '{project} - {task}'",
     "agent": {
       "tabs": {
         "general": "일반",
@@ -1028,6 +1044,7 @@
       "credentialsPlaceholder": "Google Cloud 자격 증명 JSON을 입력하세요"
     },
     "about": {
+      "baseProject": "AiderDesk 0.88.0 기반 · Apache 라이선스 2.0",
       "version": "버전",
       "notAvailable": "해당 없음",
       "checkForUpdates": "업데이트 확인",
@@ -1077,7 +1094,7 @@
       "noProxyDescription": "프록시를 우회할 호스트 또는 도메인의 쉼표로 구분된 목록입니다. 정확한 호스트 이름, IP 주소, 와일드카드 도메인(예: .example.com)을 지원합니다"
     },
     "server": {
-      "description": "포트 24337에서 서버를 활성화하여 외부 애플리케이션에서 AiderDesk에 접근할 수 있게 합니다",
+      "description": "외부 애플리케이션에서 Agent-Lab 로컬 서버에 접근할 수 있도록 합니다.",
       "status": "상태",
       "running": "실행 중",
       "enableBasicAuth": "기본 인증 사용",
@@ -1249,7 +1266,7 @@
     "openLocalProject": "로컬 열기",
     "cloneFromGit": "Git에서 복제",
     "repositoryUrlPlaceholder": "예: https://github.com/owner/repo.git 또는 git@github.com:owner/repo.git",
-    "cloneDestinationPlaceholder": "기본값: ~/.aider-desk/projects",
+    "cloneDestinationPlaceholder": "비워 두면 이 프로필의 프로젝트 폴더를 사용합니다",
     "repositoryUrlLabel": "저장소 URL",
     "cloneDestinationLabel": "대상 폴더",
     "cloningProject": "저장소를 복제하는 중...",

@@ -85,8 +85,9 @@ let SandboxManager: typeof import('@anthropic-ai/sandbox-runtime').SandboxManage
 let cleanupAfterCommand: (() => void) | null = null;
 
 function loadConfig(cwd: string): SandboxConfig {
-  const projectConfigPath = join(cwd, '.aider-desk', 'sandbox.json');
-  const globalConfigPath = join(homedir(), '.aider-desk', 'sandbox.json');
+  const privateDir = process.env.AIDER_DESK_DIR || '.aider-desk';
+  const projectConfigPath = join(cwd, privateDir, 'sandbox.json');
+  const globalConfigPath = join(process.env.AIDER_DESK_HOME_DIR || join(homedir(), privateDir), 'sandbox.json');
 
   let globalConfig: Partial<SandboxConfig> = {};
   let projectConfig: Partial<SandboxConfig> = {};

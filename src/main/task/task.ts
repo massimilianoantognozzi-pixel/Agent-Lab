@@ -73,6 +73,7 @@ import { canResumeWork, WorkResumeError } from '@common/work-commands';
 import {
   COMPACT_CONVERSATION_AGENT_PROFILE,
   CONFLICT_RESOLUTION_PROFILE,
+  isOllamaProvider,
   HANDOFF_AGENT_PROFILE,
   INIT_PROJECT_AGENTS_PROFILE,
   getSubagentId,
@@ -161,6 +162,7 @@ import {
   WORKER_STOP,
 } from '@/agent/worker-checkpoint';
 import { defaultAgentReasoning } from '@/models/agent-reasoning';
+import { usesLocalDevstralToolNames } from '@/models/providers/devstral-tool-names';
 import { CODEX_PLAN_MODE } from '@/agent/codex-plan-mode';
 import { canResumeNoProgress } from '@/agent/agent-progress';
 import {
@@ -173,7 +175,7 @@ import {
 } from '@/agent/tools/host-execution';
 import { getAllFiles, isValidProjectFile } from '@/utils/file-system';
 import { isFreelanceEnabled } from '@/lab-projects/policy';
-import { isGeneralMode, isLabMode } from '@/lab-mode';
+import { isComputerUseDesktop, isGeneralMode, isLabMode } from '@/lab-mode';
 import { projectUpdatedFiles, projectFileContents, projectFileDiff } from '@/lab-projects/files';
 import { atomicWriteJsonFile } from '@/utils/atomic-write';
 import {
@@ -199,7 +201,7 @@ import { ModelManager } from '@/models';
 import { CustomCommandManager, ShellCommandError } from '@/custom-commands';
 import { TelemetryManager } from '@/telemetry';
 import { EventManager } from '@/events';
-import { execWithShellPath, getEnvironmentVariablesForAider, isDirectory } from '@/utils';
+import { execWithShellPath, getEffectiveEnvironmentVariable, getEnvironmentVariablesForAider, isDirectory } from '@/utils';
 import { ContextManager } from '@/task/context-manager';
 import { Project } from '@/project';
 import { AiderManager } from '@/task/aider-manager';
@@ -1443,19 +1445,32 @@ export class Task {
         await this.addContextMessage(request);
       }
       const statePath = this.managedPilotStatePath();
-      const generate = async (_phase: string, instructions: string, input: string) =>
-        this.agent.generateText(
-          providerModel,
-          instructions,
-          sessionInstruction ? sessionInstruction + '\n\nDati della task e contratto del flusso\n' + input : input,
-          this.getProjectDir(),
-          [],
-          false,
-          controller.signal,
-          uuidv4(),
-          true,
-          reasoning,
-        );
+      const generate = async (_phase: string, instructions: string, input: string, verdictSchema?: z.ZodType) => {
+        const payload = sessionInstruction ? sessionInstruction + '\n\nDati della task e contratto del flusso\n' + input : input;
+        if (verdictSchema && profile?.model === 'devstral-aiderdesk:24b') {
+          const provider = this.modelManager.getProviders().find((item) => item.id === profile.provider)?.provider;
+          const baseUrl =
+            provider && isOllamaProvider(provider)
+              ? provider.baseUrl || getEffectiveEnvironmentVariable('OLLAMA_API_BASE', this.store.getSettings(), this.getProjectDir())?.value
+              : undefined;
+          if (baseUrl && usesLocalDevstralToolNames(profile.model, baseUrl)) {
+            const verdict = await this.agent.generateObject(
+              providerModel,
+              instructions,
+              payload,
+              verdictSchema,
+              this.getProjectDir(),
+              [],
+              false,
+              controller.signal,
+              uuidv4(),
+              reasoning ?? defaultAgentReasoning(profile.provider, profile.model),
+            );
+            return JSON.stringify(verdict);
+          }
+        }
+        return this.agent.generateText(providerModel, instructions, payload, this.getProjectDir(), [], false, controller.signal, uuidv4(), true, reasoning);
+      };
       if (policy && (!command || command.kind === 'start') && (!profile || profile.provider !== policy.provider || profile.model !== policy.model)) {
         throw new Error('Il task deve usare il provider e il modello autorizzati nel profilo del progetto.');
       }
@@ -2140,7 +2155,7 @@ export class Task {
           ])
         : undefined;
       if (recoveredTurn && contextMessages) {
-        this.contextManager.setContextMessages([...contextMessages]);
+        this.contextManager.restoreTurnMessages([...contextMessages]);
       }
       const createGoalInTurn =
         rootTurn && mode === 'agent' && goalUserPrompt && this.agentGoalAllowed()
@@ -4326,7 +4341,7 @@ export class Task {
     logger.debug('Adding message:', {
       baseDir: this.project.baseDir,
       role,
-      content,
+      ...(isGeneralMode() || isComputerUseDesktop() ? { contentLength: content.length } : { content }),
       acknowledge,
     });
     this.findMessageConnectors('add-message').forEach((connector) => connector.sendAddMessageMessage(role, content, acknowledge));
@@ -4335,7 +4350,7 @@ export class Task {
   public sendUserMessage(data: UserMessageData) {
     logger.debug('Sending user message:', {
       baseDir: this.project.baseDir,
-      content: data.content?.substring(0, 100),
+      ...(isGeneralMode() || isComputerUseDesktop() ? {} : { content: data.content?.substring(0, 100) }),
       hasImages: (data.images?.length ?? 0) > 0,
     });
     this.eventManager.sendUserMessage(data);
@@ -4347,8 +4362,9 @@ export class Task {
       baseDir: this.project.baseDir,
       serverName: data.serverName,
       name: data.toolName,
-      args: data.args,
-      response: typeof data.response === 'string' ? data.response.substring(0, 100) : data.response,
+      ...(isGeneralMode() || isComputerUseDesktop()
+        ? {}
+        : { args: data.args, response: typeof data.response === 'string' ? data.response.substring(0, 100) : data.response }),
       usageReport: data.usageReport,
       promptContext: data.promptContext,
     });
@@ -4774,8 +4790,7 @@ export class Task {
       baseDir: this.project.baseDir,
       serverName,
       name: toolName,
-      args,
-      response: typeof response === 'string' ? response.substring(0, 100) : response,
+      ...(isGeneralMode() || isComputerUseDesktop() ? {} : { args, response: typeof response === 'string' ? response.substring(0, 100) : response }),
       usageReport,
       promptContext,
       finished,
@@ -5107,7 +5122,7 @@ export class Task {
       if (record.state === 'success') {
         this.rootTurnInUse = true;
         try {
-          this.contextManager.setContextMessages(recoveredTurnHistory(record));
+          this.contextManager.restoreTurnMessages(recoveredTurnHistory(record));
           await this.contextManager.save();
           if (!this.closing && this.task.metadata?.recoverableRootTurn === record.turnId) {
             await this.saveTask({

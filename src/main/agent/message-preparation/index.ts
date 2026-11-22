@@ -3,7 +3,7 @@ import { cloneDeep } from 'lodash';
 import { addImportantReminders } from './reminders';
 import { transformMessages } from './transformations';
 import { optimizeMessages } from './optimizations';
-import { convertImageToolResults } from './provider-compatibility';
+import { convertImageToolResults, normalizeLegacyToolMedia } from './provider-compatibility';
 import { applyCacheControl } from './cache-control';
 
 import type { ModelMessage } from 'ai';
@@ -23,6 +23,12 @@ export const prepareMessagesForModel = async (
   extensionManager?: ExtensionManager,
 ): Promise<ModelMessage[]> => {
   let preparedMessages = cloneDeep(messages);
+  for (const message of preparedMessages) {
+    if (message.role === 'tool' && 'imagePreview' in message) {
+      delete message.imagePreview;
+    }
+  }
+  normalizeLegacyToolMedia(preparedMessages);
   if (task && profile && preparedMessages.length > 0) {
     preparedMessages = await addImportantReminders(task, profile, projectProfiles, userRequestMessageIndex, preparedMessages, extensionManager);
   }

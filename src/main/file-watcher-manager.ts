@@ -7,6 +7,7 @@ import { simpleGit } from 'simple-git';
 
 import type { Store } from '@/store';
 
+import { AIDER_DESK_DIR } from '@/constants';
 import { shouldUsePolling } from '@/utils/file-watch';
 import logger from '@/logger';
 
@@ -183,13 +184,14 @@ export class FileWatcherManager {
   private createIgnoredList(dir: string, gitIgnoredEntries: string[], userIgnored?: FileWatchOptions['ignored']): ((watcherPath: string) => boolean)[] {
     const gitIgnoredDirs = new Set(gitIgnoredEntries.map((entry) => entry.replace(/\\/g, '/').replace(/\/+$/, '')));
     const ignoredDirs = new Set<string>(DEFAULT_IGNORED_DIRS);
+    const privateDir = path.normalize(AIDER_DESK_DIR).split(path.sep).join('/').replace(/\/+$/, '');
 
     const matcher = (relativePath: string): boolean => {
       if (!relativePath || relativePath === '.') {
         return false;
       }
       const segments = relativePath.split('/');
-      if (segments.some((segment) => ignoredDirs.has(segment))) {
+      if (segments.some((segment) => ignoredDirs.has(segment)) || ('/' + relativePath + '/').includes('/' + privateDir + '/')) {
         return true;
       }
       // path itself or one of its ancestors matches a gitignored entry

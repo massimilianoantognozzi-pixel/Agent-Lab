@@ -127,7 +127,7 @@
     "nextResult": "Next result (F3)"
   },
   "onboarding": {
-    "title": "Welcome to AiderDesk",
+    "title": "Welcome to Agent-Lab",
     "description": "Transparent, steerable AI orchestration for professional software engineers. More than a GUI for Aider — a complete orchestration layer that helps you:",
     "skipForNow": "Skip for now",
     "finish": "Finish Setup",
@@ -151,7 +151,7 @@
       "configure": "Configure"
     },
     "choice": {
-      "title": "How will you use AiderDesk?",
+      "title": "How will you use Agent-Lab?",
       "description": "This tailors your setup and sets your default mode. You can change it anytime in Settings → General.",
       "recommended": "Recommended",
       "agent": {
@@ -196,7 +196,7 @@
       "description": "Configure your LLM providers for use with both Aider and Agent modes. You can set up API keys and additional settings for various providers.",
       "configureLater": "You can configure these later in the Settings if you prefer.",
       "connectTitle": "Connect Your AI Model",
-      "connectDescription": "AiderDesk supports multiple AI providers including OpenAI, Anthropic, Google Gemini, and more. Your API keys are stored securely on your local machine and never shared.",
+      "connectDescription": "Agent-Lab supports multiple AI providers including OpenAI, Anthropic, Google Gemini, and more. Your API keys are stored securely on your local machine and never shared.",
       "advancedUsersNote": "Advanced users: You can also configure providers using environment variables in the next step's Aider configuration section.",
       "advancedSettings": "Advanced settings",
       "order": "Order",
@@ -219,7 +219,7 @@
     },
     "agent": {
       "title": "Meet Your AI Agent",
-      "description": "Discover the power of autonomous AI assistance with AiderDesk's Agent mode. Your AI agent can work independently to complete complex tasks.",
+      "description": "Discover the power of autonomous AI assistance with Agent-Lab's Agent mode. Your AI agent can work independently to complete complex tasks.",
       "capabilities": "Agent Capabilities:",
       "autonomousPlanning": "Autonomous Task Planning:",
       "autonomousPlanningDesc": "Breaks down complex requests into manageable steps and executes them systematically.",
@@ -234,13 +234,13 @@
     },
     "complete": {
       "title": "Setup Complete!",
-      "description": "Congratulations! You've successfully set up AiderDesk. You're now ready to steer AI-assisted development with full transparency and control.",
+      "description": "Congratulations! You've successfully set up Agent-Lab. You're now ready to steer AI-assisted development with full transparency and control.",
       "ready": "Click 'Finish Setup' to begin your coding journey.",
-      "success": "Onboarding completed successfully! Welcome to AiderDesk.",
+      "success": "Onboarding completed successfully! Welcome to Agent-Lab.",
       "mode": "New tasks will start in {{mode}} mode — you can change this anytime in Settings → General.",
       "modeAgent": "Agent",
       "modeCode": "Code",
-      "customizeTitle": "Make AiderDesk yours",
+      "customizeTitle": "Make Agent-Lab yours",
       "customizeDescription": "There's more to explore — a few places worth a look:",
       "general": {
         "title": "Settings → General",
@@ -722,6 +722,22 @@
       "openEditor": "Open Editor"
     },
     "gui": "Appearance",
+    "imageGeneration": {
+      "title": "Image generation",
+      "off": "Off",
+      "unavailable": "Profile unavailable",
+      "configure": "In the Model Library, configure an active OpenAI API profile with its own key and no custom headers.",
+      "quality": "Quality",
+      "size": "Image size",
+      "credits": "Before you confirm, you’ll see an estimated output cost. Inputs and reference images may use additional API credits.",
+      "qualities": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Extra high",
+        "max": "Maximum"
+      }
+    },
     "voice": {
       "title": "Voice",
       "providerProfile": "Provider profile",
@@ -812,7 +828,7 @@
       "title": "Window Title"
     },
     "windowTitleTemplateLabel": "Window title template",
-    "windowTitleTemplateTooltip": "Use {project} for project name and {task} for current task name. Example: 'AiderDesk - {project}' or '{project} - {task}'",
+    "windowTitleTemplateTooltip": "Use {project} for project name and {task} for current task name. Example: 'Agent-Lab - {project}' or '{project} - {task}'",
     "agent": {
       "tabs": {
         "general": "General",
@@ -1030,6 +1046,7 @@
       "credentialsPlaceholder": "Enter your Google Cloud credentials JSON"
     },
     "about": {
+      "baseProject": "Based on AiderDesk 0.88.0 · Apache License 2.0",
       "version": "Version",
       "notAvailable": "N/A",
       "checkForUpdates": "Check for updates",
@@ -1079,7 +1096,7 @@
       "noProxyDescription": "Comma-separated list of hosts or domains that should bypass the proxy. Supports exact hostnames, IP addresses, and wildcard domains (e.g., .example.com)"
     },
     "server": {
-      "description": "Enable server on port 24337 to access AiderDesk from external applications",
+      "description": "Allow external applications to access the local Agent-Lab server.",
       "status": "Status",
       "running": "Running",
       "enableBasicAuth": "Enable Basic Authentication",
@@ -1271,7 +1288,7 @@
     "openLocalProject": "Open Local",
     "cloneFromGit": "Clone from Git",
     "repositoryUrlPlaceholder": "e.g. https://github.com/owner/repo.git or git@github.com:owner/repo.git",
-    "cloneDestinationPlaceholder": "default: ~/.aider-desk/projects",
+    "cloneDestinationPlaceholder": "Leave empty to use the projects folder of this profile",
     "repositoryUrlLabel": "Repository URL",
     "cloneDestinationLabel": "Destination folder",
     "cloningProject": "Cloning repository...",

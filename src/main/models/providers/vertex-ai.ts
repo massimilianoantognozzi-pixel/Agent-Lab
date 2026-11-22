@@ -1,3 +1,5 @@
+import { parseEnv } from 'node:util';
+
 import { v1beta1 } from '@google-cloud/aiplatform';
 import { GoogleAuth } from 'google-auth-library';
 import { Model, ModelInfo, ProviderProfile, Reasoning, SettingsData, UsageReportData } from '@common/types';
@@ -9,9 +11,40 @@ import type { SharedV4ProviderOptions } from '@ai-sdk/provider';
 
 import { AiderModelMapping, LlmProviderStrategy, LoadModelsResponse } from '@/models';
 import logger from '@/logger';
-import { getEffectiveEnvironmentVariable } from '@/utils';
 import { Task } from '@/task/task';
 import { calculateCost } from '@/models/providers/default';
+
+const parseCredentialJson = (value: string) => {
+  // JSON.parse errors can quote the supplied credential in logs and UI errors.
+  try {
+    const credentials = JSON.parse(value);
+    if (credentials && typeof credentials === 'object' && !Array.isArray(credentials) && Object.keys(credentials).length > 0) {
+      return credentials;
+    }
+  } catch {
+    // The operator sees the same message for malformed JSON and an invalid top-level shape.
+  }
+  throw new Error('Il JSON delle credenziali Vertex non è valido.');
+};
+
+// Identity, tenant and region belong to the operator. Never resolve them from the checkout's Aider or dotenv files.
+const vertexConfig = (provider: VertexAiProvider, settings: SettingsData) => {
+  const entries = parseEnv(settings.aider.environmentVariables);
+  const project = provider.project || entries.VERTEXAI_PROJECT || entries.VERTEX_PROJECT || process.env.VERTEXAI_PROJECT || process.env.VERTEX_PROJECT;
+  const location =
+    provider.location || entries.VERTEXAI_LOCATION || entries.VERTEX_LOCATION || process.env.VERTEXAI_LOCATION || process.env.VERTEX_LOCATION || 'global';
+  const configured = entries.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  let googleAuthOptions;
+  if (provider.googleCloudCredentialsJson) {
+    googleAuthOptions = { credentials: parseCredentialJson(provider.googleCloudCredentialsJson) };
+  } else if (configured?.trimStart().startsWith('{')) {
+    googleAuthOptions = { credentials: parseCredentialJson(configured) };
+  } else if (entries.GOOGLE_APPLICATION_CREDENTIALS) {
+    googleAuthOptions = { keyFilename: entries.GOOGLE_APPLICATION_CREDENTIALS };
+  }
+  // A path supplied by process.env is resolved by the standard ADC chain.
+  return { project, location, googleAuthOptions };
+};
 
 export const loadVertexAIModels = async (profile: ProviderProfile, settings: SettingsData): Promise<LoadModelsResponse> => {
   if (!isVertexAiProvider(profile.provider)) {
@@ -20,38 +53,12 @@ export const loadVertexAIModels = async (profile: ProviderProfile, settings: Set
 
   const provider = profile.provider as VertexAiProvider;
 
-  const projectEnv = getEffectiveEnvironmentVariable('VERTEX_PROJECT', settings);
-  const locationEnv = getEffectiveEnvironmentVariable('VERTEX_LOCATION', settings);
-  const credentialsEnv = getEffectiveEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', settings);
-
-  const project = provider.project || projectEnv?.value || '';
-  const location = provider.location || locationEnv?.value || 'global';
-  const googleCloudCredentialsJson = provider.googleCloudCredentialsJson || credentialsEnv?.value || '';
-
-  if (!project) {
-    logger.debug('Vertex AI project ID is required. Please set it in Providers settings or via VERTEXAI_PROJECT environment variable.');
-    return { models: [], success: false };
-  }
-
-  if (!location) {
-    logger.debug('Vertex AI location is required. Please set it in Providers settings or via VERTEXAI_LOCATION environment variable.');
-    return { models: [], success: false };
-  }
-
   try {
-    let auth: GoogleAuth;
-    if (googleCloudCredentialsJson) {
-      // Use provided credentials JSON
-      auth = new GoogleAuth({
-        credentials: JSON.parse(googleCloudCredentialsJson),
-        scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-      });
-    } else {
-      // Use default credentials (e.g., gcloud, environment variables, or service account)
-      auth = new GoogleAuth({
-        scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-      });
+    const { project, location, googleAuthOptions } = vertexConfig(provider, settings);
+    if (!project) {
+      return { models: [], success: false };
     }
+    const auth = new GoogleAuth({ ...googleAuthOptions, projectId: project, scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 
     const clientOptions = {
       apiEndpoint: 'aiplatform.googleapis.com',
@@ -78,12 +85,7 @@ export const loadVertexAIModels = async (profile: ProviderProfile, settings: Set
     logger.info(`Loaded ${models.length} Vertex AI models for project ${project} in location ${location} for profile ${profile.id}`);
     return { models, success: true };
   } catch (error) {
-    const errorMsg =
-      typeof error === 'string'
-        ? error
-        : error instanceof Error
-          ? error.message
-          : `Error loading Vertex AI models for project ${project} in location ${location}`;
+    const errorMsg = typeof error === 'string' ? error : error instanceof Error ? error.message : 'Error loading Vertex AI models';
     logger.error(errorMsg);
     return { models: [], success: false, error: errorMsg };
   }
@@ -119,44 +121,21 @@ export const getVertexAiAiderMapping = (provider: ProviderProfile, modelId: stri
 };
 
 // === LLM Creation Functions ===
-export const createVertexAiLlm = (profile: ProviderProfile, model: Model, settings: SettingsData, projectDir: string): LanguageModel => {
+export const createVertexAiLlm: (...args: Parameters<LlmProviderStrategy['createLlm']>) => LanguageModel = (profile, model, settings) => {
   const provider = profile.provider as VertexAiProvider;
-  let project = provider.project;
-  let location = provider.location;
-
-  if (!project) {
-    const effectiveVar = getEffectiveEnvironmentVariable('VERTEXAI_PROJECT', settings, projectDir);
-    if (effectiveVar) {
-      project = effectiveVar.value;
-      logger.debug(`Loaded VERTEXAI_PROJECT from ${effectiveVar.source}`);
-    }
-  }
+  const { project, location, googleAuthOptions } = vertexConfig(provider, settings);
 
   if (!project) {
     throw new Error('Vertex AI project is required in Providers settings or Aider environment variables (VERTEXAI_PROJECT)');
-  }
-
-  if (!location) {
-    const effectiveVar = getEffectiveEnvironmentVariable('VERTEXAI_LOCATION', settings, projectDir);
-    if (effectiveVar) {
-      location = effectiveVar.value;
-      logger.debug(`Loaded VERTEXAI_LOCATION from ${effectiveVar.source}`);
-    }
-  }
-
-  if (!location) {
-    location = 'global';
   }
 
   const vertexProvider = createVertex({
     project,
     location,
     headers: profile.headers,
-    // using custom base URL to fix the 'global' location
-    baseURL: `https://${location && location !== 'global' ? location + '-' : ''}aiplatform.googleapis.com/v1/projects/${provider.project}/locations/${provider.location}/publishers/google`,
-    ...(provider.googleCloudCredentialsJson && {
-      credentials: JSON.parse(provider.googleCloudCredentialsJson),
-    }),
+    // This profile uses OAuth/ADC like the model catalog. An ambient Express API key must not switch identities.
+    apiKey: '',
+    googleAuthOptions,
   });
   return vertexProvider(model.id);
 };

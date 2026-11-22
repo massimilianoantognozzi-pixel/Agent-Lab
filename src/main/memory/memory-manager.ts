@@ -10,6 +10,7 @@ import { AIDER_DESK_CACHE_DIR, AIDER_DESK_MEMORY_FILE } from '@/constants';
 import logger from '@/logger';
 import { Store } from '@/store';
 import { isLabMode } from '@/lab-mode';
+import { loadLocalTransformers } from '@/utils/local-transformers';
 
 type LanceDbModule = typeof import('@lancedb/lancedb');
 type TransformersModule = typeof import('@huggingface/transformers');
@@ -209,7 +210,7 @@ export class MemoryManager {
 
         if (!this.transformers) {
           try {
-            this.transformers = await import('@huggingface/transformers');
+            this.transformers = await loadLocalTransformers();
           } catch (error) {
             this.embeddingProgress = {
               phase: MemoryEmbeddingProgressPhase.Error,
@@ -413,7 +414,7 @@ export class MemoryManager {
     logger.info('Loading local embedding model... (this may take a moment on first run)');
     if (!this.transformers) {
       try {
-        this.transformers = await import('@huggingface/transformers');
+        this.transformers = await loadLocalTransformers();
       } catch (error) {
         this.embeddingProgress = {
           phase: MemoryEmbeddingProgressPhase.Error,

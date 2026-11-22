@@ -46,6 +46,7 @@ export const readFileState = async (path: string, cwd: string): Promise<FileStat
 };
 
 export const SKIP_DIRS = new Set(['node_modules', '.git', '.aider-desk', '.sessions', 'dist', 'build', 'coverage', 'out']);
+const projectDataDir = (process.env.AIDER_DESK_DIR || '.aider-desk').split(/[\\/]/).filter(Boolean).join(sep);
 const GLOB_CHARS = /[*?[\]{}]/;
 
 export interface Skipped {
@@ -91,7 +92,7 @@ export const pruneFiles = async (paths: string[], cwd: string, cap: number = LIM
       if (rel.startsWith('..')) skipped.push({ path, reason: 'outside the project' });
       continue;
     }
-    if (rel.split(sep).some((part) => SKIP_DIRS.has(part))) {
+    if (rel.split(sep).some((part) => SKIP_DIRS.has(part)) || (sep + rel + sep).includes(sep + projectDataDir + sep)) {
       skipped.push({ path, reason: 'in skipped directory' });
       continue;
     }

@@ -17,7 +17,7 @@ interface CheckpointIndex {
 }
 
 function getCheckpointsDir(projectDir: string): string {
-  return join(projectDir, '.aider-desk', CHECKPOINTS_DIR);
+  return join(projectDir, process.env.AIDER_DESK_DIR || '.aider-desk', CHECKPOINTS_DIR);
 }
 
 function getCheckpointsPath(projectDir: string, taskId: string): string {

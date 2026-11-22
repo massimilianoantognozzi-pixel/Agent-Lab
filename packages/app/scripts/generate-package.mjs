@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, copyFileSync, rmSync, existsSync } from 'fs';
-import { resolve, dirname, join } from 'path';
+import { readFileSync, writeFileSync } from 'fs';
+import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -83,11 +83,13 @@ for (const pkg of [...requiredPackages].sort()) {
     const wsPkg = JSON.parse(readFileSync(resolve(ROOT, 'node_modules', pkg, 'package.json'), 'utf8'));
     version = wsPkg.version;
   }
+  // These modules ship privately in out/node_modules with the reviewed adapter and Sharp replacement.
+  const destination = (pkg === '@requesty/ai-sdk' || pkg === '@huggingface/transformers') ? pkgJson.devDependencies : pkgJson.dependencies;
   if (version) {
-    if (pkgJson.dependencies[pkg] === version) continue;
-    pkgJson.dependencies[pkg] = version;
-  } else {
-    console.warn(`Warning: version not found for "${pkg}" in root package.json`);
+    if (destination[pkg] === version) continue;
+    destination[pkg] = version;
+  } else if (!destination[pkg]) {
+    throw new Error(`Missing version for "${pkg}" in the root and CLI manifests.`);
   }
 }
 
@@ -109,43 +111,3 @@ writeFileSync(outputPath, JSON.stringify(pkgJson, null, 2) + '\n');
 
 console.log(`Updated ${outputPath}`);
 console.log(`Found ${Object.keys(pkgJson.dependencies).length} total dependencies`);
-
-// Step: Copy matching patches from root
-const ROOT_PATCHES_DIR = resolve(ROOT, 'patches');
-const PKG_PATCHES_DIR = resolve(PKG_DIR, 'patches');
-
-if (existsSync(ROOT_PATCHES_DIR)) {
-  const patchFiles = readdirSync(ROOT_PATCHES_DIR).filter(f => f.endsWith('.patch'));
-
-  // Extract package name from patch filename
-  // Scoped: @scope+name+version.patch → @scope/name
-  // Regular: name+version.patch → name
-  const extractPkgName = (filename) => {
-    const base = filename.replace(/\.patch$/, '');
-    if (base.startsWith('@')) {
-      const parts = base.split('+');
-      return parts.slice(0, 2).join('/');
-    }
-    return base.split('+')[0];
-  };
-
-  const depNames = new Set(Object.keys(pkgJson.dependencies));
-  const matchingPatches = patchFiles.filter(f => depNames.has(extractPkgName(f)));
-
-  if (matchingPatches.length > 0) {
-    rmSync(PKG_PATCHES_DIR, { recursive: true, force: true });
-    mkdirSync(PKG_PATCHES_DIR, { recursive: true });
-
-    for (const patchFile of matchingPatches) {
-      copyFileSync(join(ROOT_PATCHES_DIR, patchFile), join(PKG_PATCHES_DIR, patchFile));
-    }
-
-    console.log(`Copied ${matchingPatches.length} matching patch(es): ${matchingPatches.join(', ')}`);
-  } else {
-    // Remove stale patches dir if no patches match
-    rmSync(PKG_PATCHES_DIR, { recursive: true, force: true });
-    console.log('No matching patches found.');
-  }
-} else {
-  console.log('No patches directory found at root.');
-}

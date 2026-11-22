@@ -2,9 +2,10 @@ import path from 'path';
 import { homedir } from 'os';
 
 import { getDataDir, getResourceDir } from './paths';
+import { AGENT_LAB_PORT, isLocalAgentLabInstall } from './desktop-product';
 
-export const AIDER_DESK_TITLE = 'AiderDesk';
-export const AIDER_DESK_WEBSITE = 'https://aiderdesk.hotovo.com';
+export const AIDER_DESK_TITLE = isLocalAgentLabInstall() ? 'Agent-Lab' : 'AiderDesk';
+export const AIDER_DESK_WEBSITE = isLocalAgentLabInstall() ? 'https://github.com/massimilianoantognozzi-pixel/Agent-Lab' : 'https://aiderdesk.hotovo.com';
 export const AIDER_DESK_DATA_DIR = getDataDir();
 export const AIDER_DESK_CACHE_DIR = path.join(AIDER_DESK_DATA_DIR, 'cache');
 export const RESOURCES_DIR = getResourceDir();
@@ -17,7 +18,7 @@ export const AIDER_DESK_CONNECTOR_DIR = path.join(AIDER_DESK_DATA_DIR, 'aider-co
 export const AIDER_DESK_BIN_DIR = path.join(AIDER_DESK_DATA_DIR, 'bin');
 export const UV_EXECUTABLE = process.platform === 'win32' ? path.join(AIDER_DESK_BIN_DIR, 'uv.exe') : path.join(AIDER_DESK_BIN_DIR, 'uv');
 export const RIPGREP_BINARY_PATH = process.platform === 'win32' ? path.join(AIDER_DESK_BIN_DIR, 'rg.exe') : path.join(AIDER_DESK_BIN_DIR, 'rg');
-export const SERVER_PORT = process.env.AIDER_DESK_PORT ? parseInt(process.env.AIDER_DESK_PORT) : 24337;
+export const SERVER_PORT = process.env.AIDER_DESK_PORT ? parseInt(process.env.AIDER_DESK_PORT) : isLocalAgentLabInstall() ? AGENT_LAB_PORT : 24337;
 export const MCP_OAUTH_CALLBACK_PATH = '/api/mcp/oauth/callback';
 export const PID_FILES_DIR = path.join(AIDER_DESK_DATA_DIR, 'aider-processes');
 // constants for project directory files
