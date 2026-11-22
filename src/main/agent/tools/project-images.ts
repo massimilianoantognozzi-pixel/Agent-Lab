@@ -8,15 +8,23 @@ import { z } from 'zod';
 
 import { desktopCheckoutKey, type DesktopStopBoundary } from '../desktop-stop';
 
-import { readImageReferences, relativeImagePath, reserveImageOutput, saveNewImage, validateImageOutput } from './image-files';
-import { estimateImageOutputUsd, generateOpenAIImage, ImageResponseError, type ImageProviderUsage } from './image-provider';
+import {
+  prepareImageReservation,
+  publishedReservationCleanup,
+  readImageReferences,
+  recoverPublishedImage,
+  relativeImagePath,
+  saveNewImage,
+  validateImageOutput,
+} from './image-files';
+import { ImageJournal, type ImageJournalEntry, type ImageReceipt as Receipt } from './image-journal';
+import { estimateImageOutputUsd, generateOpenAIImage, ImageResponseError } from './image-provider';
 
 import type { ContextMessage } from '@common/types';
 import type { Task } from '@/task';
 import type { Store } from '@/store';
 
 import { AIDER_DESK_DATA_DIR } from '@/constants';
-import { atomicWriteJsonFile } from '@/utils/atomic-write';
 
 const fileName = z.string().min(1).max(512);
 const requestSchema = z.object({
@@ -26,23 +34,17 @@ const requestSchema = z.object({
 });
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const destinations = new Set<string>();
-type Receipt = {
-  jobId: string;
-  output: string;
-  state: 'running' | 'completed' | 'failed';
-  model: string;
-  size: string;
-  quality: string;
-  estimatedOutputUsd: number;
-  requestId?: string;
-  usage?: ImageProviderUsage;
-  billing?: 'not_sent' | 'unconfirmed' | 'usage_reported';
-  sha256?: string;
-  fileStatus?: 'verified' | 'changed' | 'missing' | 'unverified';
-  error?: string;
-};
 type Job = { done: Promise<Receipt> };
 const running = new Map<string, Promise<Receipt>>();
+const registered = (jobId: string, output: string) => ({ jobId, output, message: 'Richiesta già registrata. Usa images---result per leggerne l’esito.' });
+const recoverPublication = async (root: string, journal: ImageJournal, entry: ImageJournalEntry) => {
+  const { receipt, staged } = entry;
+  if (!staged || !receipt.sha256 || !(await recoverPublishedImage(root, receipt.output, receipt.jobId, staged, receipt.sha256))) {
+    return undefined;
+  }
+  const completed: Receipt = { ...receipt, state: 'completed', fileStatus: 'verified' };
+  return journal.finish(completed, await publishedReservationCleanup(root, receipt.output, receipt.jobId), true);
+};
 
 const selected = (store: Store) => {
   const config = store.getSettings().imageGeneration;
@@ -107,13 +109,32 @@ export class ProjectImageJobs {
         if (active) {
           return active;
         }
-        const record = JSON.parse(
-          await fs.readFile(recordPath, 'utf8').catch(() => {
-            throw new Error('Ricevuta immagini assente in questo task.');
-          }),
-        ) as Receipt;
+        const journal = new ImageJournal(directory);
+        const entry = journal.find('jobId', jobId);
+        if (entry?.phase === 'publishing') {
+          return (
+            (await recoverPublication(root, journal, entry)) ?? {
+              ...entry.receipt,
+              message: 'Il provider ha restituito un’immagine. La pubblicazione del PNG non è ancora confermata.',
+            }
+          );
+        }
+        if (entry?.phase === 'prepared' && entry.receipt.state === 'prepared') {
+          return {
+            ...entry.receipt,
+            message:
+              'Al momento della lettura la richiesta è in preparazione. Se la sessione si è interrotta, puoi ripeterla con lo stesso nome e una nuova conferma.',
+          };
+        }
+        const record =
+          entry?.receipt ??
+          (JSON.parse(
+            await fs.readFile(recordPath, 'utf8').catch(() => {
+              throw new Error('Ricevuta immagini assente in questo task.');
+            }),
+          ) as Receipt);
         if (record.state === 'running') {
-          throw new Error('Richiesta precedente interrotta. Verifica il consumo nel portale OpenAI prima di decidere se riprovare.');
+          throw new Error('Richiesta già avviata, in corso o interrotta. Verifica il consumo nel portale OpenAI prima di decidere se riprovare.');
         }
         if (record.state === 'completed') {
           record.fileStatus = 'unverified';
@@ -147,14 +168,26 @@ export class ProjectImageJobs {
     const key = desktopCheckoutKey(path.join(root, output));
     let held = false;
     let launched = false;
-    let release: (() => Promise<void>) | undefined;
+    let reservation: { release: () => void; abandon: () => void } | undefined;
     try {
       const config = selected(this.store);
       const { model, size, quality } = config;
       const estimatedOutputUsd = estimateImageOutputUsd(model, quality, size);
+      const journal = new ImageJournal(directory);
+      if (names.length) {
+        for (const entry of journal.publications()) {
+          if (names.some((name) => path.relative(name, entry.receipt.output) === '')) {
+            await recoverPublication(root, journal, entry);
+          }
+        }
+      }
       const references = await readImageReferences(root, names);
       const fingerprint = hash(JSON.stringify([key, config.providerId, model, size, quality, input.prompt, references.map((ref) => hash(ref.bytes))]));
       const claim = path.join(directory, fingerprint + '.claim');
+      const current = journal.find('fingerprint', fingerprint);
+      if (current && current.phase !== 'prepared') {
+        return registered(current.receipt.jobId, output);
+      }
       const prior = await fs.readFile(claim, 'utf8').catch((err) => {
         if (err.code !== 'ENOENT') {
           throw err;
@@ -165,11 +198,7 @@ export class ProjectImageJobs {
         if (!z.string().uuid().safeParse(prior).success) {
           throw new Error('Ricevuta precedente incompleta. Verifica il consumo nel portale OpenAI.');
         }
-        return {
-          jobId: prior,
-          output,
-          message: 'Richiesta già registrata. Usa images---result per leggerne l’esito.',
-        };
+        return registered(prior, output);
       }
       if (destinations.has(key)) {
         throw new Error('Un lavoro grafico sta già usando questa destinazione.');
@@ -197,26 +226,44 @@ export class ProjectImageJobs {
           throw new Error('Riferimenti cambiati dopo la conferma. Richiedi una nuova anteprima dei dati da inviare.');
         }
       }
-      release = await reserveImageOutput(root, output);
-      await fs.mkdir(directory, { recursive: true });
-      const jobId = randomUUID();
-      const receipt: Receipt = {
-        jobId,
+      this.signal.throwIfAborted();
+      const prepared = journal.prepare(fingerprint, {
+        jobId: randomUUID(),
         output,
-        state: 'running',
+        state: 'prepared',
+        billing: 'not_sent',
         model,
         size,
         quality,
         estimatedOutputUsd,
-      };
+      });
+      const jobId = prepared.receipt.jobId;
+      const receipt: Receipt = { jobId, output, model, size, quality, estimatedOutputUsd, state: 'running' };
       const record = path.join(directory, jobId + '.json');
-      await atomicWriteJsonFile(record, receipt);
-      await fs.writeFile(claim, jobId, { flag: 'wx', mode: 0o600 });
+      if (prepared.phase !== 'prepared') {
+        return registered(jobId, output);
+      }
+      const reserve = await prepareImageReservation(root, output, jobId);
+      this.signal.throwIfAborted();
+      if (
+        !journal.dispatch(receipt, (otherPrepared) => {
+          reservation = reserve(otherPrepared);
+        })
+      ) {
+        return registered(jobId, output);
+      }
+      const finish = async (preview?: string) => {
+        journal.finish(receipt, () => {
+          const cleanup = reservation;
+          reservation = undefined;
+          cleanup?.release();
+        });
+        await this.deliver(receipt, preview);
+      };
       const done = this.stop
         .run(async () => {
           let preview: string | undefined;
           try {
-            await validateImageOutput(root, output);
             this.signal.throwIfAborted();
             receipt.billing = 'unconfirmed';
             const result = await generateOpenAIImage({
@@ -233,9 +280,9 @@ export class ProjectImageJobs {
               receipt.billing = 'usage_reported';
             }
             receipt.requestId = result.requestId;
-            await saveNewImage(root, output, result.bytes, this.signal);
-            receipt.state = 'completed';
             receipt.sha256 = hash(result.bytes);
+            await saveNewImage(root, output, result.bytes, this.signal, jobId, (identity) => journal.publishing(receipt, identity));
+            receipt.state = 'completed';
             receipt.fileStatus = 'verified';
             await this.task.recordDesktopWrite(path.join(root, output), null, result.bytes);
             const { nativeImage } = await import('electron');
@@ -257,8 +304,7 @@ export class ProjectImageJobs {
               receipt.error = error instanceof Error ? error.message : 'Esito immagini non confermato.';
             }
           }
-          await atomicWriteJsonFile(record, receipt);
-          await this.deliver(receipt, preview);
+          await finish(preview);
           return receipt;
         }, true)
         .catch(async (error: unknown) => {
@@ -268,13 +314,12 @@ export class ProjectImageJobs {
           receipt.state = 'failed';
           receipt.billing = 'not_sent';
           receipt.error = 'Sessione chiusa prima dell’invio della richiesta.';
-          await atomicWriteJsonFile(record, receipt);
-          await this.deliver(receipt);
+          await finish();
           return receipt;
         })
-        .finally(async () => {
+        .finally(() => {
           try {
-            await release?.();
+            reservation?.abandon();
           } finally {
             destinations.delete(key);
             running.delete(record);
@@ -288,7 +333,9 @@ export class ProjectImageJobs {
     } finally {
       if (!launched) {
         try {
-          await release?.();
+          // A failed SQLite commit can release its writer lock before this catch.
+          // Keep the recoverable links intact for any worker already resuming that job.
+          reservation?.abandon();
         } finally {
           if (held) {
             destinations.delete(key);

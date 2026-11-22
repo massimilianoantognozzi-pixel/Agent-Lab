@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import type { ContextMessage, ContextUserMessage, Mode, PromptContext, ProposedPlan, Reasoning } from '@common/types';
+import type { ContextMessage, ContextUserMessage, DefaultTaskState, Mode, PromptContext, ProposedPlan, Reasoning } from '@common/types';
 import type { GoalVerificationCheckpoint, GoalVerificationUpdate } from '@/task/agent-goal';
 import type { AgentDesignReview } from '@/task/agent-design-review';
 
@@ -63,6 +63,11 @@ export type WorkerRecord = {
 };
 
 export type RootTurnRecord = WorkerRecord & {
+  cardCompletion?: {
+    startedAt: string;
+    completedAt: string;
+    state: DefaultTaskState.ReadyForReview | DefaultTaskState.ReadyForImplementation;
+  };
   noProgress?: NoProgressCheckpoint;
   turnId: string;
   directory: string;

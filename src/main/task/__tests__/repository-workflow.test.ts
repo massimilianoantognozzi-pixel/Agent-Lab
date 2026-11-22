@@ -1003,9 +1003,22 @@ describe('repository workflow', () => {
 
   it('plans a dedicated mobile flow, consults shadcn and reruns both reviews after a design correction', async () => {
     const design = { sharedLogic: 'Riusa filter.', ui: null, mobile: 'Schede con filtro nella barra delle azioni e dettagli a richiesta.', questions: [] };
+    const uiSources = {
+      'src/StatusTag.tsx': 'export const StatusTag = () => <span className="status">Attivo</span>;',
+      'src/LegacyRow.tsx': 'export const LegacyRow = () => <span className="status">In attesa</span>;',
+    };
+    policy.editable.push(...Object.keys(uiSources));
+    await Promise.all(Object.entries(uiSources).map(([file, content]) => fs.writeFile(path.join(policy.root, file), content)));
+    await fs.writeFile(path.join(policy.root, 'src/OtherPage.tsx'), 'export const Outside = () => <aside>Unconfigured page</aside>;');
     const fixedWithDetails = fixed + 'export const openDetails = (id: string) => ({ id });\n';
     let corrected = false;
     const generate = vi.fn<Generate>(async (stage, instructions, input) => {
+      if (['implement', 'debug', 'review', 'design-review'].includes(stage)) {
+        const payload = JSON.parse(input);
+        expect(payload.componentSources).toEqual(uiSources);
+        expect(payload.plan.files).toEqual(['src/filter.ts']);
+        expect(input).not.toContain('Unconfigured page');
+      }
       if (stage === 'plan') {
         return JSON.stringify({ ...plan, surface: 'mobile', skillNames: ['typescript-core'], components: ['drawer'] });
       }
@@ -1042,6 +1055,43 @@ describe('repository workflow', () => {
     expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['plan', 'design', 'implement', 'review', 'design-review', 'debug', 'review', 'design-review']);
     await expect(readRemoteRepositoryPatch(policy, statePath, approval.slice('/workflow approve '.length))).resolves.toContain('openDetails');
     expect(await fs.readFile(source(), 'utf8')).toBe(original);
+  });
+
+  it('offers existing components for a new view even when the planner omits its UI surface', async () => {
+    const view = 'src/Dispatch.tsx';
+    const component = 'src/StatusTag.tsx';
+    const definition = 'export const StatusTag = ({ label }: { label: string }) => <span role="status">{label}</span>;';
+    const newView = 'import { StatusTag } from "./StatusTag"; export const Dispatch = () => <StatusTag label="Pronto" />;';
+    policy.editable = [view, component];
+    policy.checks = [{ id: 'new-view', type: 'contains', file: view, text: '<StatusTag label="Pronto"' }];
+    await fs.writeFile(path.join(policy.root, component), definition);
+    const generate = vi.fn<Generate>(async (stage, _instructions, input) => {
+      const data = JSON.parse(input);
+      switch (stage) {
+        case 'plan':
+          return JSON.stringify({
+            ...plan,
+            files: [view],
+            surface: 'none',
+            reproduction: null,
+            criteria: [{ scenario: 'Mostra lo stato', check: 'new-view' }],
+          });
+        case 'implement':
+          expect(data.componentSources).toEqual({ [component]: definition });
+          return JSON.stringify({ changes: [{ path: view, content: newView }] });
+        case 'review':
+        case 'design-review':
+          expect(data.componentSources).toEqual({ [component]: definition });
+          expect(data.changes).toEqual([{ path: view, before: null, content: newView }]);
+          return JSON.stringify({ verdict: 'pass', findings: [] });
+        default:
+          throw new Error('Fase inattesa: ' + stage);
+      }
+    });
+    const draft = await run('/workflow feature Mostra lo stato nella pagina Spedizioni.', generate);
+    const approval = draft.message.match(/\/workflow approve [0-9a-f]{64}/)![0];
+    expect((await run(approval, generate)).phase).toBe('done');
+    expect(generate.mock.calls.map(([stage]) => stage)).toEqual(['plan', 'implement', 'review', 'design-review']);
   });
 
   it('requires design and design review when the versioned task declares a surface that the model omits', async () => {
@@ -1416,9 +1466,13 @@ describe('repository workflow', () => {
     await expect(readRepositoryWorkflow(statePath, policy)).resolves.toMatchObject({ phase: 'stale', checks: [] });
     await expect(readRemoteRepositoryPatch(policy, statePath, command.slice('/workflow approve '.length))).rejects.toThrow('estraneo al piano');
   });
-  it.skipIf(!process.env.AIDER_DESK_DOCKER_TEST_IMAGE)(
-    'uses the real isolated Docker runner for reproduction and delivery',
-    async () => {
+  it.skipIf(!process.env.AIDER_DESK_DOCKER_TEST_IMAGE).each([
+    ['ordinary path', 'data'],
+    ['CSV punctuation', process.platform === 'win32' ? 'jobs, edition=2' : 'jobs, edition="B"\r\nsecond line'],
+  ])(
+    'uses the real isolated Docker runner for reproduction and delivery (%s)',
+    async (_label, folder) => {
+      statePath = path.join(tmp, folder, 'task.json');
       const image = process.env.AIDER_DESK_DOCKER_TEST_IMAGE!;
       assertDockerImage(image);
       policy.context.push('verify.mjs');

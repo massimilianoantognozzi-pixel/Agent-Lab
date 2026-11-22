@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import AdmZip from 'adm-zip';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -39,6 +41,7 @@ const verify = async (directory: string) => {
 };
 
 const install = async (directory: string, signal: AbortSignal) => {
+  signal.throwIfAborted();
   const response = await fetch(url, { signal });
   if (!response.ok || !response.body) {
     throw new Error('Download di Cua Driver non riuscito.');
@@ -46,6 +49,7 @@ const install = async (directory: string, signal: AbortSignal) => {
   const bytes: Buffer[] = [];
   let size = 0;
   for await (const chunk of response.body) {
+    signal.throwIfAborted();
     size += chunk.byteLength;
     if (size > archiveSize) {
       throw new Error('Dimensione del download inattesa.');
@@ -53,6 +57,7 @@ const install = async (directory: string, signal: AbortSignal) => {
     bytes.push(Buffer.from(chunk));
   }
   const data = Buffer.concat(bytes);
+  signal.throwIfAborted();
   if (size !== archiveSize || sha(data) !== archiveDigest) {
     throw new Error('Archivio Cua Driver diverso dalla versione verificata.');
   }
@@ -62,6 +67,7 @@ const install = async (directory: string, signal: AbortSignal) => {
   try {
     const zip = new AdmZip(data);
     for (const name of Object.keys(files)) {
+      signal.throwIfAborted();
       const entry = zip.getEntry(name);
       if (!entry || entry.isDirectory) {
         throw new Error('Archivio Cua Driver incompleto.');
@@ -85,17 +91,104 @@ const install = async (directory: string, signal: AbortSignal) => {
   }
 };
 
+export const prepareDriverCache = async (
+  directory: string,
+  signal: AbortSignal,
+  operations: { verify: typeof verify; install: typeof install },
+): Promise<void> => {
+  const installed = async () => {
+    try {
+      await operations.verify(directory);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+      return false;
+    }
+  };
+  signal.throwIfAborted();
+  const alreadyInstalled = await installed();
+  signal.throwIfAborted();
+  if (alreadyInstalled) {
+    return;
+  }
+  await fs.mkdir(path.dirname(directory), { recursive: true });
+  signal.throwIfAborted();
+  const lock = new DatabaseSync(directory + '.install.sqlite', { timeout: 0 });
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      try {
+        lock.exec('BEGIN IMMEDIATE');
+        break;
+      } catch (error) {
+        // SQLITE_BUSY (5) or one of its extended result codes. Never block the main thread waiting for another installer.
+        const code = (error as { errcode?: number }).errcode;
+        if (code === undefined || (code & 0xff) !== 5) {
+          throw error;
+        }
+        await delay(100, undefined, { signal });
+      }
+    }
+    const installedWhileWaiting = await installed();
+    signal.throwIfAborted();
+    if (installedWhileWaiting) {
+      return;
+    }
+    await operations.install(directory, signal);
+    signal.throwIfAborted();
+    await operations.verify(directory);
+    signal.throwIfAborted();
+  } finally {
+    // Closing rolls back the empty transaction. The OS also releases its lock when the owner dies.
+    lock.close();
+  }
+};
+
+// Concurrent desktop turns share verified files, never an MCP client or the consent of another turn.
+export const createDriverPreparation = (prepare: (directory: string, signal: AbortSignal) => Promise<void>) => {
+  const pending = new Map<string, { controller: AbortController; ready: Promise<void>; users: number }>();
+  return async (directory: string, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
+    const key = process.platform === 'win32' ? path.resolve(directory).toLowerCase() : path.resolve(directory);
+    let job = pending.get(key);
+    if (!job) {
+      const controller = new AbortController();
+      const ready = prepare(directory, controller.signal).finally(() => {
+        if (pending.get(key)?.controller === controller) {
+          pending.delete(key);
+        }
+      });
+      job = { controller, ready, users: 0 };
+      pending.set(key, job);
+    }
+    job.users++;
+    const stopped = Promise.withResolvers<never>();
+    const cancel = () => stopped.reject(signal.reason);
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) {
+      cancel();
+    }
+    try {
+      await Promise.race([job.ready, stopped.promise]);
+      signal.throwIfAborted();
+    } finally {
+      signal.removeEventListener('abort', cancel);
+      job.users--;
+      if (!job.users && pending.get(key) === job) {
+        pending.delete(key);
+        job.controller.abort();
+      }
+    }
+  };
+};
+
+const prepareSharedDriver = createDriverPreparation((directory, signal) => prepareDriverCache(directory, signal, { verify, install }));
+
 export const openComputerDriver = async (signal: AbortSignal) => {
   const directory = path.join(AIDER_DESK_BIN_DIR, 'cua-driver-0.52.0-win-x64');
-  try {
-    await verify(directory);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error;
-    }
-    await install(directory, signal);
-    await verify(directory);
-  }
+  await prepareSharedDriver(directory, signal);
   signal.throwIfAborted();
   const transport = new StdioClientTransport({
     command: path.join(directory, binary),

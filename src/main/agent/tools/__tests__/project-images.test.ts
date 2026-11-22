@@ -1,12 +1,13 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DesktopStopBoundary } from '../../desktop-stop';
-import { reserveImageOutput } from '../image-files';
+import { desktopCheckoutKey, DesktopStopBoundary } from '../../desktop-stop';
+import { prepareImageReservation } from '../image-files';
+import { ImageJournal } from '../image-journal';
 import { ImageResponseError } from '../image-provider';
 import { ProjectImageJobs } from '../project-images';
 
@@ -14,6 +15,9 @@ import type { generateOpenAIImage } from '../image-provider';
 import type { ContextMessage } from '@common/types';
 import type { Store } from '@/store';
 import type { Task } from '@/task';
+
+vi.unmock('fs');
+vi.unmock('path');
 
 const mock = vi.hoisted(() => ({
   data: '',
@@ -277,12 +281,13 @@ describe('native desktop image jobs', () => {
 
   it('respects a destination already reserved by another worker on disk', async () => {
     const s = session();
-    const release = await reserveImageOutput(root, input.output);
+    const reserve = await prepareImageReservation(root, input.output, randomUUID());
+    const reservation = reserve([]);
     try {
       await expect(s.start()).rejects.toThrow('prenotata');
       expect(mock.generate).not.toHaveBeenCalled();
     } finally {
-      await release();
+      reservation.release();
     }
     const retry = await s.start();
     expect((await s.result(retry.jobId)).state).toBe('completed');
@@ -291,17 +296,22 @@ describe('native desktop image jobs', () => {
 
   it('records not_sent when desktop quiescence begins after the receipt but before dispatch', async () => {
     const s = session();
-    const write = fs.writeFile.bind(fs);
-    vi.spyOn(fs, 'writeFile').mockImplementation(async (file, data, options) => {
-      await write(file, data, options);
-      if (typeof file === 'string' && file.endsWith('.claim')) {
-        s.stop.request();
-      }
+    const dispatch = ImageJournal.prototype.dispatch;
+    vi.spyOn(ImageJournal.prototype, 'dispatch').mockImplementationOnce(function (this: ImageJournal, jobId, reserve) {
+      const result = dispatch.call(this, jobId, reserve);
+      s.stop.request();
+      return result;
     });
     const started = await s.start();
     expect(await s.result(started.jobId)).toMatchObject({ state: 'failed', billing: 'not_sent' });
     expect(mock.generate).not.toHaveBeenCalled();
     await expect(fs.stat(path.join(root, input.output))).rejects.toMatchObject({ code: 'ENOENT' });
+    const next = session(s.id);
+    const resumed = await next.start();
+    expect(resumed.jobId).toBe(started.jobId);
+    expect(await next.result(resumed.jobId)).toMatchObject({ state: 'completed' });
+    expect(mock.dialog).toHaveBeenCalledTimes(2);
+    expect(mock.generate).toHaveBeenCalledTimes(1);
   });
 
   it('reports an unconfirmed charge on cancellation after dispatch; replay is a receipt read', async () => {
@@ -382,18 +392,69 @@ describe('native desktop image jobs', () => {
     expect(mock.generate).toHaveBeenCalledTimes(1);
   });
 
-  it('reports an interrupted persisted receipt on restart without sending the request again', async () => {
-    const s = session(),
-      started = await s.start();
-    const saved = await s.result(started.jobId);
-    const bucket = path.join(mock.data, 'image-jobs');
-    const [scope] = await fs.readdir(bucket);
-    expect(scope).toBeTruthy();
-    await fs.writeFile(path.join(bucket, scope, started.jobId + '.json'), JSON.stringify({ ...saved, state: 'running' }));
+  it('reads a legacy claim and its uncertain receipt without sending the request again', async () => {
+    const s = session();
+    const sha = (value: string) => createHash('sha256').update(value).digest('hex');
+    const bucket = path.join(mock.data, 'image-jobs', sha(desktopCheckoutKey(root) + '\n' + s.id));
+    const cfg = config();
+    const key = desktopCheckoutKey(path.join(root, input.output));
+    const fingerprint = sha(JSON.stringify([key, cfg.providerId, cfg.model, cfg.size, cfg.quality, input.prompt, []]));
+    const jobId = randomUUID();
+    await fs.mkdir(bucket, { recursive: true });
+    await fs.writeFile(path.join(bucket, fingerprint + '.claim'), jobId);
+    await fs.writeFile(path.join(bucket, jobId + '.json'), JSON.stringify({ jobId, state: 'running', output: input.output }));
     const restarted = session(s.id);
-    expect((await restarted.start()).jobId).toBe(started.jobId);
-    await expect(restarted.result(started.jobId)).rejects.toThrow('Verifica il consumo');
-    expect(mock.dialog).toHaveBeenCalledTimes(1);
+    expect((await restarted.start()).jobId).toBe(jobId);
+    await expect(restarted.result(jobId)).rejects.toThrow('Verifica il consumo');
+    expect(mock.dialog).not.toHaveBeenCalled();
+    expect(mock.generate).not.toHaveBeenCalled();
+  });
+
+  it('requires new consent and can resume a definitely unsent preparation with the same filename', async () => {
+    const s = session();
+    let preparedId = '';
+    vi.spyOn(ImageJournal.prototype, 'dispatch').mockImplementationOnce((receipt) => {
+      preparedId = receipt.jobId;
+      throw new Error('interruzione prima della consegna');
+    });
+    await expect(s.start()).rejects.toThrow('interruzione');
+    const restored = session(s.id);
+    expect(await restored.result(preparedId)).toMatchObject({ state: 'prepared', billing: 'not_sent' });
+    expect(mock.generate).not.toHaveBeenCalled();
+    const resumed = await restored.start();
+    expect(resumed.jobId).toBe(preparedId);
+    expect(await restored.result(resumed.jobId)).toMatchObject({ state: 'completed' });
+    expect(mock.dialog).toHaveBeenCalledTimes(2);
+    expect(mock.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers an interrupted preparation even if the approved prompt changes; leaves an unowned legacy lock intact', async () => {
+    const s = session();
+    let oldJob = '';
+    vi.spyOn(ImageJournal.prototype, 'dispatch').mockImplementationOnce((receipt) => {
+      oldJob = receipt.jobId;
+      throw new Error('interrupted');
+    });
+    await expect(s.start()).rejects.toThrow('interrupted');
+    const dir = path.join(root, 'assets');
+    const owner = path.join(dir, '.agent-lab-image-' + oldJob + '.owner');
+    const lock = path.join(dir, '.agent-lab-image-' + createHash('sha256').update('foglia.png').digest('hex') + '.lock');
+    await fs.writeFile(owner, '');
+    await fs.writeFile(lock, '');
+    const changed = { ...input, prompt: 'Variante richiesta' };
+    await expect(session(s.id).start(changed)).rejects.toThrow('versione precedente');
+    expect(await fs.readFile(lock, 'utf8')).toBe('');
+    expect((await fs.stat(owner)).nlink).toBe(1);
+    expect(mock.generate).not.toHaveBeenCalled();
+    // Reconstruct the on-disk handoff of the older, still-prepared job.
+    await fs.unlink(lock);
+    await fs.writeFile(owner, '');
+    await fs.link(owner, lock);
+    const restored = session(s.id);
+    const job = await restored.start(changed);
+    expect(job.jobId).not.toBe(oldJob);
+    expect(await restored.result(job.jobId)).toMatchObject({ state: 'completed' });
+    expect(await fs.readdir(dir)).toEqual(['foglia.png']);
     expect(mock.generate).toHaveBeenCalledTimes(1);
   });
 
@@ -406,5 +467,55 @@ describe('native desktop image jobs', () => {
     expect(receipt.usage?.calculatedCostUsd).toBeUndefined();
     expect(await fs.readFile(path.join(root, input.output))).toEqual(image);
     expect(mock.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['receipt', 'edit', 'changed'] as const)('reconciles a published PNG after a crash via %s and retains the provider evidence', async (action) => {
+    const s = session();
+    const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const directory = path.join(mock.data, 'image-jobs', sha(desktopCheckoutKey(root) + '\n' + s.id));
+    const journal = new ImageJournal(directory);
+    const cfg = config();
+    const jobId = randomUUID();
+    const receipt = {
+      jobId,
+      output: input.output,
+      state: 'running' as const,
+      model: cfg.model,
+      size: cfg.size,
+      quality: cfg.quality,
+      estimatedOutputUsd: 0.02469,
+    };
+    journal.prepare('test-fingerprint', receipt);
+    journal.dispatch(receipt, () => {});
+    const parent = path.join(root, 'assets');
+    await fs.mkdir(parent);
+    const stage = path.join(parent, '.agent-lab-image-' + jobId + '.tmp'),
+      output = path.join(root, input.output);
+    await fs.writeFile(stage, image);
+    const { ino, dev } = await fs.stat(stage, { bigint: true });
+    journal.publishing(
+      { ...receipt, sha256: sha(image), billing: 'usage_reported', requestId: response.requestId, usage },
+      { ino: String(ino), dev: String(dev) },
+    );
+    await fs.link(stage, output);
+    if (action === 'changed') {
+      await fs.appendFile(output, 'modificato');
+      expect(await s.result(jobId)).toMatchObject({ state: 'running', usage, requestId: response.requestId });
+      expect((await fs.stat(stage)).nlink).toBe(2);
+      expect(mock.generate).not.toHaveBeenCalled();
+      return;
+    }
+    if (action === 'edit') {
+      const variant = await s.start({ output: 'variant.png', prompt: 'Una variante', references: [input.output] });
+      expect(await s.result(variant.jobId)).toMatchObject({ state: 'completed' });
+      expect(mock.generate).toHaveBeenCalledTimes(1);
+    } else {
+      expect(mock.generate).not.toHaveBeenCalled();
+    }
+    expect(await s.result(jobId)).toMatchObject({ state: 'completed', fileStatus: 'verified', usage, requestId: response.requestId });
+    expect(await fs.readFile(output)).toEqual(image);
+    expect((await fs.stat(output)).nlink).toBe(1);
+    await expect(fs.stat(stage)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(mock.generate).toHaveBeenCalledTimes(action === 'edit' ? 1 : 0);
   });
 });

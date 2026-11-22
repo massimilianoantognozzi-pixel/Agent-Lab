@@ -261,6 +261,225 @@ describe('Task - findSkillActivationMessages', () => {
     content: [toolResult],
   });
 
+  describe('card state recovered from the current root turn', () => {
+    const turnId = '7fc3e57c-fba6-46c3-af62-f68e23e37a67';
+    const replyId = 'b6934f97-b31d-4194-bb8b-1344eba79aa0';
+    const start = Date.UTC(2026, 10, 20, 8, 30);
+    const startedAt = new Date(start).toISOString();
+    const finishedAt = new Date(start + 9_000).toISOString();
+    const promptContext = { id: turnId };
+
+    const setupCard = (state: string = DefaultTaskState.InProgress) => {
+      const record: RootTurnRecord = {
+        turnId,
+        directory: baseDir,
+        provider: 'test-provider',
+        model: 'test-model',
+        profileId: 'test-profile',
+        epoch: 'worker-generation-1',
+        state: 'success',
+        mode: 'agent',
+        messages: [
+          { id: turnId, role: 'user', content: 'Complete the current operation', timestamp: start - 50, promptContext },
+          { id: replyId, role: 'assistant', content: [{ type: 'text', text: 'Operation complete.' }], timestamp: start + 9_000, promptContext },
+        ],
+      };
+      Object.assign(task.task, {
+        state,
+        startedAt,
+        completedAt: undefined,
+        interruptedAt: state === DefaultTaskState.Interrupted ? new Date(start + 12_000).toISOString() : undefined,
+        metadata: { recoverableRootTurn: turnId, workerEpoch: record.epoch },
+      });
+      // Old JSON checkpoints never carried a cardCompletion; pass a detached copy, just as a disk read would.
+      const read = vi.fn(async (): Promise<RootTurnRecord> => JSON.parse(JSON.stringify(record)));
+      const lastUser = vi.fn(async () => turnId);
+      Object.assign(task, { readRootTurn: read });
+      Object.assign(Reflect.get(task, 'contextManager'), { lastUserIdForRecovery: lastUser });
+      vi.spyOn(task, 'getTaskAgentProfile').mockResolvedValue({ id: record.profileId, model: record.model, provider: record.provider } as never);
+      vi.spyOn(task, 'isPromptRunning').mockReturnValue(false);
+      vi.spyOn(task, 'hasQueuedPrompts').mockReturnValue(false);
+      const save = vi.spyOn(task, 'saveTask').mockImplementation(async (changes) => Object.assign(task.task, changes));
+      const replay = vi.spyOn(task, 'runPromptInAgent').mockResolvedValue([]);
+      vi.spyOn(task, 'init').mockResolvedValue(undefined);
+      vi.spyOn(task, 'getContextFiles').mockResolvedValue([]);
+      vi.spyOn(task, 'getTodos').mockResolvedValue([]);
+      Object.assign(task, { restoreGovernedContinuation: vi.fn(), restoreAgentGoal: vi.fn() });
+      return { record, save, replay, lastUser };
+    };
+
+    it.each([DefaultTaskState.InProgress, DefaultTaskState.Interrupted])(
+      'projects and restores a completed legacy turn from %s without replay',
+      async (state) => {
+        const { save, replay } = setupCard(state);
+        const before = structuredClone(task.task);
+        expect(await task.workListData()).toMatchObject({ state: DefaultTaskState.ReadyForReview, completedAt: finishedAt });
+        expect((await task.workListData()).interruptedAt).toBeUndefined();
+        expect(task.task).toEqual(before);
+        expect(save).not.toHaveBeenCalled();
+        await task.load(true);
+        expect(save).not.toHaveBeenCalled();
+        expect(task.task).toEqual(before);
+        await task.load();
+        expect(task.task).toMatchObject({ state: DefaultTaskState.ReadyForReview, completedAt: finishedAt });
+        expect(task.task.interruptedAt).toBeUndefined();
+        expect(save).toHaveBeenCalledTimes(1);
+        await task.load();
+        expect(task.task.completedAt).toBe(finishedAt);
+        expect(save).toHaveBeenCalledTimes(1);
+        expect(replay).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['pending plan', 'approval question'])('recovers the implementation state for a legacy %s', async (kind) => {
+      const { record, replay } = setupCard(DefaultTaskState.Interrupted);
+      if (kind === 'pending plan') {
+        record.mode = 'codex-plan';
+        task.task.currentMode = 'codex-plan';
+        task.task.metadata = { ...task.task.metadata, pendingPlan: { id: 'plan-final', markdown: 'Review this plan.', turnId, taskId, directory: baseDir } };
+      } else {
+        record.messages[1] = { id: replyId, role: 'assistant', content: 'Steps are ready.\nProceed? (y/n)', timestamp: start + 9000, promptContext };
+      }
+      expect((await task.workListData()).state).toBe(DefaultTaskState.ReadyForImplementation);
+      await task.load();
+      expect(task.task.state).toBe(DefaultTaskState.ReadyForImplementation);
+      expect(task.task.completedAt).toBe(finishedAt);
+      expect(task.task.interruptedAt).toBeUndefined();
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it('leaves a live task to assign its own final state while finishing or classifying its answer', async () => {
+      const { save, replay } = setupCard(DefaultTaskState.InProgress);
+      Object.assign(task, { finalizingRootTurn: turnId });
+      expect((await task.workListData()).state).toBe(DefaultTaskState.InProgress);
+      await task.load();
+      expect(save).not.toHaveBeenCalled();
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it('accepts the explicit completion for this operation and does not reuse the same receipt on a later card', async () => {
+      const { record, save, replay } = setupCard(DefaultTaskState.Interrupted);
+      const end = new Date(start + 10_000).toISOString();
+      Object.assign(record, { cardCompletion: { startedAt, completedAt: end, state: DefaultTaskState.ReadyForReview } });
+      await task.load();
+      expect(task.task).toMatchObject({ state: DefaultTaskState.ReadyForReview, completedAt: end, metadata: { settledRootTurn: turnId } });
+      // A manual card change can retain the same startedAt. Only the settlement marker distinguishes this case.
+      Object.assign(task.task, { state: DefaultTaskState.Interrupted, completedAt: undefined });
+      save.mockClear();
+      expect((await task.workListData()).state).toBe(DefaultTaskState.Interrupted);
+      await task.load();
+      expect(task.task.state).toBe(DefaultTaskState.Interrupted);
+      expect(save).not.toHaveBeenCalled();
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it('does not reinterpret an explicit marker for an older operation as a legacy success', async () => {
+      const { record, save, replay } = setupCard(DefaultTaskState.Interrupted);
+      record.cardCompletion = {
+        state: DefaultTaskState.ReadyForReview,
+        startedAt: new Date(start - 60_000).toISOString(),
+        completedAt: finishedAt,
+      };
+      expect((await task.workListData()).state).toBe(DefaultTaskState.Interrupted);
+      await task.load();
+      expect(task.task.completedAt).toBeUndefined();
+      expect(save).not.toHaveBeenCalled();
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['turnId', 'other-turn'],
+      ['directory', '/another/checkout'],
+      ['epoch', 'another-epoch'],
+      ['profileId', 'another-profile'],
+      ['provider', 'another-provider'],
+      ['model', 'another-model'],
+    ] as const)('ignores a success with a different %s', async (field, value) => {
+      const { record, save, replay } = setupCard(DefaultTaskState.Interrupted);
+      record[field] = value;
+      expect((await task.workListData()).state).toBe(DefaultTaskState.Interrupted);
+      await task.load();
+      expect(task.task.state).toBe(DefaultTaskState.Interrupted);
+      expect(save).not.toHaveBeenCalled();
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'later start',
+      'new user in context',
+      'unreadable saved context',
+      'empty history',
+      'no user timestamp',
+      'no final assistant timestamp',
+      'out-of-order timestamps',
+    ])('does not invent completion for a legacy record with %s', async (kind) => {
+      const { record, save, replay, lastUser } = setupCard(DefaultTaskState.Interrupted);
+      if (kind === 'later start') {
+        task.task.startedAt = new Date(start + 60_000).toISOString();
+      }
+      if (kind === 'new user in context') {
+        lastUser.mockResolvedValue('b70aa502-6993-4f9e-9687-28bb68a3b9bc');
+      }
+      if (kind === 'unreadable saved context') {
+        lastUser.mockRejectedValue(new SyntaxError('Invalid saved JSON'));
+      }
+      if (kind === 'empty history') {
+        record.messages = [];
+      }
+      if (kind === 'no user timestamp') {
+        delete record.messages[0].timestamp;
+      }
+      if (kind === 'no final assistant timestamp') {
+        delete record.messages[1].timestamp;
+      }
+      if (kind === 'out-of-order timestamps') {
+        record.messages[0].timestamp = start + 9_100;
+      }
+      expect((await task.workListData()).state).toBe(DefaultTaskState.Interrupted);
+      await task.load();
+      expect(task.task.state).toBe(DefaultTaskState.Interrupted);
+      expect(task.task.completedAt).toBeUndefined();
+      expect(save).not.toHaveBeenCalled();
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it.each([DefaultTaskState.Done, 'LOCAL_REVIEW'])('preserves the manually assigned %s card', async (state) => {
+      const { save, replay } = setupCard(state);
+      const manualDate = new Date(start + 20_000).toISOString();
+      task.task.completedAt = manualDate;
+      expect(await task.workListData()).toMatchObject({ state, completedAt: manualDate });
+      await task.load();
+      expect(task.task).toMatchObject({ state, completedAt: manualDate });
+      expect(save).not.toHaveBeenCalled();
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it.each(['success', 'running'] as const)('closes and reopens the %s root operation without running it again', async (state) => {
+      const { record, save, replay } = setupCard();
+      record.state = state;
+      if (state === 'running') {
+        record.messages = record.messages.slice(0, 1);
+      }
+      Object.assign(task, { initialized: true });
+      Object.assign(mockExtensionManager, { dispatchEvent: vi.fn().mockResolvedValue({}) });
+      Object.assign(Reflect.get(task, 'aiderManager'), { kill: vi.fn().mockResolvedValue(undefined) });
+      vi.spyOn(Reflect.get(task, 'contextManager'), 'save').mockResolvedValue(undefined);
+      vi.spyOn(task, 'interruptResponse').mockResolvedValue(undefined);
+      await task.close(false, false);
+      await task.load();
+      if (state === 'success') {
+        expect(task.task).toMatchObject({ state: DefaultTaskState.ReadyForReview, completedAt: finishedAt });
+        expect(task.task.interruptedAt).toBeUndefined();
+        expect(save.mock.calls.some(([changes]) => changes?.state === DefaultTaskState.Interrupted)).toBe(false);
+      } else {
+        expect(task.task.state).toBe(DefaultTaskState.Interrupted);
+        expect(task.task.interruptedAt).toEqual(expect.any(String));
+        expect(task.task.completedAt).toBeUndefined();
+      }
+      expect(replay).not.toHaveBeenCalled();
+    });
+  });
+
   it('routes /goal to the task runtime without treating it as a prompt or a pending answer', async () => {
     const handleAgentGoalCommand = vi.fn().mockResolvedValue(undefined);
     const answerQuestion = vi.spyOn(task, 'answerQuestion').mockResolvedValue(true);

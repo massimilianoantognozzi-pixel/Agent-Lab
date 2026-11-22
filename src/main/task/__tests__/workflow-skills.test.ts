@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isWorkflowKind, WORKFLOW_SKILL_SOURCES, workflowSkills } from '../workflow-skills';
+import { isWorkflowKind, projectComponentInstructions, WORKFLOW_SKILL_SOURCES, workflowSkills, type WorkflowStage } from '../workflow-skills';
 
 describe('procedure del workflow', () => {
   it('riconosce soltanto le tre categorie esplicite', () => {
@@ -32,5 +32,13 @@ describe('procedure del workflow', () => {
         'compoundEngineering',
       ]),
     );
+  });
+
+  it('trasmette la regola dei componenti dal piano alle revisioni anche durante una correzione', () => {
+    const stages: WorkflowStage[] = ['plan', 'design', 'implement', 'debug', 'review', 'design-review'];
+    for (const stage of stages) {
+      expect(workflowSkills('change', stage)).toContain(projectComponentInstructions);
+    }
+    expect(workflowSkills('change', 'design-review')).toContain('una copia che elude la correzione richiesta');
   });
 });

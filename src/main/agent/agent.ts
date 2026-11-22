@@ -112,6 +112,7 @@ import { Task } from '@/task';
 import { assertWorkflowText, isGovernedWorkflow } from '@/task/workflow-policy';
 import { uncachedGoalTokens, goalVerificationBinding } from '@/task/agent-goal';
 import { AgentDesignReviewPending } from '@/task/agent-design-review';
+import { projectComponentInstructions } from '@/task/workflow-skills';
 import { goalWorktreeRevision, NATIVE_EMPTY_TEST_REPORT, NATIVE_VERIFICATION_RESEARCH_QUERY } from '@/task/goal-verification';
 import { Store } from '@/store';
 import logger from '@/logger';
@@ -1612,6 +1613,7 @@ export class Agent {
           }),
           instructions: [
             systemPrompt,
+            projectComponentInstructions,
             mode === CODEX_PLAN_MODE ? CODEX_PLAN_INSTRUCTIONS : undefined,
             recoveryInstructions,
             goalInstructions,

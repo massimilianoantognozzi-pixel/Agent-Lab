@@ -1,8 +1,9 @@
-import { constants } from 'node:fs';
+import { closeSync, constants, fstatSync, linkSync, lstatSync, openSync, realpathSync, unlinkSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
+import type { BigIntStats } from 'node:fs';
 import type { ImageReference } from './image-provider';
 
 import { validateWorkflowPath } from '@/task/workflow-policy';
@@ -101,55 +102,256 @@ export const readImageReferences = async (root: string, names: string[]): Promis
   return references;
 };
 
-// The claim lives beside the destination so independent desktop instances and profiles see the same reservation.
-export const reserveImageOutput = async (root: string, output: string) => {
-  const target = await validateImageOutput(root, output, true);
-  const basename = path.basename(target);
+const imageClaimName = (output: string) => {
+  const basename = path.basename(output);
   const identity = createHash('sha256')
     .update(process.platform === 'win32' ? basename.toLowerCase() : basename)
     .digest('hex');
-  const relativeClaim = path.join(path.dirname(output), '.agent-lab-image-' + identity + '.lock');
-  const claim = await imagePath(root, relativeClaim);
-  const handle = await fs.open(claim, 'wx', 0o600).catch((err) => {
-    if (err.code === 'EEXIST') {
-      throw new Error('Questa destinazione è prenotata da una richiesta in corso o interrotta. Verifica la ricevuta prima di riprovare.');
+  return '.agent-lab-image-' + identity + '.lock';
+};
+
+// Caller holds the task journal writer lock. A legacy/foreign marker cannot
+// be cleared using a filename alone: both directory entries must be our inode.
+const releaseOwnedLinks = (claim: string, owner: string) => {
+  const dir = path.dirname(claim);
+  if (!same(realpathSync(dir), dir)) {
+    throw new Error('Cartella della prenotazione cambiata.');
+  }
+  const old = lstatSync(owner, { bigint: true, throwIfNoEntry: false });
+  if (!old?.isFile() || old.size !== 0n || old.ino === 0n) {
+    return;
+  }
+  const marker = lstatSync(claim, { bigint: true, throwIfNoEntry: false });
+  if (!marker?.isFile() || marker.dev !== old.dev || marker.ino !== old.ino || old.nlink !== 2n) {
+    return;
+  }
+  unlinkSync(claim);
+  unlinkSync(owner);
+};
+
+export const publishedReservationCleanup = async (root: string, output: string, jobId: string) => {
+  const dir = path.dirname(await imagePath(root, output));
+  return () => releaseOwnedLinks(path.join(dir, imageClaimName(output)), path.join(dir, '.agent-lab-image-' + jobId + '.owner'));
+};
+
+// Publish the token by hard link. A crash can never expose a partially written owner ID.
+export const prepareImageReservation = async (root: string, output: string, jobId: string) => {
+  const target = await validateImageOutput(root, output, true);
+  const claim = await imagePath(root, path.join(path.dirname(output), imageClaimName(output)));
+  const owner = await imagePath(root, path.join(path.dirname(output), '.agent-lab-image-' + jobId + '.owner'));
+  return (otherPrepared: string[]) => {
+    const dir = path.dirname(claim);
+    if (!same(realpathSync(dir), dir)) {
+      throw new Error('Cartella della prenotazione cambiata.');
     }
-    throw err;
-  });
-  const acquired = await handle.stat();
-  return async () => {
-    try {
-      const named = await fs.lstat(await imagePath(root, relativeClaim));
-      if (named.dev !== acquired.dev || named.ino !== acquired.ino || !named.isFile()) {
-        throw new Error('Prenotazione immagini cambiata.');
+    if (lstatSync(target, { throwIfNoEntry: false })) {
+      throw new Error('Il file esiste già. Scegli un nuovo nome per conservare la versione precedente.');
+    }
+    // The caller holds the journal writer lock. Only jobs in this task that
+    // have provably never dispatched may give up ownership of this name.
+    for (const previous of otherPrepared) {
+      if (!/^[0-9a-f-]{36}$/i.test(previous)) {
+        continue;
       }
-      await fs.unlink(claim);
-    } finally {
-      await handle.close();
+      const oldOwner = path.join(dir, '.agent-lab-image-' + previous + '.owner');
+      releaseOwnedLinks(claim, oldOwner);
     }
+    let fd: number;
+    let created = false;
+    try {
+      fd = openSync(owner, 'wx', 0o600);
+      created = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+      fd = openSync(owner, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    }
+    const matches = (file: string) => {
+      const named = lstatSync(file, { bigint: true });
+      const held = fstatSync(fd, { bigint: true });
+      return named.isFile() && held.isFile() && held.ino !== 0n && named.dev === held.dev && named.ino === held.ino && held.size === 0n && held.nlink <= 2n;
+    };
+    try {
+      if (!matches(owner)) {
+        throw new Error('Prenotazione immagini non valida.');
+      }
+      try {
+        linkSync(owner, claim);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw error;
+        }
+        if (!matches(claim)) {
+          throw new Error(
+            'Destinazione prenotata da un altro lavoro o da una versione precedente. Controlla la task originale. Se manca una ricevuta, usa un nuovo nome e verifica il consumo prima di confermare.',
+          );
+        }
+      }
+    } catch (error) {
+      try {
+        if (created && matches(owner)) {
+          unlinkSync(owner);
+        }
+      } finally {
+        closeSync(fd);
+      }
+      throw error;
+    }
+    return {
+      abandon: () => closeSync(fd),
+      release: () => {
+        try {
+          if (!lstatSync(owner, { throwIfNoEntry: false })) {
+            return;
+          } // An already verified publication may have been recovered by another process.
+          if (!same(realpathSync(dir), dir) || !matches(claim) || !matches(owner)) {
+            throw new Error('Prenotazione immagini cambiata.');
+          }
+          unlinkSync(claim);
+          unlinkSync(owner);
+        } finally {
+          closeSync(fd);
+        }
+      },
+    };
   };
 };
 
-export const saveNewImage = async (root: string, output: string, bytes: Buffer, signal: AbortSignal) => {
-  const target = await validateImageOutput(root, output, true);
-  const staging = path.join(path.dirname(target), '.agent-lab-image-' + randomUUID() + '.tmp');
-  const handle = await fs.open(staging, 'wx', 0o600);
-  const identity = await handle.stat();
-  const verifyStage = async () => {
-    const named = await fs.lstat(await imagePath(root, path.relative(root, staging)));
-    if (identity.ino !== named.ino || identity.dev !== named.dev || !named.isFile()) {
-      throw new Error('Destinazione cambiata durante il salvataggio.');
+export type StagedImageIdentity = { dev: string; ino: string };
+
+const imageStage = (output: string, jobId: string): string => {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(jobId)) {
+    throw new Error('Identità del lavoro immagini non valida.');
+  }
+  return path.join(path.dirname(output), '.agent-lab-image-' + jobId + '.tmp');
+};
+
+const matchesImage = (file: BigIntStats | undefined, identity: StagedImageIdentity): file is BigIntStats =>
+  !!file?.isFile() && file.ino !== 0n && file.dev.toString() === identity.dev && file.ino.toString() === identity.ino;
+
+// Check both names without yielding between checks and unlink. Another publisher/reader may already have removed the temporary name.
+const clearImageStage = (target: string, staging: string, identity: StagedImageIdentity, published: boolean) => {
+  const dir = path.dirname(target);
+  if (!same(realpathSync(dir), dir)) {
+    throw new Error('Cartella di destinazione cambiata durante il salvataggio.');
+  }
+  const tmp = lstatSync(staging, { bigint: true, throwIfNoEntry: false });
+  if (!tmp && published) {
+    return;
+  }
+  if (!matchesImage(tmp, identity)) {
+    throw new Error('File temporaneo immagini cambiato.');
+  }
+  if (published) {
+    const output = lstatSync(target, { bigint: true, throwIfNoEntry: false });
+    if (!matchesImage(output, identity)) {
+      throw new Error('Destinazione immagini cambiata.');
     }
-  };
+    if (output.nlink === 1n && !lstatSync(staging, { throwIfNoEntry: false })) {
+      return;
+    }
+    if (output.nlink !== 2n || tmp.nlink !== 2n) {
+      throw new Error('Collegamenti inattesi per l’immagine pubblicata.');
+    }
+  } else if (tmp.nlink !== 1n) {
+    throw new Error('Collegamenti inattesi per il file temporaneo.');
+  }
   try {
+    unlinkSync(staging);
+  } catch (error) {
+    if (!published || !missing(error)) {
+      throw error;
+    }
+  }
+};
+
+export const saveNewImage = async (
+  root: string,
+  output: string,
+  bytes: Buffer,
+  signal: AbortSignal,
+  jobId: string,
+  onStaged: (identity: StagedImageIdentity) => void,
+) => {
+  const target = await validateImageOutput(root, output, true);
+  const stageName = imageStage(output, jobId);
+  const staging = await imagePath(root, stageName);
+  const handle = await fs.open(staging, 'wx', 0o600);
+  let identity: StagedImageIdentity | undefined;
+  let published = false;
+  try {
+    const held = await handle.stat({ bigint: true });
+    identity = { dev: held.dev.toString(), ino: held.ino.toString() };
     await handle.writeFile(bytes);
     await handle.sync();
-    await verifyStage();
     await validateImageOutput(root, output);
+    const named = await fs.lstat(await imagePath(root, stageName), { bigint: true });
+    if (!matchesImage(named, identity) || named.nlink !== 1n) {
+      throw new Error('Destinazione cambiata durante il salvataggio.');
+    }
+    signal.throwIfAborted();
+    onStaged(identity);
     signal.throwIfAborted();
     await fs.link(staging, target);
+    published = true;
   } finally {
     await handle.close();
-    await verifyStage().then(() => fs.unlink(staging));
+    if (identity) {
+      clearImageStage(target, staging, identity, published);
+    }
+  }
+};
+
+export const recoverPublishedImage = async (root: string, output: string, jobId: string, identity: StagedImageIdentity, sha256: string): Promise<boolean> => {
+  try {
+    if (!identity || !/^[a-f0-9]{64}$/.test(sha256) || path.extname(output).toLowerCase() !== '.png') {
+      return false;
+    }
+    const target = await imagePath(root, output);
+    const staging = await imagePath(root, imageStage(output, jobId));
+    const handle = await fs.open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const file = await handle.stat({ bigint: true });
+      if (!matchesImage(file, identity) || file.size < 12n || file.size > 20n * 1024n * 1024n || (file.nlink !== 1n && file.nlink !== 2n)) {
+        return false;
+      }
+      if (file.nlink === 2n) {
+        // Authenticate contents before touching even the job's own alias. Bound reads to the size of the held file.
+        const digest = createHash('sha256');
+        const buffer = Buffer.alloc(Math.min(Number(file.size), 64 * 1024));
+        for (let offset = 0; offset < Number(file.size); ) {
+          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, Number(file.size) - offset), offset);
+          if (!bytesRead) {
+            return false;
+          }
+          digest.update(buffer.subarray(0, bytesRead));
+          offset += bytesRead;
+        }
+        if (digest.digest('hex') !== sha256) {
+          return false;
+        }
+        const after = await handle.stat({ bigint: true });
+        if (after.size !== file.size || after.mtimeNs !== file.mtimeNs) {
+          return false;
+        }
+        clearImageStage(target, staging, identity, true);
+      } else if (lstatSync(staging, { throwIfNoEntry: false })) {
+        return false;
+      }
+      // Use the ordinary one-link reference check for the final name, also when a concurrent reader completed the cleanup.
+      const [reference] = await readImageReferences(root, [output]);
+      const final = await fs.lstat(await imagePath(root, output), { bigint: true });
+      return (
+        matchesImage(final, identity) &&
+        final.nlink === 1n &&
+        final.mtimeNs === file.mtimeNs &&
+        createHash('sha256').update(reference.bytes).digest('hex') === sha256
+      );
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
   }
 };

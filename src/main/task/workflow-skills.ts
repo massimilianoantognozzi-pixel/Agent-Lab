@@ -3,6 +3,12 @@ import roles from './workflow-roles.json';
 export type WorkflowKind = 'bug' | 'change' | 'feature';
 export type WorkflowStage = 'plan' | 'design' | 'implement' | 'debug' | 'review' | 'design-review' | 'learn' | 'investigate' | 'strategy';
 
+export const projectComponentInstructions = [
+  'Per ogni componente coinvolto, leggi le convenzioni di progetto e trova la definizione condivisa. Cerca gli identificatori e i tratti distintivi del componente in tutto il perimetro autorizzato, comprese le pagine, le viste dichiarative e gli stili. Leggi i possibili usi, anche quelli con nomi diversi o senza import, per distinguere le copie locali dalle varianti deliberate.',
+  'Per un nuovo utilizzo richiama la definizione esistente. Se serve un nuovo tipo, crea una sola definizione riusabile nella sede prevista per i componenti condivisi del progetto. Per la UI, ogni schermata fornisce dati, etichette, azioni e varianti approvate. Aspetto, animazioni e comportamenti comuni appartengono al componente o al suo stile condiviso.',
+  'Nel piano indica la fonte e i punti interessati. In implementazione aggiorna la definizione comune e migra le copie equivalenti. Preserva le varianti, le azioni, i dati e l’accessibilità salvo le modifiche concordate. Per una correzione approvata, leggi la fonte delle decisioni del progetto e registrala lì se manca ed è autorizzata. Alla consegna indica il passaggio che la conserva o il documento ancora da aggiornare. Esegui il controllo disponibile sugli usi trovati e verifica la propagazione della modifica. Segnala eventuali verifiche mancanti.',
+].join(' ');
+
 const stageRoles = {
   plan: roles.orchestrator,
   design: roles.designer,
@@ -60,6 +66,7 @@ const stageInstructions: Record<WorkflowStage, readonly string[]> = {
   ],
   'design-review': [
     'Verifica dal codice e dalle prove disponibili se la proposta attua il flusso, le interazioni, gli stati e la composizione concordati. Verifica il riuso della logica e la composizione dedicata al mobile quando richiesta.',
+    'Per una correzione comune, confronta la definizione con i suoi utilizzi e con i valori locali che possono prevalere su di essa. Controlla anche la fonte delle decisioni indicata dal progetto. Segnala come difformità una nuova implementazione locale equivalente, una copia che elude la correzione richiesta o una decisione approvata mancante dalla fonte prevista. Cita i file e la differenza osservabile. Rispetta le varianti deliberate.',
     'Distingui i rilievi verificabili dal codice dalle verifiche manuali o visive rimandate. Registra un esito negativo quando il codice mostra una difformità dal piano.',
   ],
   learn: [
@@ -84,6 +91,7 @@ export const workflowSkills = (kind: WorkflowKind, stage: WorkflowStage): string
     stageRoles[stage].instructions,
     kindInstructions[kind],
     'Usa i materiali del progetto come fonti sul prodotto. Rispetta i limiti del piano, gli strumenti e le autorizzazioni imposti dall’applicazione.',
+    ...(['plan', 'design', 'implement', 'debug', 'review', 'design-review'].includes(stage) ? [projectComponentInstructions] : []),
     ...stageInstructions[stage],
     'Segui lo schema di risposta richiesto. Attribuisci esiti ai controlli effettivamente osservati.',
   ].join('\n');

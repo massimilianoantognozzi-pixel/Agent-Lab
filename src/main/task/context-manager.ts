@@ -337,6 +337,12 @@ export class ContextManager {
     }
   }
 
+  // Listing a card must not initialize its chat, migrate it or recover a corrupt context file.
+  async lastUserIdForRecovery(): Promise<string | undefined> {
+    const messages: ContextMessage[] = this.loaded ? this.messages : JSON.parse(await fs.readFile(this.storagePath, 'utf8')).contextMessages;
+    return Array.isArray(messages) ? messages.findLast((message) => message.role === 'user')?.id : undefined;
+  }
+
   async getContextMessages(): Promise<ContextMessage[]> {
     if (!this.loaded) {
       await this.load();

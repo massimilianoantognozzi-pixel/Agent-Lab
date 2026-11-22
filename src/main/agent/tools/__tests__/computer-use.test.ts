@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createComputerUseTools } from '../computer-use';
@@ -105,6 +107,56 @@ describe('computer use scoped to a desktop turn', () => {
       );
     }
     controller.abort();
+  });
+
+  it('bounds the combined text and explains how to obtain a narrower observation without discarding its image', async () => {
+    const ctrl = new AbortController();
+    const tools = createComputerUseTools(task, 'test', ctrl.signal);
+    await tools['computer---select_window'].execute({ query: 'di prova' }, opt);
+    const image = { type: 'image', mimeType: 'image/png', data: 'cGl4ZWw=' };
+    const observation = (content: unknown[]) => ({ content, structuredContent: { ...win, snapshot_id: 's1' } });
+    let sample: unknown[] = [...text('a'.repeat(14000)), image, ...text('b'.repeat(10001))];
+    mock.call.mockImplementation(async ({ name }) =>
+      name === 'list_windows' ? { content: text(''), structuredContent: { windows: [win] } } : observation(sample),
+    );
+    const clipped = await tools['computer---observe'].execute({ screenshot: true }, opt);
+    assert.ok('content' in clipped);
+    const combined = clipped.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('');
+    expect(combined.length).toBeLessThanOrEqual(24_000);
+    expect(combined).toContain('a'.repeat(14000));
+    expect(combined).toMatch(/troncata.*computer---observe.*query/);
+    expect(clipped.content.filter((part) => part.type === 'image')).toEqual([image]);
+
+    const whole = [...text('a'.repeat(14000)), ...text('b'.repeat(10000))];
+    sample = whole;
+    const exact = await tools['computer---observe'].execute({ screenshot: false, query: 'Salva' }, opt);
+    expect(exact).toMatchObject({ content: whole });
+    expect(mock.call).toHaveBeenLastCalledWith(
+      expect.objectContaining({ arguments: expect.objectContaining({ query: 'Salva' }) }),
+      expect.anything(),
+      expect.anything(),
+    );
+    ctrl.abort();
+  });
+
+  it('cancels a pending driver start when the individual tool call stops before the turn ends', async () => {
+    const turn = new AbortController();
+    const operation = new AbortController();
+    const tools = createComputerUseTools(task, 'test', turn.signal);
+    mock.open.mockImplementation(
+      (signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+    const selection = tools['computer---select_window'].execute({ query: 'di prova' }, { ...opt, abortSignal: operation.signal });
+    const rejected = expect(selection).rejects.toThrow('stop selezione');
+    await vi.waitFor(() => expect(mock.open).toHaveBeenCalledOnce());
+    operation.abort(new Error('stop selezione'));
+    await rejected;
+    expect(turn.signal.aborted).toBe(false);
+    expect(mock.call).not.toHaveBeenCalled();
+    turn.abort();
   });
 
   it('keeps an unclosed browser session owned until cleanup and surfaces an in-band shutdown refusal', async () => {

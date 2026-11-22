@@ -65,6 +65,8 @@ const promptUser = async (message: string, detail: string, buttons: string[], si
 
 const exactScope = async (task: Task) => JSON.stringify([await fs.realpath(task.getProjectDir()), await fs.realpath(task.getTaskDir())]);
 const historyNotice = 'I contenuti condivisi sono salvati nella chat e visibili al modello e alle estensioni attive che leggono la conversazione.';
+const observationTextLimit = 24_000;
+const truncatedObservation = '\n[Osservazione troncata. Ripeti computer---observe con una query mirata al controllo che cerchi.]';
 
 export const createComputerUseTools = (task: Task, model: string, lifetime: AbortSignal, onCleanup?: (release: () => Promise<void>) => void) => {
   let connecting: Promise<Client> | undefined;
@@ -108,7 +110,7 @@ export const createComputerUseTools = (task: Task, model: string, lifetime: Abor
     }
     signal.throwIfAborted();
     onCleanup?.(release);
-    connecting ??= openComputerDriver(lifetime).catch((error) => {
+    connecting ??= openComputerDriver(signal).catch((error) => {
       connecting = undefined;
       throw error;
     });
@@ -331,7 +333,23 @@ export const createComputerUseTools = (task: Task, model: string, lifetime: Abor
           height: state.screenshot_height ?? 0,
           observedAt: Date.now(),
         };
-        return { content: parts.map((part) => (part.type === 'text' ? { type: 'text' as const, text: part.text.slice(0, 24_000) } : part)) };
+        const truncated = parts.reduce((length, part) => length + (part.type === 'text' ? part.text.length : 0), 0) > observationTextLimit;
+        let remaining = observationTextLimit - (truncated ? truncatedObservation.length : 0);
+        const content: typeof parts = [];
+        for (const part of parts) {
+          if (part.type === 'image') {
+            content.push(part);
+          } else if (remaining || !truncated) {
+            const prefix = part.text.slice(0, remaining);
+            remaining -= prefix.length;
+            const text = prefix.length < part.text.length ? prefix.replace(/[\uD800-\uDBFF]$/, '') : prefix;
+            content.push({ type: 'text', text });
+          }
+        }
+        if (truncated) {
+          content.push({ type: 'text', text: truncatedObservation });
+        }
+        return { content };
       }),
   });
   const act = tool<{ gesture: z.infer<typeof actionSchema>; foreground: boolean }, string, Record<string, unknown>>({

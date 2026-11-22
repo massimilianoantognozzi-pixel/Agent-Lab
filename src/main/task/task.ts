@@ -110,14 +110,7 @@ import { sessionPrompt } from './session-prompts';
 import { beginDesktopWork, recordDesktopWrite, recordDesktopIntegration, collectDesktopEvidence } from './desktop-close';
 import { projectContinuationRevision, readWorkflowValidationRevision } from './workflow-project-run';
 import { readShadcnReferences } from './workflow-shadcn';
-import {
-  AgentDesignReviewPending,
-  agentDesignReviewInstructions,
-  getAgentDesignCandidate,
-  legacyDesignTouches,
-  parseAgentDesignReview,
-  readAgentDesignSnapshot,
-} from './agent-design-review';
+import { AgentDesignReviewPending, getAgentDesignCandidate, legacyDesignTouches, readAgentDesignSnapshot, runAgentDesignReview } from './agent-design-review';
 import {
   agentGoalCommandPattern,
   AgentGoalStore,
@@ -283,6 +276,7 @@ export class Task {
   private workerRuns = new Set<Promise<unknown>>();
   private activeWorkerIds = new Set<string>();
   private rootTurnInUse = false;
+  private finalizingRootTurn?: string;
   private rootTurnWrites: Promise<void> = Promise.resolve();
   private rootTurnClosed = false;
   private activeRootSteering?: RootTurnRecord;
@@ -633,6 +627,22 @@ export class Task {
     return this.taskId === INTERNAL_TASK_ID;
   }
 
+  private cardTransition(updates: Partial<TaskData>): Partial<TaskData> {
+    const previous = this.task.metadata?.recoverableRootTurn;
+    const metadata = 'metadata' in updates ? updates.metadata : this.task.metadata;
+    if (
+      typeof previous === 'string' &&
+      metadata?.recoverableRootTurn === previous &&
+      (updates.state === DefaultTaskState.InProgress || updates.state === DefaultTaskState.Interrupted) &&
+      this.task.state !== DefaultTaskState.InProgress &&
+      this.task.state !== DefaultTaskState.Interrupted
+    ) {
+      // Reopening a settled card or starting another operation supersedes its previous disposition.
+      return { ...updates, metadata: { ...metadata, settledRootTurn: previous } };
+    }
+    return updates;
+  }
+
   public async saveTask(updates?: Partial<TaskData>, updateTimestamps = true): Promise<TaskData> {
     if (this.isInternal()) {
       // Internal task is not saved
@@ -651,6 +661,7 @@ export class Task {
       updates,
     });
     if (updates) {
+      updates = this.cardTransition(updates);
       for (const key of Object.keys(updates)) {
         this.task[key] = updates[key];
       }
@@ -1058,13 +1069,6 @@ export class Task {
       await this.interruptResponse(undefined, !clearContext);
       await workflowRunSettled;
     } else {
-      if (this.task.state === DefaultTaskState.InProgress && this.task.startedAt && !isGovernedWorkflow(this.getProjectDir())) {
-        await this.saveTask({
-          state: DefaultTaskState.Interrupted,
-          interruptedAt: new Date().toISOString(),
-          completedAt: undefined,
-        });
-      }
       for (const controller of Object.values(this.subagentAbortControllers)) {
         controller.abort(clearContext ? WORKER_STOP : undefined);
       }
@@ -1073,6 +1077,9 @@ export class Task {
       }
       await this.agent.stopAndDrainCommands();
       await this.rootTurnWrites?.catch((error) => logger.warn('Could not flush the root turn checkpoint.', { error }));
+      if (this.task.state === DefaultTaskState.InProgress && this.task.startedAt && !isGovernedWorkflow(this.getProjectDir())) {
+        await this.settleCardOnStop();
+      }
       if (this.workerRuns?.size) {
         await Promise.allSettled(this.workerRuns);
       }
@@ -1205,6 +1212,7 @@ export class Task {
       this.rootTurnClosed = true;
     }
     const active = this.isPromptRunning();
+    const stateBeforeStop = this.task.state;
     if (this.currentQuestion) {
       await this.answerQuestion('n', 'Chiusura della sessione desktop.');
     }
@@ -1233,7 +1241,10 @@ export class Task {
     } else {
       await this.changeAgentGoalStatus('paused');
     }
-    if (active && (this.task.state === DefaultTaskState.InProgress || this.task.state === DefaultTaskState.ReadyForReview)) {
+    if (active && this.task.state === DefaultTaskState.InProgress) {
+      await this.rootTurnWrites;
+      await this.settleCardOnStop();
+    } else if (active && stateBeforeStop === DefaultTaskState.ReadyForReview && this.task.state === stateBeforeStop) {
       await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
     }
     for (const controller of Object.values(this.resolutionAbortControllers)) {
@@ -2124,6 +2135,7 @@ export class Task {
         startedAt: new Date().toISOString(),
         state: DefaultTaskState.InProgress,
         completedAt: undefined,
+        interruptedAt: undefined,
         provider: this.task.provider || profile.provider,
         model: this.task.model || profile.model,
         ...(recoveredTurn || approvedPlanId ? { currentMode: mode } : {}),
@@ -2216,6 +2228,7 @@ export class Task {
           }
         : undefined;
       const rejectedAttempts = new Map<string, number>();
+      let decisionReminderSent = false;
       const reviewRootChanges =
         designRoot && reviewCandidate
           ? async (signal: AbortSignal, usage?: AgentGoalUsage) => {
@@ -2223,10 +2236,18 @@ export class Task {
               if (!entry) {
                 return undefined;
               }
-              const { candidate, reviewInput } = entry;
+              const { candidate, reviewInput, unchangedDecisionSources } = entry;
               const state = (designRoot.designReview ??= {});
               let receipt = state.receipt;
               if (!receipt || receipt.candidate !== candidate) {
+                if (!decisionReminderSent && unchangedDecisionSources.length) {
+                  decisionReminderSent = true;
+                  return (
+                    'Verifica la registrazione della correzione approvata. Queste fonti delle decisioni di progetto sono ancora identiche a prima del turno: ' +
+                    unchangedDecisionSources.join(', ') +
+                    '. Leggi la fonte applicabile. Se manca la nuova decisione, registrala nel perimetro autorizzato e verifica il testo salvato. Se è già presente, identifica il passaggio che la documenta.'
+                  );
+                }
                 const provider = designRoot.modelSettings?.provider ?? profile.provider;
                 const model = designRoot.modelSettings?.model ?? profile.model;
                 const reviewer = this.agentProfileManager
@@ -2241,8 +2262,8 @@ export class Task {
                   );
                 const modelId = `${provider}/${reviewer?.model ?? model}`;
                 this.addLogMessage('loading', 'Revisione indipendente del Designer sulle modifiche UI.', false, promptContext);
-                const input = reviewInput();
-                const generateVerdict = async (instructions: string) => {
+                const verdict = await runAgentDesignReview(reviewInput, async (instructions, input) => {
+                  signal.throwIfAborted();
                   const raw = await this.agent.generateText(
                     modelId,
                     instructions,
@@ -2258,21 +2279,7 @@ export class Task {
                   );
                   signal.throwIfAborted();
                   return raw;
-                };
-                let verdict: ReturnType<typeof parseAgentDesignReview>;
-                const raw = await generateVerdict(agentDesignReviewInstructions);
-                try {
-                  verdict = parseAgentDesignReview(raw);
-                } catch {
-                  const retry = await generateVerdict(
-                    `${agentDesignReviewInstructions}\nLa risposta precedente era illeggibile. Restituisci esclusivamente il JSON conforme allo schema.`,
-                  );
-                  try {
-                    verdict = parseAgentDesignReview(retry);
-                  } catch {
-                    throw new AgentDesignReviewPending('Il Designer non ha restituito un esito valido. La revisione resta da completare.');
-                  }
-                }
+                });
                 if ((await reviewCandidate(signal))?.candidate !== candidate) {
                   return 'Le modifiche UI sono cambiate durante la revisione. Ispeziona il lavoro corrente prima di concludere.';
                 }
@@ -2391,6 +2398,13 @@ export class Task {
         const goalReachedLimit = limitedGoal?.id === goalTurn?.goal.id && (limitedGoal?.status === 'budget_limited' || limitedGoal?.status === 'usage_limited');
         const finalText = last?.role === 'assistant' && extractTextContent(last.content).trim();
         rootTurn.state = unsampledSteering ? 'running' : goalEnded || goalReachedLimit || finalText ? 'success' : 'error';
+        if (rootTurn.state === 'success' && this.task.startedAt) {
+          rootTurn.cardCompletion = {
+            startedAt: this.task.startedAt,
+            completedAt: new Date().toISOString(),
+            state: this.completedCardState(mode, agentMessages),
+          };
+        }
         await progress?.({});
         if (rootTurn.state !== 'success') {
           await this.saveTask({
@@ -2428,33 +2442,50 @@ export class Task {
     void this.sendUpdatedFilesUpdated();
     void this.sendSkillsUpdated();
 
-    this.resolveAgentRunPromises();
-
-    if (!hasSteeringToRecover(rootTurn) && (waitForCurrentAgentToFinish || goalTurn)) {
-      await this.runNextQueuedPrompt();
+    const finishing = rootTurn?.state === 'success' ? rootTurn.turnId : undefined;
+    if (finishing) {
+      this.finalizingRootTurn = finishing;
     }
+    try {
+      this.resolveAgentRunPromises();
 
-    if (this.task.state === DefaultTaskState.InProgress && !this.desktopCloseState) {
-      // Determine task state based on the last assistant message
-      const settings = this.store.getSettings();
-      let state: string | null = DefaultTaskState.ReadyForReview;
-
-      if ((mode === CODEX_PLAN_MODE && this.pendingPlan()) || this.isWaitingForApproval(agentMessages)) {
-        state = DefaultTaskState.ReadyForImplementation;
-      } else if (settings.taskSettings.smartTaskState) {
-        state = await this.determineTaskState(agentMessages);
-
-        // check once again after determining task state which can task some time
-        if (waitForCurrentAgentToFinish) {
-          await this.runNextQueuedPrompt();
-        }
+      if (!hasSteeringToRecover(rootTurn) && (waitForCurrentAgentToFinish || goalTurn)) {
+        await this.runNextQueuedPrompt();
       }
 
-      if (this.task.state === DefaultTaskState.InProgress) {
-        await this.saveTask({
-          completedAt: new Date().toISOString(),
-          state: state || DefaultTaskState.ReadyForReview,
-        });
+      if (this.task.state === DefaultTaskState.InProgress && !this.desktopCloseState && !this.closing && !(trackRoot && this.rootTurnClosed)) {
+        // Determine task state based on the last assistant message
+        const settings = this.store.getSettings();
+        const fallback = this.completedCardState(mode, agentMessages);
+        let state: string | null = fallback;
+
+        if (fallback === DefaultTaskState.ReadyForReview && settings.taskSettings.smartTaskState) {
+          state = await this.determineTaskState(agentMessages);
+
+          // check once again after determining task state which can task some time
+          if (waitForCurrentAgentToFinish) {
+            await this.runNextQueuedPrompt();
+          }
+        }
+
+        if (
+          this.task.state === DefaultTaskState.InProgress &&
+          !this.closing &&
+          !this.desktopCloseState &&
+          !(trackRoot && this.rootTurnClosed) &&
+          (!rootTurn || this.task.metadata?.recoverableRootTurn === rootTurn.turnId)
+        ) {
+          await this.saveTask({
+            completedAt: rootTurn?.cardCompletion?.completedAt ?? new Date().toISOString(),
+            state: state || fallback,
+            interruptedAt: undefined,
+            ...(rootTurn?.state === 'success' && { metadata: { ...this.task.metadata, settledRootTurn: rootTurn.turnId } }),
+          });
+        }
+      }
+    } finally {
+      if (finishing && this.finalizingRootTurn === finishing) {
+        this.finalizingRootTurn = undefined;
       }
     }
 
@@ -2510,6 +2541,12 @@ export class Task {
     }
 
     return null;
+  }
+
+  private completedCardState(mode: Mode, messages: ContextMessage[]) {
+    return (mode === CODEX_PLAN_MODE && this.pendingPlan()) || this.isWaitingForApproval(messages)
+      ? DefaultTaskState.ReadyForImplementation
+      : DefaultTaskState.ReadyForReview;
   }
 
   private isWaitingForApproval(resultMessages: ContextMessage[]): boolean {
@@ -4970,7 +5007,13 @@ export class Task {
   private resumingWork = false;
 
   public async workListData(): Promise<TaskData> {
-    if (this.task.archived || this.task.state !== DefaultTaskState.InProgress || this.closing || this.isPromptRunning() || this.hasQueuedPrompts()) {
+    if (
+      this.task.archived ||
+      (this.task.state !== DefaultTaskState.InProgress && this.task.state !== DefaultTaskState.Interrupted) ||
+      this.closing ||
+      this.isPromptRunning() ||
+      this.hasQueuedPrompts()
+    ) {
       return this.task;
     }
     const interrupted = { ...this.task, state: DefaultTaskState.Interrupted };
@@ -4978,7 +5021,8 @@ export class Task {
       return this.governedContinuation() && canResumeWork(interrupted) ? interrupted : this.task;
     }
     try {
-      return (await this.hasInterruptedRootTurn()) ? interrupted : this.task;
+      const update = await this.savedRootCardUpdate();
+      return update ? { ...this.task, ...update } : this.task;
     } catch (error) {
       logger.warn('Could not inspect the saved work checkpoint.', { taskId: this.taskId, error });
       return this.task;
@@ -5074,8 +5118,7 @@ export class Task {
 
     const mode = this.getCurrentMode();
     if (this.task.state === DefaultTaskState.InProgress && typeof this.task.metadata?.recoverableRootTurn === 'string') {
-      await this.reconcileInterruptedRootTurn();
-      if (this.task.state === DefaultTaskState.InProgress) {
+      if ((await this.reconcileInterruptedRootTurn()) !== DefaultTaskState.Interrupted) {
         return;
       }
     }
@@ -6589,40 +6632,137 @@ export class Task {
     }
   }
 
-  private async hasInterruptedRootTurn() {
+  private async savedRootCardUpdate(duringClose = false): Promise<Partial<TaskData> | undefined> {
     const id = this.task.metadata?.recoverableRootTurn;
-    if (typeof id !== 'string' || this.task.state !== DefaultTaskState.InProgress || this.isPromptRunning() || isGovernedWorkflow(this.getProjectDir())) {
-      return false;
-    }
-    const record = await this.readRootTurn();
-    const profile = await this.getTaskAgentProfile();
-    return (
-      record?.turnId === id &&
-      record.directory === this.getTaskDir() &&
-      record.epoch === this.workerEpoch() &&
-      profile?.id === record.profileId &&
-      profile.provider === record.provider &&
-      profile.model === record.model &&
+    const { state, startedAt, agentProfileId, provider, model, currentMode } = this.task;
+    const available = () =>
+      !this.task.archived &&
+      this.task.state === state &&
+      this.task.startedAt === startedAt &&
+      this.task.agentProfileId === agentProfileId &&
+      this.task.provider === provider &&
+      this.task.model === model &&
+      this.task.currentMode === currentMode &&
       this.task.metadata?.recoverableRootTurn === id &&
-      this.task.state === DefaultTaskState.InProgress &&
-      !this.isPromptRunning() &&
-      !this.closing
-    );
+      !this.hasQueuedPrompts() &&
+      (duringClose ? !this.currentPromptContext : !this.closing && !this.isPromptRunning() && this.finalizingRootTurn !== id);
+    if (
+      typeof id !== 'string' ||
+      (state !== DefaultTaskState.InProgress && state !== DefaultTaskState.Interrupted) ||
+      !available() ||
+      isGovernedWorkflow(this.getProjectDir())
+    ) {
+      return undefined;
+    }
+    try {
+      const record = await this.readRootTurn();
+      const profile = await this.getTaskAgentProfile();
+      const matches = () =>
+        available() &&
+        record?.directory === this.getTaskDir() &&
+        record.epoch === this.workerEpoch() &&
+        record.profileId === profile?.id &&
+        record.provider === profile?.provider &&
+        record.model === profile?.model;
+      if (!record || record.turnId !== id || !profile || !matches()) {
+        return undefined;
+      }
+      if (record.state !== 'success') {
+        return state === DefaultTaskState.InProgress ? { state: DefaultTaskState.Interrupted } : undefined;
+      }
+      if (
+        !startedAt ||
+        this.task.completedAt ||
+        this.task.metadata?.settledRootTurn === id ||
+        record.noProgress ||
+        record.pendingSteering?.length ||
+        record.pendingTools?.length ||
+        record.unmergedReceipts?.length ||
+        record.designReview?.receipt?.verdict === 'fail'
+      ) {
+        return undefined;
+      }
+      if (record.goalId) {
+        const goal = await this.agentGoalStore.read();
+        if (goal?.id !== record.goalId || goal.status !== 'complete') {
+          return undefined;
+        }
+      }
+      const mode = record.mode ?? 'agent';
+      const pendingPlan = this.pendingPlan();
+      if (mode !== this.getCurrentMode() || (pendingPlan && pendingPlan.turnId !== id)) {
+        return undefined;
+      }
+      const lastUser = record.messages.findLast((message) => message.role === 'user');
+      if (!lastUser || (await this.contextManager.lastUserIdForRecovery()) !== lastUser.id || !matches()) {
+        return undefined;
+      }
+      let completion = record.cardCompletion;
+      if (!completion) {
+        // Older clients wrote the final assistant timestamp but no card disposition.
+        const final = record.messages.at(-1);
+        if (
+          !record.messages.some((message) => message.role === 'user' && message.id === id) ||
+          final?.role !== 'assistant' ||
+          (final.promptContext && final.promptContext.id !== id) ||
+          !extractTextContent(final.content).trim() ||
+          typeof final.timestamp !== 'number' ||
+          !Number.isFinite(final.timestamp) ||
+          typeof lastUser.timestamp !== 'number' ||
+          !(final.timestamp >= lastUser.timestamp)
+        ) {
+          return undefined;
+        }
+        completion = { startedAt, completedAt: new Date(final.timestamp).toISOString(), state: this.completedCardState(mode, record.messages) };
+      }
+      const end = Date.parse(completion.completedAt);
+      if (
+        completion.startedAt !== startedAt ||
+        !(end >= Date.parse(startedAt)) ||
+        (completion.state !== DefaultTaskState.ReadyForReview && completion.state !== DefaultTaskState.ReadyForImplementation)
+      ) {
+        return undefined;
+      }
+      return {
+        state: completion.state,
+        completedAt: completion.completedAt,
+        interruptedAt: undefined,
+        metadata: { ...this.task.metadata, settledRootTurn: id },
+      };
+    } catch (error) {
+      logger.warn('Could not inspect the saved task completion.', { taskId: this.taskId, error });
+      return undefined;
+    }
   }
 
   private async reconcileInterruptedRootTurn() {
     const turnId = this.task.metadata?.recoverableRootTurn;
-    if ((await this.hasInterruptedRootTurn()) && this.task.metadata?.recoverableRootTurn === turnId && !this.closing && !this.isPromptRunning()) {
+    const initialState = this.task.state;
+    const update = await this.savedRootCardUpdate();
+    if (update && this.task.state === initialState && this.task.metadata?.recoverableRootTurn === turnId && !this.closing && !this.isPromptRunning()) {
       this.rootTurnInUse = true;
       try {
-        await this.saveTask({
-          state: DefaultTaskState.Interrupted,
-          interruptedAt: new Date().toISOString(),
-          completedAt: undefined,
-        });
+        if (update.state === DefaultTaskState.Interrupted) {
+          await this.saveTask({ ...update, interruptedAt: new Date().toISOString(), completedAt: undefined });
+        } else {
+          await this.saveTask(update, false);
+        }
       } finally {
         this.rootTurnInUse = false;
       }
+    }
+    return this.task.state;
+  }
+
+  private async settleCardOnStop() {
+    const recovered = await this.savedRootCardUpdate(true);
+    if (this.task.state !== DefaultTaskState.InProgress) {
+      return;
+    }
+    if (recovered && recovered.state !== DefaultTaskState.Interrupted) {
+      await this.saveTask(recovered);
+    } else {
+      await this.saveTask({ state: DefaultTaskState.Interrupted, interruptedAt: new Date().toISOString(), completedAt: undefined });
     }
   }
 
@@ -7010,6 +7150,7 @@ ${error.stderr}`,
       await this.assertGovernedTaskDone();
     }
     const previousTaskString = JSON.stringify(this.task);
+    updates = this.cardTransition(updates);
 
     // Handle worktree configuration changes
     if (updates.workingMode !== undefined && updates.workingMode !== this.task.workingMode) {

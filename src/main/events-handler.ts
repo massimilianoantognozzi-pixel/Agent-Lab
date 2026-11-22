@@ -1330,7 +1330,8 @@ export class EventsHandler {
   }
 
   async reloadTasks(baseDir: string): Promise<TaskData[]> {
-    return this.projectManager.getProject(baseDir).reloadTasks();
+    await this.projectManager.getProject(baseDir).reloadTasks();
+    return this.getTasks(baseDir);
   }
 
   async loadTask(baseDir: string, taskId: string): Promise<TaskStateData> {

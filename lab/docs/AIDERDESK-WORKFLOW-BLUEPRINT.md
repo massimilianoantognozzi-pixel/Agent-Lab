@@ -14,6 +14,14 @@ Il blueprint descrive cosa deve fare il prodotto, quali utenti possono fare cosa
 
 L’utente conferma le decisioni di prodotto e il perimetro del lavoro prima dell’avvio. Le parti già definite possono entrare nel piano mentre le questioni aperte rimangono visibili sui task interessati.
 
+### Correzioni approvate e componenti condivisi
+
+**Decisione approvata il 22 novembre 2026.** Ogni correzione approvata diventa una decisione stabile del progetto. L’agente aggiorna la fonte che governa il comportamento o la grafica interessata e la consulta nelle task successive, anche in una nuova chat. Se una decisione successiva la modifica, la fonte indica quale versione applicare.
+
+La regola vale per ogni tipo di componente del progetto. Prima di creare un utilizzo, l’agente cerca la definizione condivisa, i punti che la richiamano e le implementazioni locali equivalenti per funzione, anche con nomi diversi. Se serve un tipo nuovo, crea una definizione riusabile coerente con le convenzioni del progetto. Per campi, modali, schede, tabelle e altri componenti UI, ogni schermata fornisce i propri dati, testi e azioni attraverso l’interfaccia del componente. Aspetto, animazioni, stati e comportamenti comuni risiedono nella definizione condivisa o nei suoi stili.
+
+Una correzione approvata della definizione comune vale per gli usi già presenti e per quelli futuri. L’agente riallinea le copie interessate nel perimetro autorizzato e verifica che le pagine conservino azioni, accessibilità e varianti deliberate. Se mancano sorgenti o autorizzazioni per completare il controllo, indica i punti rimasti aperti.
+
 ## 3. Repository e documenti di progetto
 
 Alla creazione di un repository, AiderDesk prepara le fonti necessarie a eseguire e riprendere il lavoro. In un repository esistente, il progetto indica dove si trovano le fonti in uso. I ruoli dei documenti valgono anche quando più informazioni sono raccolte nello stesso file.
@@ -35,7 +43,9 @@ Con **«Avvia il lavoro»**, AiderDesk legge le fonti del progetto, verifica il 
 
 **«Riprendi il lavoro»** usa lo stesso percorso. Entrambi i comandi preparano Docker Desktop e i due container privati di Agent-Lab. AiderDesk legge i documenti di ripresa del checkout aperto, identifica i servizi associati e li avvia prima di eseguire il lavoro. I servizi restano attivi al termine della richiesta.
 
-L’avvio autorizza il lavoro già previsto entro il perimetro concordato, anche su più task. AiderDesk decide dal contenuto se sta correggendo un bug, modificando un comportamento o aggiungendo una funzionalità. La scelta orienta le verifiche. Un bug parte dalla riproduzione del comportamento errato quando è riproducibile. Una modifica o una funzionalità parte dai criteri di accettazione e dai comportamenti esistenti che devono continuare a funzionare.
+**Decisione approvata il 22 novembre 2026.** Dopo l’approvazione del blueprint, l’ordine di iniziare il lavoro autorizza tutte le task previste, i rispettivi piani tecnici, i test, la revisione e le correzioni necessarie per soddisfare i criteri concordati. L’agente prosegue da una task alla successiva in ordine di dipendenza. Chiede una decisione all’utente quando, per procedere, occorre cambiare ciò che è stato concordato. In quel caso indica la decisione interessata, il motivo e la modifica proposta.
+
+AiderDesk decide dal contenuto se sta correggendo un bug, modificando un comportamento o aggiungendo una funzionalità. La scelta orienta le verifiche. Un bug parte dalla riproduzione del comportamento errato quando è riproducibile. Una modifica o una funzionalità parte dai criteri di accettazione e dai comportamenti esistenti che devono continuare a funzionare.
 
 Durante la giornata, AiderDesk prosegue sulle attività autorizzate e disponibili. Si ferma quando raggiunge un limite del piano, quando l’utente lo interrompe o quando la coda eseguibile è esaurita. Una decisione di prodotto aperta, una dipendenza mancante o un problema tecnico irrisolto sospendono le attività interessate. AiderDesk registra il motivo e cerca il prossimo lavoro indipendente previsto dal piano. Il comportamento del flusso e il perimetro valgono sia da desktop sia da remoto.
 
@@ -92,6 +102,8 @@ Alla consegna AiderDesk confronta il risultato con i requisiti applicabili. Ripo
 | Una serata termina durante la terza di cinque prove manuali. | La ripresa apre la terza all’ultimo passaggio confermato sulla versione giusta. |
 | Una prova fa emergere un bug oppure una nuova decisione. | Nel primo caso AiderDesk usa il requisito esistente. Nel secondo aggiorna il blueprint dopo la conferma e riallinea i task e le prove coinvolti. |
 | Il revisore trova una regressione nella modifica candidata. | Il correttore riceve il rilievo. I controlli e la revisione riguardano la versione corretta. |
+| L’utente approva una nuova animazione per i pulsanti del progetto. | Una pagina che usa già il componente condiviso e una che conteneva una copia locale mostrano l’animazione approvata. Una task successiva aggiunge «Salva» usando lo stesso componente. Ogni pulsante continua a eseguire la propria azione. |
+| Una pagina nuova richiede un indicatore di stato già presente nel progetto. | La pagina richiama l’indicatore condiviso con il proprio stato e la propria azione. Una correzione della fonte si riflette anche qui. Le varianti deliberate delle altre schermate restano riconoscibili. |
 | Il task successivo dipende da una patch già verificata. | AiderDesk integra la modifica sul ramo di sviluppo, verifica il risultato e avvia il task dipendente da quel commit sullo stesso ramo. |
 | Le validazioni richieste sul ramo di sviluppo sono concluse. | AiderDesk registra gli esiti. L’utente decide quando integrare nel ramo principale. |
 

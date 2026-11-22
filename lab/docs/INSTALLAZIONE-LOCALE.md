@@ -8,7 +8,7 @@ Usa il tuo collegamento abituale o [Apri-Agent-Lab.cmd](../../Apri-Agent-Lab.cmd
 
 ## Per installare l'app come programma Windows
 
-1. Dalla cartella di consegna apri [Agent-Lab-0.88.0-setup.exe con generazione immagini](../artifacts/Agent-Lab-locale-immagini/Agent-Lab-0.88.0-setup.exe).
+1. Dalla cartella di consegna apri [Agent-Lab-0.88.0-setup.exe con il recupero dello stato delle schede](../artifacts/Agent-Lab-locale-ripresa-task/Agent-Lab-0.88.0-setup.exe).
 2. Avvia **Agent-Lab Desktop** dal menu Start. La configurazione iniziale è in italiano. Scegli il tuo provider e la cartella del progetto su cui vuoi lavorare.
 3. In **Impostazioni → Informazioni** trovi la versione e il credito ad AiderDesk. Per rimuovere l'app usa la sua voce nelle **App installate** di Windows.
 

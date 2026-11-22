@@ -1,0 +1,15 @@
+# Stato della scheda dopo la chiusura di Agent-Lab
+
+Il turno può terminare e salvare la sua ricevuta mentre il desktop sta ancora decidendo lo stato finale da mostrare. Nella prova GLM originaria Electron si è chiuso in quell’intervallo. La ricevuta indicava successo e revisione superata, ma la scheda risultava interrotta. [Evidenza iniziale](../../work/riuso-componenti-20261122/qa/riapertura-n93BYH/esito.json)
+
+Quando un turno termina, il desktop conserva nella ricevuta l’inizio dell’operazione, l’ora di completamento e lo stato atteso della scheda. La chiusura ne tiene conto dopo aver atteso le scritture del turno. Alla riapertura, l’elenco e il suo aggiornamento mostrano lo stato ricostruito. L’apertura ordinaria della conversazione lo salva. La sola visualizzazione dell’elenco lascia intatti i file.
+
+Per le schede precedenti si verificano l’identità del turno, la cartella di lavoro, il profilo, il modello, la generazione della task, l’ultimo messaggio utente e i tempi della risposta finale. Una scheda conclusa torna pronta per la revisione, mentre un piano in attesa di approvazione conserva lo stato previsto per l’implementazione. Il recupero rispetta un’interruzione reale, una richiesta utente più recente e uno stato scelto manualmente.
+
+## Collaudo
+
+Il banco usa copie del progetto sintetico e della chat originale di 32 messaggi. Termina il processo Electron subito dopo il salvataggio del successo e prima dell’aggiornamento della scheda. Ripete la prova con una normale richiesta di chiusura nello stesso punto. Ogni caso verifica la prima lista, il ricaricamento esplicito, l’apertura della chat e una successiva lettura stabile in due avvii. Le riaperture sono offline. [Metodo e confronti con la versione precedente](../../work/riapertura-task-finita/qa/ESITO.md)
+
+Sul main Electron di consegna `dfafff7874712daf744180c41e76e20061fb39d09fe72e44beb8941d38f88fdb` sono passate 96 verifiche con arresto forzato e 96 con chiusura ordinaria. La cronologia e i file del progetto hanno conservato le stesse impronte. Le riaperture non hanno avviato inferenze o riesecuzioni. Le suite hanno registrato 2.168 test Node e 526 renderer superati, con quattro test Node esclusi. [Arresto forzato](../../work/riapertura-task-finita/qa/definitivo-stop-gmd3rj/esito.json) · [Chiusura ordinaria](../../work/riapertura-task-finita/qa/definitivo-chiusura-ySMBHR/esito.json)
+
+Il [setup Windows x64](../../artifacts/Agent-Lab-locale-ripresa-task/Agent-Lab-0.88.0-setup.exe) ha SHA-256 `33f0df85263de8dd158a15c7e49a41b6130323bfdd54d9f726f4811c508818ed`. Gli entry point del pacchetto estratto coincidono con la build dei due launcher locali. L’app confezionata è stata avviata su Windows in un profilo di prova. Il setup ha completato due cicli di installazione e disinstallazione in Wine isolato. [Contenuto verificato](../../work/riapertura-task-finita/definitivo/installer-immagini.json) · [Prove dell’installer](../../work/installer-locale-20261122/isolated-install/install-7ebaebd6d3/summary.json)

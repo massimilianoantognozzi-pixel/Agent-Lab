@@ -22,6 +22,7 @@ import type { Task } from '@/task';
 import type { AgentGoalTurn } from '@/task/agent-goal';
 
 import { AgentDesignReviewPending } from '@/task/agent-design-review';
+import { projectComponentInstructions } from '@/task/workflow-skills';
 import { NATIVE_EMPTY_TEST_REPORT, NATIVE_VERIFICATION_RESEARCH_QUERY, verificationResearchQuery } from '@/task/goal-verification';
 import { workerToolFingerprint } from '@/agent/worker-checkpoint';
 import * as goalVerification from '@/task/goal-verification';
@@ -396,6 +397,7 @@ describe('Agent.runAgent abort controller registration', () => {
         { provider: 'test-provider', model: 'test-model', reasoning: 'high', providerReasoningEffort: 'xhigh' },
       );
       expect(generateTextMock.mock.calls[0][0].instructions).toContain('Recover saved turn');
+      expect(generateTextMock.mock.calls[0][0].instructions).toContain(projectComponentInstructions);
       expect(JSON.stringify(generateTextMock.mock.calls[0][0].messages)).toContain('Original request');
       expect(JSON.stringify(generateTextMock.mock.calls[0][0].messages)).not.toContain('Synthetic extension input');
       expect(generateTextMock.mock.calls[0][0].reasoning).toBe('high');

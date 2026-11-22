@@ -21,7 +21,7 @@ import {
   readDevelopmentHead,
 } from './workflow-development';
 import { dockerFailureDetail, ensureWorkflowDocker, WorkflowServiceUnavailable, workflowServiceRetryable } from './workflow-docker';
-import { hasVisualWorkflowImpact } from './workflow-evidence';
+import { hasVisualWorkflowImpact, isStandaloneVisualPath, visualPathsAffected, visualSourceScope } from './workflow-evidence';
 import { assertWorkflowText, snapshotWorkflowFiles, validateWorkflowPath, type WorkflowFiles, type WorkflowProject } from './workflow-policy';
 import { parseProjectWorkflowCommand } from './workflow-project-commands';
 import {
@@ -387,9 +387,6 @@ const readCandidate = async (policy: WorkflowProject, dir: string): Promise<Work
   return files;
 };
 const sandboxCommand = async (dir: string, files: WorkflowFiles, image: string, args: string[], signal?: AbortSignal): Promise<string | undefined> => {
-  if (dir.includes(',')) {
-    throw new Error('Il percorso del job contiene una virgola.');
-  }
   const container = 'agentlab-workflow-' + randomUUID();
   try {
     await run('docker', ['image', 'inspect', image], { timeout: 5_000, signal, maxBuffer: 150_000, windowsHide: true });
@@ -422,7 +419,8 @@ const sandboxCommand = async (dir: string, files: WorkflowFiles, image: string, 
         '--cpus=2',
         '--user=65534:65534',
         '--mount',
-        'type=bind,source=' + mount + ',target=/workspace,readonly',
+        // Docker reads --mount as CSV. Quote the whole field; Go's CSV reader also folds CRLF into LF.
+        `type=bind,"source=${mount.replaceAll('"', '""').replaceAll('\r\n', '\r\r\n')}",target=/workspace,readonly`,
         '--tmpfs',
         '/tmp:rw,noexec,nosuid,nodev,size=128m',
         '--workdir=/workspace',
@@ -1101,6 +1099,17 @@ const runWorkflowTask = async (args: {
         await saveRecovery(verifyPending);
       };
       const context = Object.fromEntries([...policy.context, ...(policy.optionalInputs ?? [])].map((name) => [name, snapshot.files[name]]));
+      // The planner sees every configured input. Keep unchanged UI definitions and independent copies visible
+      // to the later roles too, without expanding which files the approved plan can change.
+      const visualFiles = visualPathsAffected(policy.editable, visualSourceScope(snapshot.files));
+      const touchesUI =
+        Boolean(state.plan.design) || approvedFiles.some((file) => visualFiles.includes(file) || isStandaloneVisualPath(file) || /\.[jt]sx$/i.test(file));
+      const componentSources = (provided: string[]) =>
+        Object.fromEntries(
+          visualFiles
+            .filter((file) => !provided.includes(file) && !Object.hasOwn(context, file) && snapshot.files[file] != null)
+            .map((file) => [file, snapshot.files[file]]),
+        );
       // Older checkpoints saved a proposal before staging it. Re-run the checks before using it as measured context.
       const requalify = !!previousChanges && !checkedCandidate && !state.recovery?.verifyPending;
       const pendingVerification = state.recovery?.verifyPending || requalify ? previousChanges : undefined;
@@ -1183,6 +1192,7 @@ const runWorkflowTask = async (args: {
                     sources: approvedContext(policy, snapshot.files),
                     files: checkedFiles ? approvedFiles.map((name) => [name, checkedFiles[name]]) : originalFiles,
                     context: checkedFiles ? Object.fromEntries(Object.entries(context).filter(([name]) => !approvedFiles.includes(name))) : context,
+                    ...(touchesUI && { componentSources: componentSources(approvedFiles) }),
                     ...(checkedFiles && checkedCandidate && { originalFiles, candidateChecks: checkedCandidate.checks }),
                     baselineChecks,
                     checkDefinitions: policy.checks,
@@ -1242,6 +1252,7 @@ const runWorkflowTask = async (args: {
             await recordFailure(failures, deterministic ? candidateHash : undefined);
             continue;
           }
+          const requiresDesignerReview = Boolean(state.plan.design) || hasVisualWorkflowImpact(snapshot.files, candidate, names);
           const reviewInput = {
             plan: state.plan,
             ...(state.clarifications && { clarifications: state.clarifications }),
@@ -1250,11 +1261,11 @@ const runWorkflowTask = async (args: {
             baselineChecks,
             checkDefinitions: policy.checks,
             sources: approvedContext(policy, snapshot.files),
-            context,
+            context: requiresDesignerReview ? Object.fromEntries(Object.entries(context).filter(([file]) => !names.includes(file))) : context,
+            ...(requiresDesignerReview && { componentSources: componentSources(names) }),
             projectTask: args.projectTask,
             skills,
           };
-          const requiresDesignerReview = Boolean(state.plan.design) || hasVisualWorkflowImpact(snapshot.files, candidate, names);
           let reviews: z.infer<typeof reviewSchema>[];
           try {
             reviews = [await generate(state.kind, 'review', reviewSchema, reviewContract, reviewInput)];
