@@ -184,6 +184,8 @@ export interface ContextToolMessage extends BaseContextMessage {
   content: ToolContent;
   /** Local desktop thumbnail for a generated asset, separate from the tool output sent to the model. */
   imagePreview?: string;
+  /** Local document thumbnails keyed by the tool call, excluded from provider messages. */
+  documentPreviews?: Record<string, string[]>;
 }
 
 // Union type for enhanced context messages

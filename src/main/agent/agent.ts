@@ -72,6 +72,7 @@ import { createSkillsToolset } from './tools/skills';
 import { createGeneralKnowledgeTools } from './tools/general-knowledge';
 import { createComputerUseTools } from './tools/computer-use';
 import { ProjectImageJobs } from './tools/project-images';
+import { createDocumentTools, readDocumentThumbnails } from './tools/project-documents';
 import { DesktopStopBoundary, checkoutIsClosing } from './desktop-stop';
 import { McpManager } from './mcp-manager';
 import { ApprovalManager } from './tools/approval-manager';
@@ -584,6 +585,19 @@ export class Agent {
     const toolSet: ToolSet = {};
     if (imageJobs) {
       Object.assign(toolSet, imageJobs.tools);
+    }
+    if (
+      mode === 'agent' &&
+      !profile.isSubagent &&
+      !promptContext?.group &&
+      abortSignal &&
+      !!process.versions.electron &&
+      process.env.AIDER_DESK_HEADLESS !== 'true' &&
+      !isLabMode() &&
+      !isFreelanceEnabled() &&
+      profile.toolApprovals?.['documents---generate'] !== ToolApprovalState.Never
+    ) {
+      Object.assign(toolSet, createDocumentTools(task, approvalManager, AbortSignal.any([abortSignal, this.desktopStop.signal])));
     }
     let nativeShell: ToolSet[string] | undefined;
     let nativeShellPoll: ToolSet[string] | undefined;
@@ -3164,6 +3178,15 @@ export class Agent {
 
     const messages: ContextMessage[] = [];
     const usageReport: UsageReportData = this.modelManager.getUsageReport(task, provider, model, usage, providerMetadata);
+    const previewsByCall = new Map<string, string[]>();
+    for (const result of toolResults) {
+      if (result.toolName === 'documents---generate') {
+        const thumbnails = readDocumentThumbnails(result.output);
+        if (thumbnails.length) {
+          previewsByCall.set(result.toolCallId, thumbnails);
+        }
+      }
+    }
 
     if (providerMetadata) {
       // per-step metadata must not bump updatedAt, otherwise running tasks keep re-sorting in the task list
@@ -3308,8 +3331,18 @@ export class Agent {
           timestamp: Date.now(),
         } as ContextAssistantMessage);
       } else if (message.role === 'tool') {
+        const documentPreviews = Object.fromEntries(
+          message.content.flatMap((part) => {
+            if (part.type !== 'tool-result') {
+              return [];
+            }
+            const thumbnails = previewsByCall.get(part.toolCallId);
+            return thumbnails ? [[part.toolCallId, thumbnails]] : [];
+          }),
+        );
         messages.push({
           ...message,
+          ...(Object.keys(documentPreviews).length ? { documentPreviews } : {}),
           // @ts-expect-error the id is there
           id: message.id || uuidv4(),
           promptContext,

@@ -60,7 +60,7 @@ export const workflowServiceRetryable = (error: unknown): boolean => {
   return false;
 };
 
-export const assertLocalWorkflowDocker = async (signal?: AbortSignal): Promise<void> => {
+export const localWorkflowDockerEndpoint = async (signal?: AbortSignal): Promise<string> => {
   const { stdout } = await run('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {
     timeout: 5_000,
     signal,
@@ -71,6 +71,11 @@ export const assertLocalWorkflowDocker = async (signal?: AbortSignal): Promise<v
   if (!isLocal(stdout.trim()) || (process.env.DOCKER_HOST && !isLocal(process.env.DOCKER_HOST))) {
     throw new Error('Seleziona il motore Docker locale di Docker Desktop prima di avviare il lavoro.');
   }
+  return process.env.DOCKER_HOST || stdout.trim();
+};
+
+export const assertLocalWorkflowDocker = async (signal?: AbortSignal): Promise<void> => {
+  await localWorkflowDockerEndpoint(signal);
 };
 
 const engineReady = async (timeout: number, signal?: AbortSignal): Promise<boolean> => {

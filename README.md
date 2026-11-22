@@ -6,6 +6,8 @@ Per usare Agent-Lab sul tuo PC puoi continuare con il launcher del checkout oppu
 
 Su Windows x64 puoi chiedere alla chat Agent di lavorare su una finestra condivisa o in un browser temporaneo. La scelta della finestra e il consenso avvengono sul PC. [Guida al Computer Use](lab/docs/COMPUTER-USE.md).
 
+Per creare preventivi, relazioni o fogli di calcolo dalla chat del progetto, consulta [Documenti locali in Word, PDF ed Excel](lab/docs/DOCUMENTI-LOCALI.md).
+
 ## Avvio da sorgente su Windows
 
 Il percorso di avvio è verificato su Windows x64 con Git, Node.js 24 e npm. Dalla radice del clone esegui:

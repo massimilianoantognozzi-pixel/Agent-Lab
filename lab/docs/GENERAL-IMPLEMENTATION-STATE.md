@@ -1,5 +1,9 @@
 # Ripresa del riallineamento generale
 
+## 22 novembre 2026 — Documenti dalla chat desktop
+
+Il progetto dispone dello strumento `documents---generate` per creare e verificare Word, PDF ed Excel. Riutilizza il modello del progetto e ricava la tabella stampata dai risultati ricalcolati in Calc. Le consegne versionate comprendono i file richiesti, le anteprime, i dati di origine e la ricevuta. [Uso dalla chat](DOCUMENTI-LOCALI.md) · [Collaudo](quality/documenti-locali-2026-11-22.md).
+
 ## 22 novembre 2026 — Cinque lavori prima delle nuove funzionalità
 
 Massimiliano ha confermato il computer use generale e la precedenza dei cinque lavori su immagini, documenti e Remote. Il perimetro del computer use comprende applicazioni Windows e browser.
@@ -12,9 +16,9 @@ Massimiliano ha confermato il computer use generale e la precedenza dei cinque l
 
    Per la ricerca di lezioni tecniche, alla [prima prova di 30 casi](quality/memoria-it-2026-11-22/rapporto.md) è seguito un campione indipendente di 48. Fra 24 richieste estranee il nuovo filtro riduce i falsi allarmi da 9 a 2. Fra 24 pertinenti scende da 17 a 16 risposte giuste. Il criterio fissato prima della misura richiedeva di conservare le correzioni utili. La replica è identica e il profilo desktop mantiene la configurazione attuale. [Rapporto sul filtro di intento](quality/memoria-intento-2026-11-22/rapporto.md)
 
-Massimiliano ha definito il consenso per l’intera coda dopo l’approvazione del blueprint e l’ordine di iniziare. [Decisione e comportamento alla ripresa](AIDERDESK-WORKFLOW-BLUEPRINT.md#4-avvio-e-scelta-dei-task). Resta da concordare la durata delle credenziali remote. Dopo il collaudo immagini sul conto personale, le capacità successive già discusse comprendono produzione e verifica di PDF/DOCX/XLSX e app Remote nativa. Selettore degli ambienti e connettore portatile restano proposte da definire.
+Massimiliano ha definito il consenso per l’intera coda dopo l’approvazione del blueprint e l’ordine di iniziare. [Decisione e comportamento alla ripresa](AIDERDESK-WORKFLOW-BLUEPRINT.md#4-avvio-e-scelta-dei-task). Restano il collaudo immagini sul conto personale e la discussione sull’app Remote nativa, compresa la durata delle credenziali. Selettore degli ambienti e connettore portatile restano proposte da definire.
 
-**Consegna locale Windows x64.** L’[installer con il recupero dello stato delle schede](../artifacts/Agent-Lab-locale-ripresa-task/Agent-Lab-0.88.0-setup.exe) ha SHA-256 `33f0df85263de8dd158a15c7e49a41b6130323bfdd54d9f726f4811c508818ed`. I due launcher del checkout includono la stessa build. Il primo avvio diretto usa il profilo Agent-Lab e il servizio su 127.0.0.1:24364. [Collaudo della riapertura](quality/ripristino-stato-scheda-2026-11-22.md) · [Prova in due chat con GLM](quality/riuso-componenti-2026-11-22.md) · [Guida locale](INSTALLAZIONE-LOCALE.md) · [CLI](../artifacts/consegna-2026-11-22/aiderdesk-aiderdesk-0.87.0.tgz)
+**Consegna locale Windows x64.** L’[installer con la funzione documenti](../artifacts/Agent-Lab-locale-documenti/Agent-Lab-0.88.0-setup.exe) ha SHA-256 `6f40ef58b0b460023e471f90af40c1ce172c49e43c7b14cc4c77abd804968984`. I due launcher del checkout includono la stessa build. Il primo avvio diretto usa il profilo Agent-Lab e il servizio su 127.0.0.1:24364. [Collaudo della riapertura](quality/ripristino-stato-scheda-2026-11-22.md) · [Prova in due chat con GLM](quality/riuso-componenti-2026-11-22.md) · [Guida locale](INSTALLAZIONE-LOCALE.md) · [CLI](../artifacts/consegna-2026-11-22/aiderdesk-aiderdesk-0.87.0.tgz)
 
 **Punto di ripresa — immagini.** Massimiliano ha approvato la generazione e la modifica dalla chat e dal Designer per uso locale. Il collegamento al suo account e la verifica dei crediti inclusi sono rinviati al suo rientro. Prima della prova reale, aprire *Impostazioni → Generali → Generazione immagini*, selezionare un profilo OpenAI con chiave propria e verificare sul portale OpenAI il credito dell’organizzazione associata. Il modello iniziale è Sunburst con qualità bassa e formato 1024 × 1024. La selezione è indipendente dal modello di coding. [Guida ai crediti inclusi](https://developers.openai.com/api/docs/guides/chatgpt-api-credits)
 

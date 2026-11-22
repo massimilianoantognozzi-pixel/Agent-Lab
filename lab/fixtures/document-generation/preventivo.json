@@ -1,0 +1,83 @@
+{
+  "title": "Preventivo per la mostra dei materiali",
+  "paragraphs": ["Quantità e prezzi sintetici per il collaudo del laboratorio."],
+  "summary": ["Condizioni del preventivo: importi espressi in euro."],
+  "columns": ["Voce", "Quantità", "Unitario", "Importo"],
+  "pageBreakBeforeRows": [7],
+  "items": [
+    {
+      "code": "Q01",
+      "label": "Pannelli ingresso",
+      "quantity": 2,
+      "unitCents": 18275
+    },
+    {
+      "code": "Q02",
+      "label": "Tavoli espositivi",
+      "quantity": 3,
+      "unitCents": 6850
+    },
+    {
+      "code": "Q03",
+      "label": "Basi modulari\nFinitura opaca",
+      "quantity": 4,
+      "unitCents": 4275
+    },
+    {
+      "code": "Q04",
+      "label": "Guide stampate",
+      "quantity": 25,
+      "unitCents": 185
+    },
+    {
+      "code": "Q05",
+      "label": "Supporti inclinati",
+      "quantity": 6,
+      "unitCents": 950
+    },
+    {
+      "code": "Q06",
+      "label": "Custodie campione",
+      "quantity": 8,
+      "unitCents": 435
+    },
+    {
+      "code": "Q07",
+      "label": "Luci a binario",
+      "quantity": 3,
+      "unitCents": 5510
+    },
+    {
+      "code": "Q08",
+      "label": "Vassoi dimostrativi\nSeconda sala",
+      "quantity": 5,
+      "unitCents": 2180
+    },
+    {
+      "code": "Q09",
+      "label": "Targhe numerate",
+      "quantity": 12,
+      "unitCents": 295
+    },
+    {
+      "code": "Q10",
+      "label": "Piani di appoggio",
+      "quantity": 2,
+      "unitCents": 10525
+    },
+    {
+      "code": "Q11",
+      "label": "Stampa didascalie\nCarta riciclata",
+      "quantity": 15,
+      "unitCents": 235
+    },
+    {
+      "code": "Q12",
+      "label": "Custodia trasporto",
+      "quantity": 1,
+      "unitCents": 8840
+    }
+  ],
+  "taxPercent": 22,
+  "editedQuantity": 5
+}

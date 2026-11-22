@@ -268,14 +268,20 @@ export class ContextManager {
 
   restoreTurnMessages(contextMessages: ContextMessage[]) {
     // Checkpoints carry text-only tool results. Keep desktop receipts saved while the model or a Designer was working.
-    const imageResults = this.messages.filter((message) => message.role === 'tool' && message.imagePreview);
+    const imageResults = this.messages.filter((message) => message.role === 'tool' && (message.imagePreview || message.documentPreviews));
     if (!imageResults.length) {
       this.setContextMessages(contextMessages);
       return;
     }
     const calls = new Set(
       imageResults.flatMap((message) =>
-        message.role === 'tool' ? message.content.filter((part) => part.toolName === 'images---result').map((part) => part.toolCallId) : [],
+        message.role === 'tool'
+          ? message.content
+              .filter(
+                (part) => part.toolName === 'images---result' || (part.toolName === 'documents---generate' && message.documentPreviews?.[part.toolCallId]),
+              )
+              .map((part) => part.toolCallId)
+          : [],
       ),
     );
     const saved = new Map(
@@ -1075,12 +1081,17 @@ export class ContextManager {
         const toolMessage = messagesData.find((message) => message.type === 'tool' && message.id === part.toolCallId) as ToolData | undefined;
 
         if (toolMessage) {
-          if (part.toolName === 'images---result' && message.role === 'tool' && message.imagePreview && part.output.type === 'text') {
+          const thumbnails =
+            message.role !== 'tool'
+              ? []
+              : part.toolName === 'documents---generate'
+                ? (message.documentPreviews?.[part.toolCallId] ?? [])
+                : part.toolName === 'images---result' && message.imagePreview
+                  ? [message.imagePreview]
+                  : [];
+          if (thumbnails.length && part.output.type === 'text') {
             toolMessage.response = JSON.stringify({
-              content: [
-                { type: 'text', text: part.output.value },
-                { type: 'image', mimeType: 'image/png', data: message.imagePreview },
-              ],
+              content: [{ type: 'text', text: part.output.value }, ...thumbnails.map((data) => ({ type: 'image', mimeType: 'image/png', data }))],
             });
           } else {
             toolMessage.response = JSON.stringify(

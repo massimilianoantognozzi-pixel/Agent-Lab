@@ -27,6 +27,9 @@ export const prepareMessagesForModel = async (
     if (message.role === 'tool' && 'imagePreview' in message) {
       delete message.imagePreview;
     }
+    if (message.role === 'tool' && 'documentPreviews' in message) {
+      delete message.documentPreviews;
+    }
   }
   normalizeLegacyToolMedia(preparedMessages);
   if (task && profile && preparedMessages.length > 0) {

@@ -42,6 +42,10 @@ export async function verifyWindowsLayout(unpacked, projectRequire = createRequi
   for (const asset of [
     'icon.png',
     'connector/connector.py',
+    'office/Dockerfile',
+    'office/generate.py',
+    'office/paged.py',
+    'office/sheets.py',
     'skills/agent-creator/SKILL.md',
     'skills/extension-creator/SKILL.md',
     'prompts/system-prompt.hbs',

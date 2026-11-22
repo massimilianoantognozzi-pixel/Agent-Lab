@@ -52,6 +52,18 @@ describe('generated PNG result in chat', () => {
     expect(container.querySelectorAll('img')).toHaveLength(1);
   });
 
+  it('shows the document previews with the delivery directory in the collapsed chat', () => {
+    const documentResult = {
+      ...result,
+      serverName: 'documents',
+      toolName: 'generate',
+      content: JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ output: 'consegne/prova' }) }, thumb, thumb] }),
+    };
+    render(<CompactToolMessage message={documentResult} isExpanded={false} onToggle={vi.fn()} />);
+    expect(screen.getByText('consegne/prova')).toBeVisible();
+    expect(screen.getAllByRole('img')).toHaveLength(2);
+  });
+
   it('preserves the collapsed behavior of unrelated tools and receipts without thumbnails', () => {
     const other = { ...result, serverName: 'another-server' };
     const { rerender } = render(<ToolMessageBlock message={other} hideMessageBar />);

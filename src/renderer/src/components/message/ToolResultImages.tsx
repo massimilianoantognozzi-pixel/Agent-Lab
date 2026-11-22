@@ -11,7 +11,9 @@ type Props = {
 };
 
 export const generatedImagePreview = (message: ToolMessage, result: ToolContentResult | null): Props | null => {
-  if (message.serverName !== 'images' || message.toolName !== 'result' || message.isStreaming || result?.isError || !result?.images.length) {
+  const hasPreview =
+    (message.serverName === 'images' && message.toolName === 'result') || (message.serverName === 'documents' && message.toolName === 'generate');
+  if (!hasPreview || message.isStreaming || result?.isError || !result?.images.length) {
     return null;
   }
   const images = result.images.filter((image) => image.mediaType === 'image/png');
@@ -19,7 +21,10 @@ export const generatedImagePreview = (message: ToolMessage, result: ToolContentR
     return null;
   }
   const output = result.json && 'output' in result.json ? result.json.output : undefined;
-  return { images, outputPath: typeof output === 'string' && output.trim() ? output : undefined };
+  return {
+    images,
+    outputPath: typeof output === 'string' && output.trim() ? output : undefined,
+  };
 };
 
 export const ToolResultImages = ({ images, outputPath }: Props) => {
